@@ -1,50 +1,85 @@
 #!/usr/bin/env python3
 # EspDrop - measure USB-Serial/JTAG throughput from the host side.
 #
-# Run this, then trigger `usbbench <kib>` on the device console. It counts the
-# bytes that arrive and reports the sustained rate. Rough but honest: it is the
-# host actually reading the CDC endpoint, not the device guessing.
+# Two ways to use it:
+#   1. Self-triggering (recommended): the tool sends `usbbench <kib>` to the
+#      device itself, then times the bytes that come back. Close `idf.py monitor`
+#      first - only one program may read the port at a time.
+#        sudo tools/usb_throughput.py /dev/ttyACM0 --trigger 2048
+#   2. Passive: just time whatever arrives in a window; trigger `usbbench` by
+#      hand in a monitor on another machine.
+#        tools/usb_throughput.py /dev/ttyACM0 --seconds 10
 #
-# Usage: tools/usb_throughput.py /dev/ttyACM0 [seconds]
+# Timing is gap-based: the clock starts at the first byte and stops after a
+# 0.5 s lull, so the rate reflects the actual burst, not idle wait time.
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026  EspDrop contributors
 
+import argparse
 import os
 import sys
+import termios
 import time
+import tty
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
-        print("usage: usb_throughput.py <port> [seconds]", file=sys.stderr)
-        return 2
-    port = sys.argv[1]
-    window = float(sys.argv[2]) if len(sys.argv) > 2 else 5.0
+    ap = argparse.ArgumentParser(description="EspDrop USB-Serial/JTAG throughput meter")
+    ap.add_argument("port", help="serial device, e.g. /dev/ttyACM0")
+    ap.add_argument("--trigger", type=int, metavar="KIB",
+                    help="send `usbbench <KIB>` to the device before timing "
+                         "(close idf.py monitor first)")
+    ap.add_argument("--seconds", type=float, default=12.0,
+                    help="maximum time to wait/read (default 12)")
+    ap.add_argument("--gap", type=float, default=0.5,
+                    help="end the measurement after this long with no data (default 0.5)")
+    args = ap.parse_args()
 
+    flags = os.O_RDWR if args.trigger else os.O_RDONLY
     try:
-        fd = os.open(port, os.O_RDONLY | os.O_NOCTTY)
+        fd = os.open(args.port, flags | os.O_NOCTTY | os.O_NONBLOCK)
     except OSError as e:
-        print(f"cannot open {port}: {e}", file=sys.stderr)
+        print(f"cannot open {args.port}: {e}", file=sys.stderr)
         return 1
 
-    print(f"reading {port} for {window:.0f}s; trigger `usbbench` on the device now ...")
-    total = 0
-    t0 = time.monotonic()
+    # Raw mode so the command and the binary stream pass through untouched.
     try:
-        while time.monotonic() - t0 < window:
-            try:
-                chunk = os.read(fd, 65536)
-            except BlockingIOError:
-                continue
-            if chunk:
-                total += len(chunk)
-    finally:
-        os.close(fd)
+        tty.setraw(fd)
+    except termios.error:
+        pass  # not a tty (e.g. a pipe in testing): fine
 
-    dt = time.monotonic() - t0
-    rate = total / dt / 1000.0 if dt > 0 else 0.0
-    print(f"{total} bytes in {dt:.2f}s = {rate:.1f} kB/s")
+    if args.trigger:
+        os.write(fd, f"usbbench {args.trigger}\r\n".encode())
+
+    print(f"timing {args.port} (up to {args.seconds:.0f}s, "
+          f"stop after {args.gap:.1f}s idle) ...")
+    total = 0
+    deadline = time.monotonic() + args.seconds
+    t_first = None
+    t_last = None
+    while time.monotonic() < deadline:
+        try:
+            chunk = os.read(fd, 65536)
+        except BlockingIOError:
+            if t_last is not None and time.monotonic() - t_last > args.gap:
+                break
+            time.sleep(0.005)
+            continue
+        if chunk:
+            now = time.monotonic()
+            if t_first is None:
+                t_first = now
+            t_last = now
+            total += len(chunk)
+    os.close(fd)
+
+    if t_first is None or t_last is None or t_last == t_first:
+        print(f"{total} bytes; not enough data to time a rate "
+              f"(did you trigger `usbbench`? is a monitor still holding the port?)")
+        return 0
+    dt = t_last - t_first
+    print(f"{total} bytes in {dt:.2f}s = {total / dt / 1000.0:.1f} kB/s")
     return 0
 
 
