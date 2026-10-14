@@ -47,6 +47,20 @@ static void peer_apply_view(awdl_peer_t *p, const awdl_peer_view_t *pv) {
 	}
 }
 
+/* Re-derive the channel sequence we advertise. When we track a master that has
+ * advertised a channel sequence, mirror its slots on our own channel; otherwise
+ * fall back to the lone static sequence. */
+static void awdl_node_update_chanseq(awdl_node_t *n) {
+	if (n->have_master) {
+		awdl_peer_t *m = awdl_peers_get(&n->peers, n->election.sync_addr);
+		if (m && m->has_chanseq) {
+			awdl_self_set_chanseq_intersect(&n->self, m->chanseq, n->self.master_chan);
+			return;
+		}
+	}
+	awdl_self_set_chanseq_static(&n->self, n->self.master_chan);
+}
+
 void awdl_node_on_rx_action(awdl_node_t *n, const awdl_peer_view_t *pv,
                             int8_t rssi, uint64_t now_us) {
 	(void)rssi; /* RSSI filtering is a later refinement */
@@ -62,6 +76,8 @@ void awdl_node_on_rx_action(awdl_node_t *n, const awdl_peer_view_t *pv,
 	awdl_election_run(&n->election, &n->peers);
 	n->have_master = !awdl_election_is_sync_master(&n->election, n->election.self_addr);
 	if (!n->have_master) n->sync_locked = false; /* no master: next adopt is fresh */
+
+	awdl_node_update_chanseq(n);
 
 	if (pv->has_sync) {
 		int64_t err = awdl_sync_error_tu(now_us, pv->sync_tx_down_tu,
@@ -88,6 +104,7 @@ void awdl_node_tick(awdl_node_t *n, uint64_t now_us) {
 	awdl_election_run(&n->election, &n->peers);
 	n->have_master = !awdl_election_is_sync_master(&n->election, n->election.self_addr);
 	if (!n->have_master) n->sync_locked = false; /* no master: next adopt is fresh */
+	awdl_node_update_chanseq(n);
 }
 
 int awdl_node_build_action(awdl_node_t *n, uint8_t *buf, size_t cap,

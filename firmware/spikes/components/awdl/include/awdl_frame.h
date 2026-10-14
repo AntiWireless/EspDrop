@@ -137,6 +137,21 @@ typedef struct {
 void awdl_self_init(awdl_self_t *self, const uint8_t self_addr[6],
                     const char *name, uint8_t chan_num);
 
+/* Fill our channel sequence with a single channel in all 16 slots (the lone,
+ * not-yet-synced default). */
+void awdl_self_set_chanseq_static(awdl_self_t *self, uint8_t chan_num);
+
+/*
+ * Mirror a master's channel sequence into ours: advertise keep_chan only in the
+ * slots where the master is on keep_chan, and "absent" (0) everywhere else.
+ * On a single-band device this is the honest sequence and the structurally
+ * Apple-like shape that an iPhone will answer, unlike a flat all-one-channel
+ * sequence (see docs/UEBERBLICK.md and the airdrop-mt7921 findings).
+ */
+void awdl_self_set_chanseq_intersect(awdl_self_t *self,
+                                     const uint8_t master_chanseq[AWDL_CHANSEQ_LEN],
+                                     uint8_t keep_chan);
+
 /* ------------------------------------------------------------------------ */
 /* Parsed peer view (what the parser extracts from a received action frame)  */
 /* ------------------------------------------------------------------------ */

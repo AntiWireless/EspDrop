@@ -88,10 +88,34 @@ void awdl_self_init(awdl_self_t *self, const uint8_t self_addr[6],
 	self->chan_enc = AWDL_CHAN_ENC_OPCLASS;
 	self->master_chan = chan_num;
 
-	uint8_t opclass = (chan_num <= 14) ? 0x51 : 0x80;
+	awdl_self_set_chanseq_static(self, chan_num);
+}
+
+/* opclass byte for a channel number, opclass encoding. */
+static uint8_t opclass_for(uint8_t chan_num) {
+	return (chan_num <= 14) ? 0x51 : 0x80;
+}
+
+void awdl_self_set_chanseq_static(awdl_self_t *self, uint8_t chan_num) {
+	uint8_t opclass = opclass_for(chan_num);
 	for (unsigned i = 0; i < AWDL_CHANSEQ_LEN; i++) {
 		self->seq[i][0] = chan_num;
 		self->seq[i][1] = opclass;
+	}
+}
+
+void awdl_self_set_chanseq_intersect(awdl_self_t *self,
+                                     const uint8_t master_chanseq[AWDL_CHANSEQ_LEN],
+                                     uint8_t keep_chan) {
+	uint8_t opclass = opclass_for(keep_chan);
+	for (unsigned i = 0; i < AWDL_CHANSEQ_LEN; i++) {
+		if (master_chanseq[i] == keep_chan) {
+			self->seq[i][0] = keep_chan;   /* present on our channel in this slot */
+			self->seq[i][1] = opclass;
+		} else {
+			self->seq[i][0] = 0;           /* absent (we cannot be on that channel) */
+			self->seq[i][1] = 0;
+		}
 	}
 }
 

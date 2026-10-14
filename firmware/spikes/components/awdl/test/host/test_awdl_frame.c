@@ -297,7 +297,9 @@ static void iphone_announce(awdl_sync_t *iph, uint64_t t, const uint8_t ip[6],
 	pv->has_chanseq = true;
 	pv->chanseq_enc = AWDL_CHAN_ENC_OPCLASS;
 	pv->chanseq[0] = 6;
-	pv->chanseq[8] = 6; /* present on channel 6 in slots 0 and 8 */
+	pv->chanseq[2] = 44; /* a 5 GHz slot the C3 cannot reach */
+	pv->chanseq[8] = 6;
+	pv->chanseq[10] = 44;
 	pv->has_election = true;
 	memcpy(pv->master_addr, ip, 6); /* its own top master */
 	pv->el_height = 0;
@@ -357,6 +359,43 @@ static void test_node_sync_hold(void) {
 	CHECK(!st.have_master, "master should be gone after the peer aged out");
 }
 
+static void test_node_chanseq_mirror(void) {
+	uint8_t me[6] = {0x02, 0, 0, 0, 0, 0x01};
+	uint8_t ip[6] = {0xca, 0x2a, 0xd6, 0x10, 0x8e, 0xae};
+
+	awdl_node_t n;
+	awdl_node_init(&n, me, "espdrop-c3", 6, 0);
+
+	awdl_sync_t iph;
+	awdl_sync_init(&iph, 0);
+	awdl_peer_view_t pv;
+	iphone_announce(&iph, 100000, ip, &pv); /* chanseq: 6 at 0/8, 44 at 2/10 */
+	awdl_node_on_rx_action(&n, &pv, -40, 100000);
+
+	/* What we now advertise must be channel 6 exactly in the master's channel-6
+	 * slots (0 and 8) and absent (0) everywhere else - never a flat all-6. */
+	uint8_t buf[1500];
+	int len = awdl_node_build_action(&n, buf, sizeof(buf), AWDL_SUBTYPE_MIF,
+	                                 150000);
+	CHECK(len > 0, "build our MIF: %d", len);
+	awdl_peer_view_t ours;
+	CHECK(awdl_parse_action(buf, (size_t)len, &ours) == AWDL_OK, "parse our MIF");
+	CHECK(ours.has_chanseq, "our MIF carries no chanseq");
+	for (int i = 0; i < (int)AWDL_CHANSEQ_LEN; i++) {
+		uint8_t expect = (i == 0 || i == 8) ? 6 : 0;
+		CHECK(ours.chanseq[i] == expect, "our chanseq[%d]=%u expected %u",
+		      i, ours.chanseq[i], expect);
+	}
+
+	/* After the master ages out, fall back to the lone static all-6 sequence. */
+	awdl_node_tick(&n, 100000 + 3000000);
+	len = awdl_node_build_action(&n, buf, sizeof(buf), AWDL_SUBTYPE_MIF, 3200000);
+	CHECK(awdl_parse_action(buf, (size_t)len, &ours) == AWDL_OK, "parse MIF 2");
+	for (int i = 0; i < (int)AWDL_CHANSEQ_LEN; i++)
+		CHECK(ours.chanseq[i] == 6, "fallback chanseq[%d]=%u expected 6",
+		      i, ours.chanseq[i]);
+}
+
 int main(void) {
 	test_mif_roundtrip();
 	test_psf_roundtrip();
@@ -368,6 +407,7 @@ int main(void) {
 	test_builder_respects_cap();
 	test_truncated_v2_no_clobber();
 	test_node_sync_hold();
+	test_node_chanseq_mirror();
 
 	if (g_fail == 0) printf("\nALL TESTS PASSED\n");
 	else printf("\n%d CHECK(S) FAILED\n", g_fail);
