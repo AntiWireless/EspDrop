@@ -61,6 +61,7 @@ void awdl_node_on_rx_action(awdl_node_t *n, const awdl_peer_view_t *pv,
 	 * then (if this sender is our master) slave our clock to its timing. */
 	awdl_election_run(&n->election, &n->peers);
 	n->have_master = !awdl_election_is_sync_master(&n->election, n->election.self_addr);
+	if (!n->have_master) n->sync_locked = false; /* no master: next adopt is fresh */
 
 	if (pv->has_sync) {
 		int64_t err = awdl_sync_error_tu(now_us, pv->sync_tx_down_tu,
@@ -68,8 +69,15 @@ void awdl_node_on_rx_action(awdl_node_t *n, const awdl_peer_view_t *pv,
 		p->sync_offset_us = err * (int64_t)AWDL_TU_US;
 		p->has_sync_offset = true;
 		if (awdl_election_is_sync_master(&n->election, pv->src_addr)) {
-			n->last_sync_err_tu = err; /* how far we were off before adopting */
+			/* First lock to this master: just adopt its clock; the pre-update
+			 * "error" is only the gap between two unrelated epochs, not drift,
+			 * so report 0. Thereafter it is the real residual drift. */
+			bool fresh = !n->sync_locked ||
+			             memcmp(n->synced_master, pv->src_addr, 6) != 0;
+			n->last_sync_err_tu = fresh ? 0 : err;
 			awdl_sync_update(now_us, pv->sync_tx_down_tu, pv->sync_aw_counter, &n->sync);
+			memcpy(n->synced_master, pv->src_addr, 6);
+			n->sync_locked = true;
 		}
 	}
 }
@@ -79,6 +87,7 @@ void awdl_node_tick(awdl_node_t *n, uint64_t now_us) {
 		awdl_peers_age(&n->peers, now_us - n->peers.timeout_us);
 	awdl_election_run(&n->election, &n->peers);
 	n->have_master = !awdl_election_is_sync_master(&n->election, n->election.self_addr);
+	if (!n->have_master) n->sync_locked = false; /* no master: next adopt is fresh */
 }
 
 int awdl_node_build_action(awdl_node_t *n, uint8_t *buf, size_t cap,

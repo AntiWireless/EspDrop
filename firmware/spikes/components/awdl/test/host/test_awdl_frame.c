@@ -332,6 +332,9 @@ static void test_node_sync_hold(void) {
 	CHECK(memcmp(st.master_addr, ip, 6) == 0, "master is not the iPhone");
 	CHECK(st.height == 1, "height %u != 1", st.height);
 	CHECK(st.peer_count == 1, "peer_count %d", st.peer_count);
+	/* First lock reports 0, not the (huge) gap between two unrelated clocks. */
+	CHECK(st.last_sync_err_tu == 0, "first lock should report 0, got %lld",
+	      (long long)st.last_sync_err_tu);
 
 	/* After adopting the iPhone's timing, a later consistent announcement must
 	 * measure a small residual error. */

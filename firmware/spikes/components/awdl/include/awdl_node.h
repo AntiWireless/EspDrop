@@ -34,10 +34,14 @@ typedef struct {
 	awdl_election_t   election; /* our election state (who we sync to) */
 	awdl_peer_table_t peers;    /* known peers */
 
-	/* Last phase error (TU) measured against our master just before we adopted
-	 * its timing; small and stable means we are well synced. */
+	/* Drift (TU) measured against our master just before the latest correction.
+	 * Small and stable means we are well synced. Zero on the first lock to a
+	 * master (there the "error" is only the gap between two unrelated clocks,
+	 * not drift), and real drift on every subsequent frame from that master. */
 	int64_t last_sync_err_tu;
 	bool    have_master;        /* we sync to a peer, not to ourselves */
+	bool    sync_locked;        /* we have adopted the current master's timing */
+	uint8_t synced_master[6];   /* the master we are currently tracking */
 } awdl_node_t;
 
 /* now_us: a monotonic microsecond timestamp (esp_timer_get_time() on hardware). */
