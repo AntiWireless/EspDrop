@@ -355,7 +355,7 @@ int awdl_parse_action(const uint8_t *buf, size_t len, awdl_peer_view_t *out) {
 
 	/* AWDL action header at offset 24 */
 	size_t a = IEEE80211_HDR_LEN;
-	uint8_t category, type;
+	uint8_t category = 0, type = 0;
 	wire_get_u8(buf, len, a + 0, &category);
 	if (category != AWDL_CATEGORY_VENDOR) return AWDL_ERR_NOT_AWDL;
 	if (memcmp(buf + a + 1, AWDL_OUI, 3) != 0) return AWDL_ERR_NOT_AWDL;
@@ -422,14 +422,14 @@ bool awdl_parse_data(const uint8_t *buf, size_t len,
 	if (fc != FC_DATA) return false;
 
 	size_t llc = IEEE80211_HDR_LEN;
-	uint8_t dsap, ssap, ctrl;
+	uint8_t dsap = 0, ssap = 0, ctrl = 0;
 	wire_get_u8(buf, len, llc + 0, &dsap);
 	wire_get_u8(buf, len, llc + 1, &ssap);
 	wire_get_u8(buf, len, llc + 2, &ctrl);
 	if (dsap != 0xaa || ssap != 0xaa || ctrl != 0x03) return false;
 	if (memcmp(buf + llc + 3, AWDL_OUI, 3) != 0) return false;
 
-	uint16_t pid, head, et;
+	uint16_t pid = 0, head = 0, et = 0;
 	wire_get_be16(buf, len, llc + 6, &pid);
 	if (pid != AWDL_LLC_PID) return false;
 

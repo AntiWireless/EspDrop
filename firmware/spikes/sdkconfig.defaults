@@ -1,0 +1,20 @@
+# EspDrop AWDL spikes - build-time defaults (checked in; sdkconfig is generated)
+
+# Console over the built-in USB-Serial/JTAG (no external USB-UART bridge needed)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# 1 kHz tick: AWDL availability windows are 16 TU (~16 ms); a 10 ms tick is too
+# coarse to schedule against them. Needed from M1 on; harmless now.
+CONFIG_FREERTOS_HZ=1000
+
+# Give the Wi-Fi driver static RX/TX buffers (promiscuous RX is bursty).
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+
+# A little more log headroom while bringing the spikes up.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Main task stack: console command handlers build 1.5 KB frames on-stack.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
