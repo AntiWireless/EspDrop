@@ -8,8 +8,10 @@
 
 #include <string.h>
 
+#include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_private/wifi.h" /* esp_wifi_set_tx_done_cb: stable across IDF 5.1..6.x */
@@ -109,6 +111,14 @@ int radio_init(uint8_t channel) {
 		err = nvs_flash_init();
 	}
 	if (err != ESP_OK) return err;
+
+	/* The Wi-Fi driver posts its events (STA_START etc.) to the default event
+	 * loop. Without it they fail with ESP_ERR_INVALID_STATE ("failed to post
+	 * WiFi event"). esp_netif is not strictly needed for raw/promiscuous use
+	 * but is cheap and required once we add an IP stack later. */
+	if ((err = esp_netif_init()) != ESP_OK) return err;
+	err = esp_event_loop_create_default();
+	if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err; /* already created: fine */
 
 	s_peer_q = xQueueCreate(PEER_Q_LEN, sizeof(radio_peer_event_t));
 	if (!s_peer_q) return ESP_ERR_NO_MEM;
