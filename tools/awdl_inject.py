@@ -23,17 +23,23 @@
 #     - On the C3: `info` to read the STA MAC; leave it as is; `reset`; `rx on`.
 #     - Run this with --target <that MAC>.
 #     - C3 `stats`: did `rx_data` rise?  (delivery)
-#     - Parallel capture on ch6: is there an ACK with RA == C3 MAC after each
-#       injected frame?  (hardware ACK)
+#     - Parallel capture on ch6: is there an ACK after each injected frame?
+#       NOTE: an 802.11 ACK carries only one address (RA), and it is the
+#       TRANSMITTER of the acknowledged frame, i.e. OUR --src, not the C3's MAC.
+#       So the C3's ACK comes back addressed to --src.  (hardware ACK)
 #   Variant B (AWDL addr != C3 iface MAC):
 #     - On the C3: `mac aa:bb:cc:dd:ee:01` (some other addr), `reset`, `rx on`.
 #     - Run this with --target <the ORIGINAL AWDL addr, not the new iface MAC>.
 #     - Expect: frames delivered to the callback, but NO hardware ACK.
 #
 # The authoritative ACK check is a parallel capture, because a card rarely sees
-# the ACKs to its own injected frames. In another terminal:
-#   sudo tcpdump -i wlan0mon -ne 'wlan[0] == 0xd4'      # ACK control frames
-# and watch for RA == the C3 MAC. --listen here is a best-effort convenience.
+# the ACKs to its own injected frames. In another terminal, filter on the ACK's
+# RA == our --src MAC (an ACK names the sender it acknowledges, not the C3):
+#   sudo tcpdump -i wlan0mon -ne 'wlan[0] == 0xd4 and wlan addr1 02:45:53:50:44:52'
+# A Wireshark display filter does the same:
+#   wlan.fc.type_subtype == 0x1d && wlan.ra == 02:45:53:50:44:52
+# Control: aim --target at a MAC no device owns; those ACKs must then stop.
+# --listen here is a best-effort convenience.
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026  EspDrop contributors
@@ -129,15 +135,19 @@ def main() -> int:
         return 1
 
     tgt_str = ":".join(f"{x:02x}" for x in target)
+    src_str = ":".join(f"{x:02x}" for x in args.src)
 
     sniffer = None
     acks = {"n": 0}
     if args.listen:
-        def is_ack_to_target(pkt):
+        # The C3's ACK for our frame is addressed to the frame's transmitter
+        # (our --src), not to the C3 itself: an ACK carries only an RA, set to
+        # the sender being acknowledged.
+        def is_ack_for_us(pkt):
             return (pkt.haslayer(Dot11) and pkt.type == 1 and pkt.subtype == 13
-                    and pkt.addr1 and pkt.addr1.lower() == tgt_str)
+                    and pkt.addr1 and pkt.addr1.lower() == src_str)
         def on_pkt(pkt):
-            if is_ack_to_target(pkt):
+            if is_ack_for_us(pkt):
                 acks["n"] += 1
         sniffer = AsyncSniffer(iface=args.iface, prn=on_pkt, store=False)
         sniffer.start()
@@ -154,11 +164,11 @@ def main() -> int:
     if sniffer:
         time.sleep(0.3)
         sniffer.stop()
-        print(f"saw {acks['n']} ACK(s) addressed to {tgt_str} on this card "
+        print(f"saw {acks['n']} ACK(s) with RA == {src_str} on this card "
               f"(best-effort; trust a parallel capture for the real count)")
 
-    print("done. Now read `stats` on the C3: did rx_data rise? "
-          "And check the capture for ACKs with RA == the target.")
+    print(f"done. Now read `stats` on the C3: did rx_data rise? "
+          f"And check the capture for ACKs with RA == {src_str} (our --src).")
     return 0
 
 
