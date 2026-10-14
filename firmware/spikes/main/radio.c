@@ -12,6 +12,7 @@
 #include "esp_mac.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "esp_private/wifi.h" /* esp_wifi_set_tx_done_cb: stable across IDF 5.1..6.x */
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -32,10 +33,16 @@ static inline void stat_inc(uint64_t *field) {
 	portEXIT_CRITICAL(&s_stats_mux);
 }
 
-/* ---- 80211 tx-done callback: records the driver's reported send status ---- */
-static void IRAM_ATTR tx_done_cb(const esp_80211_tx_info_t *info) {
-	if (!info) return;
-	if (info->tx_status == WIFI_SEND_SUCCESS)
+/* ---- tx-done callback: records the driver's reported send status ----
+ * txStatus is true when the frame left the MAC successfully. For a unicast
+ * frame to a real peer that is the signal the ACK experiment cares about
+ * (did the peer acknowledge); for broadcast it is always success. Uses the
+ * internal esp_wifi_set_tx_done_cb API, which is present and identical on
+ * ESP-IDF 5.1 through 6.x (the public esp_wifi_register_80211_tx_cb only
+ * appeared in 5.5). */
+static void tx_done_cb(uint8_t ifidx, uint8_t *data, uint16_t *data_len, bool txStatus) {
+	(void)ifidx; (void)data; (void)data_len;
+	if (txStatus)
 		stat_inc(&s_stats.tx_done_ok);
 	else
 		stat_inc(&s_stats.tx_done_fail);
@@ -114,7 +121,7 @@ int radio_init(uint8_t channel) {
 
 	/* no power save: we must stay on-channel to hear/inject AWDL */
 	esp_wifi_set_ps(WIFI_PS_NONE);
-	esp_wifi_register_80211_tx_cb(tx_done_cb);
+	esp_wifi_set_tx_done_cb(tx_done_cb);
 
 	s_channel = channel;
 	esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
