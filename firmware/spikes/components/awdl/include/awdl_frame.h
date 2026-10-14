@@ -158,6 +158,16 @@ typedef struct {
 
 	bool     has_election;
 	uint8_t  master_addr[6];  /* currently elected master (v2 if present, else v1) */
+	uint8_t  sync_addr[6];    /* v2 only: the node the peer syncs to (else zeroed) */
+	uint32_t el_height;       /* distance to master (sync-tree height) */
+	uint32_t el_master_metric;
+	uint32_t el_master_counter; /* 0 for v1 (no counter field) */
+	uint32_t el_self_metric;
+	uint32_t el_self_counter;   /* 0 for v1 */
+
+	bool     has_sync;        /* synchronization-parameters TLV present */
+	uint16_t sync_tx_down_tu; /* TU until the sender's next AW (tx_down_counter) */
+	uint16_t sync_aw_counter; /* the sender's current AW counter (next_aw_seq) */
 } awdl_peer_view_t;
 
 /* ------------------------------------------------------------------------ */

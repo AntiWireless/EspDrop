@@ -394,16 +394,43 @@ int awdl_parse_action(const uint8_t *buf, size_t len, awdl_peer_view_t *out) {
 			    wire_get_u8(v, l, 1, &out->devclass))
 				out->has_version = true;
 			break;
+		case AWDL_TLV_SYNC_PARAMS:
+			/* sync-params TLV value: tx_down_counter at offset 1,
+			 * next_aw_seq (the AW counter) at offset 29, both LE16. */
+			if (wire_get_le16(v, l, 1, &out->sync_tx_down_tu) &&
+			    wire_get_le16(v, l, 29, &out->sync_aw_counter))
+				out->has_sync = true;
+			break;
 		case AWDL_TLV_ELECTION_PARAMS_V2:
-			if (wire_get_bytes(v, l, 0, out->master_addr, 6)) {
+			/* v2 layout: master_addr@0, sync_addr@6, master_counter@12,
+			 * distance_to_master@16, master_metric@20, self_metric@24,
+			 * self_counter@36 (all LE32 except the addresses). */
+			if (wire_get_bytes(v, l, 0, out->master_addr, 6) &&
+			    wire_get_bytes(v, l, 6, out->sync_addr, 6) &&
+			    wire_get_le32(v, l, 12, &out->el_master_counter) &&
+			    wire_get_le32(v, l, 16, &out->el_height) &&
+			    wire_get_le32(v, l, 20, &out->el_master_metric) &&
+			    wire_get_le32(v, l, 24, &out->el_self_metric) &&
+			    wire_get_le32(v, l, 36, &out->el_self_counter)) {
 				out->has_election = true;
 				election_v2 = true;
 			}
 			break;
 		case AWDL_TLV_ELECTION_PARAMS:
-			/* v1: top_master_addr at offset 5; ignored if v2 already seen */
-			if (!election_v2 && wire_get_bytes(v, l, 5, out->master_addr, 6))
-				out->has_election = true;
+			/* v1 (no counters): distancetop@3, top_master_addr@5,
+			 * top_master_metric@11, self_metric@15. Ignored if v2 seen. */
+			if (!election_v2) {
+				uint8_t dist = 0;
+				if (wire_get_u8(v, l, 3, &dist) &&
+				    wire_get_bytes(v, l, 5, out->master_addr, 6) &&
+				    wire_get_le32(v, l, 11, &out->el_master_metric) &&
+				    wire_get_le32(v, l, 15, &out->el_self_metric)) {
+					out->el_height = dist;
+					out->el_master_counter = 0;
+					out->el_self_counter = 0;
+					out->has_election = true;
+				}
+			}
 			break;
 		default:
 			break;
