@@ -39,8 +39,14 @@ static bool tlv_begin(uint8_t *buf, size_t cap, size_t *off, size_t *hdr, uint8_
 	return wire_put_u8(buf, cap, off, type) && wire_put_le16(buf, cap, off, 0);
 }
 
-/* Finish a TLV: backpatch length = bytes written after the 3-byte TL header. */
-static void tlv_end(uint8_t *buf, size_t *off, size_t hdr) {
+/* Finish a TLV: backpatch length = bytes written after the 3-byte TL header.
+ * No-op when the 3-byte TL header did not fully fit (hdr+3 > cap): in that case
+ * tlv_begin's writes already failed and *off never advanced, so there is
+ * nothing to patch and buf[hdr+1/2] would be out of bounds. This keeps the
+ * "never writes past cap" contract and avoids a size_t underflow in body. */
+static void tlv_end(uint8_t *buf, size_t cap, size_t *off, size_t hdr) {
+	if (hdr + 3 > cap || *off < hdr + 3)
+		return;
 	uint16_t body = (uint16_t)(*off - hdr - 3);
 	buf[hdr + 1] = (uint8_t)(body & 0xff);
 	buf[hdr + 2] = (uint8_t)((body >> 8) & 0xff);
@@ -144,7 +150,7 @@ static bool put_tlv_sync_params(uint8_t *buf, size_t cap, size_t *off,
 	ok &= wire_put_le16(buf, cap, off, cur_aw);            /* ap_alignment */
 	ok &= put_chanseq(buf, cap, off, self);
 	ok &= wire_put_le16(buf, cap, off, 0);                 /* padding */
-	tlv_end(buf, off, hdr);
+	tlv_end(buf, cap, off, hdr);
 	return ok;
 }
 
@@ -160,7 +166,7 @@ static bool put_tlv_election_params(uint8_t *buf, size_t cap, size_t *off,
 	ok &= wire_put_le32(buf, cap, off, AWDL_ELECTION_METRIC_INIT); /* top_master_metric */
 	ok &= wire_put_le32(buf, cap, off, AWDL_ELECTION_METRIC_INIT); /* self_metric */
 	ok &= wire_put_le16(buf, cap, off, 0);                 /* pad */
-	tlv_end(buf, off, hdr);
+	tlv_end(buf, cap, off, hdr);
 	return ok;
 }
 
@@ -171,7 +177,7 @@ static bool put_tlv_chanseq(uint8_t *buf, size_t cap, size_t *off, const awdl_se
 	ok &= wire_put_u8(buf, cap, off, 0);
 	ok &= wire_put_u8(buf, cap, off, 0);
 	ok &= wire_put_u8(buf, cap, off, 0); /* padding (3 bytes, as OWL) */
-	tlv_end(buf, off, hdr);
+	tlv_end(buf, cap, off, hdr);
 	return ok;
 }
 
@@ -188,7 +194,7 @@ static bool put_tlv_election_params_v2(uint8_t *buf, size_t cap, size_t *off,
 	ok &= wire_put_le32(buf, cap, off, 0);                 /* unknown */
 	ok &= wire_put_le32(buf, cap, off, 0);                 /* reserved */
 	ok &= wire_put_le32(buf, cap, off, 0);                 /* self_counter */
-	tlv_end(buf, off, hdr);
+	tlv_end(buf, cap, off, hdr);
 	return ok;
 }
 
@@ -200,7 +206,7 @@ static bool put_tlv_service_params(uint8_t *buf, size_t cap, size_t *off) {
 	ok &= wire_put_u8(buf, cap, off, 0);   /* unknown[3] */
 	ok &= wire_put_le16(buf, cap, off, 0); /* sui */
 	ok &= wire_put_le32(buf, cap, off, 0); /* bitmask */
-	tlv_end(buf, off, hdr);
+	tlv_end(buf, cap, off, hdr);
 	return ok;
 }
 
@@ -212,7 +218,7 @@ static bool put_tlv_ht_capabilities(uint8_t *buf, size_t cap, size_t *off) {
 	ok &= wire_put_u8(buf, cap, off, 0x1b);     /* ampdu_params */
 	ok &= wire_put_u8(buf, cap, off, 0xff);     /* rx_mcs: one stream, all MCS */
 	ok &= wire_put_le16(buf, cap, off, 0);      /* unknown2 */
-	tlv_end(buf, off, hdr);
+	tlv_end(buf, cap, off, hdr);
 	return ok;
 }
 
@@ -224,7 +230,7 @@ static bool put_tlv_arpa(uint8_t *buf, size_t cap, size_t *off, const awdl_self_
 	ok &= wire_put_u8(buf, cap, off, (uint8_t)nlen);     /* name_length */
 	ok &= wire_put_bytes(buf, cap, off, self->name, nlen);
 	ok &= wire_put_be16(buf, cap, off, 0xc00c);          /* compressed ".local" */
-	tlv_end(buf, off, hdr);
+	tlv_end(buf, cap, off, hdr);
 	return ok;
 }
 
@@ -245,7 +251,7 @@ static bool put_tlv_data_path_state(uint8_t *buf, size_t cap, size_t *off,
 	ok &= wire_put_le16(buf, cap, off, social);            /* social_channels */
 	ok &= wire_put_bytes(buf, cap, off, self->self_addr, 6); /* awdl_addr */
 	ok &= wire_put_le16(buf, cap, off, 0);                 /* ext_flags */
-	tlv_end(buf, off, hdr);
+	tlv_end(buf, cap, off, hdr);
 	return ok;
 }
 
@@ -254,7 +260,7 @@ static bool put_tlv_version(uint8_t *buf, size_t cap, size_t *off, const awdl_se
 	bool ok = tlv_begin(buf, cap, off, &hdr, AWDL_TLV_VERSION);
 	ok &= wire_put_u8(buf, cap, off, self->version);
 	ok &= wire_put_u8(buf, cap, off, self->devclass);
-	tlv_end(buf, off, hdr);
+	tlv_end(buf, cap, off, hdr);
 	return ok;
 }
 
@@ -394,44 +400,67 @@ int awdl_parse_action(const uint8_t *buf, size_t len, awdl_peer_view_t *out) {
 			    wire_get_u8(v, l, 1, &out->devclass))
 				out->has_version = true;
 			break;
-		case AWDL_TLV_SYNC_PARAMS:
+		case AWDL_TLV_SYNC_PARAMS: {
 			/* sync-params TLV value: tx_down_counter at offset 1,
-			 * next_aw_seq (the AW counter) at offset 29, both LE16. */
-			if (wire_get_le16(v, l, 1, &out->sync_tx_down_tu) &&
-			    wire_get_le16(v, l, 29, &out->sync_aw_counter))
+			 * next_aw_seq (the AW counter) at offset 29, both LE16.
+			 * Read into locals and commit only if both reads are in bounds, so
+			 * a truncated TLV never leaves half-written state behind. */
+			uint16_t txd, awc;
+			if (wire_get_le16(v, l, 1, &txd) && wire_get_le16(v, l, 29, &awc)) {
+				out->sync_tx_down_tu = txd;
+				out->sync_aw_counter = awc;
 				out->has_sync = true;
+			}
 			break;
-		case AWDL_TLV_ELECTION_PARAMS_V2:
+		}
+		case AWDL_TLV_ELECTION_PARAMS_V2: {
 			/* v2 layout: master_addr@0, sync_addr@6, master_counter@12,
 			 * distance_to_master@16, master_metric@20, self_metric@24,
-			 * self_counter@36 (all LE32 except the addresses). */
-			if (wire_get_bytes(v, l, 0, out->master_addr, 6) &&
-			    wire_get_bytes(v, l, 6, out->sync_addr, 6) &&
-			    wire_get_le32(v, l, 12, &out->el_master_counter) &&
-			    wire_get_le32(v, l, 16, &out->el_height) &&
-			    wire_get_le32(v, l, 20, &out->el_master_metric) &&
-			    wire_get_le32(v, l, 24, &out->el_self_metric) &&
-			    wire_get_le32(v, l, 36, &out->el_self_counter)) {
+			 * self_counter@36 (all LE32 except the addresses). Read into locals
+			 * first: a length-truncated v2 TLV must NOT partially overwrite an
+			 * already-parsed (v1 or earlier v2) election record. */
+			uint8_t ma[6], sa[6];
+			uint32_t mc, ht, mm, sm, sc;
+			if (wire_get_bytes(v, l, 0, ma, 6) &&
+			    wire_get_bytes(v, l, 6, sa, 6) &&
+			    wire_get_le32(v, l, 12, &mc) &&
+			    wire_get_le32(v, l, 16, &ht) &&
+			    wire_get_le32(v, l, 20, &mm) &&
+			    wire_get_le32(v, l, 24, &sm) &&
+			    wire_get_le32(v, l, 36, &sc)) {
+				memcpy(out->master_addr, ma, 6);
+				memcpy(out->sync_addr, sa, 6);
+				out->el_master_counter = mc;
+				out->el_height = ht;
+				out->el_master_metric = mm;
+				out->el_self_metric = sm;
+				out->el_self_counter = sc;
 				out->has_election = true;
 				election_v2 = true;
 			}
 			break;
-		case AWDL_TLV_ELECTION_PARAMS:
+		}
+		case AWDL_TLV_ELECTION_PARAMS: {
 			/* v1 (no counters): distancetop@3, top_master_addr@5,
-			 * top_master_metric@11, self_metric@15. Ignored if v2 seen. */
-			if (!election_v2) {
-				uint8_t dist = 0;
-				if (wire_get_u8(v, l, 3, &dist) &&
-				    wire_get_bytes(v, l, 5, out->master_addr, 6) &&
-				    wire_get_le32(v, l, 11, &out->el_master_metric) &&
-				    wire_get_le32(v, l, 15, &out->el_self_metric)) {
-					out->el_height = dist;
-					out->el_master_counter = 0;
-					out->el_self_counter = 0;
-					out->has_election = true;
-				}
+			 * top_master_metric@11, self_metric@15. Ignored if v2 seen.
+			 * Commit only on full success (see v2). */
+			uint8_t dist, ma[6];
+			uint32_t mm, sm;
+			if (!election_v2 &&
+			    wire_get_u8(v, l, 3, &dist) &&
+			    wire_get_bytes(v, l, 5, ma, 6) &&
+			    wire_get_le32(v, l, 11, &mm) &&
+			    wire_get_le32(v, l, 15, &sm)) {
+				memcpy(out->master_addr, ma, 6);
+				out->el_height = dist;
+				out->el_master_metric = mm;
+				out->el_self_metric = sm;
+				out->el_master_counter = 0;
+				out->el_self_counter = 0;
+				out->has_election = true;
 			}
 			break;
+		}
 		default:
 			break;
 		}

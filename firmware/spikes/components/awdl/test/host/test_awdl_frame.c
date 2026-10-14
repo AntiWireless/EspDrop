@@ -218,6 +218,69 @@ static void test_election_run(void) {
 	CHECK(awdl_peers_count(&t) == 0, "ageing did not clear table");
 }
 
+static void test_builder_respects_cap(void) {
+	/* A too-small cap must make awdl_build_action fail without writing past it.
+	 * cap=40 lands exactly at a TLV start (24-byte MAC + 16-byte action header),
+	 * which is the case that used to overrun via the length back-patch. */
+	uint8_t self_mac[6] = {0x02, 1, 2, 3, 4, 5};
+	awdl_self_t self;
+	awdl_self_init(&self, self_mac, "x", 6);
+
+	uint8_t buf[80];
+	memset(buf, 0xAB, sizeof(buf));
+	for (size_t cap = 24; cap <= 48; cap++) {
+		int r = awdl_build_action(buf, cap, &self, AWDL_SUBTYPE_MIF, 0);
+		CHECK(r == AWDL_ERR_ARG, "cap=%zu should fail, got %d", cap, r);
+		/* nothing beyond cap may be touched */
+		for (size_t i = cap; i < sizeof(buf); i++)
+			CHECK(buf[i] == 0xAB, "cap=%zu wrote past end at byte %zu (0x%02x)",
+			      cap, i, buf[i]);
+		memset(buf, 0xAB, sizeof(buf)); /* restore canary */
+	}
+}
+
+static void test_truncated_v2_no_clobber(void) {
+	/* Hand-build an action frame with a well-formed v1 election TLV followed by
+	 * a LENGTH-TRUNCATED v2 TLV (28 <= l < 40). The v2 must be rejected whole;
+	 * the v1 master_addr must survive, and the record stays consistent. */
+	uint8_t f[128];
+	size_t o = 0;
+	memset(f, 0, sizeof(f));
+	/* 802.11 header: FC=action, addr2 = sender */
+	f[0] = 0xd0; f[1] = 0x00;
+	uint8_t sender[6] = {0x02, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA};
+	memcpy(f + 10, sender, 6);
+	memcpy(f + 16, AWDL_BSSID, 6);
+	o = 24;
+	/* AWDL action header */
+	f[o++] = 127; f[o++] = AWDL_OUI[0]; f[o++] = AWDL_OUI[1]; f[o++] = AWDL_OUI[2];
+	f[o++] = 8; f[o++] = 0x10; f[o++] = AWDL_SUBTYPE_MIF; f[o++] = 0;
+	for (int i = 0; i < 8; i++) f[o++] = 0; /* phy_tx, target_tx */
+
+	/* v1 election TLV (type 5), 21 value bytes; master_addr = V1MA at value off 5 */
+	uint8_t v1ma[6] = {0x02, 0x11, 0x11, 0x11, 0x11, 0x11};
+	f[o++] = AWDL_TLV_ELECTION_PARAMS; f[o++] = 21; f[o++] = 0;
+	size_t v1 = o;
+	for (int i = 0; i < 21; i++) f[o++] = 0;
+	memcpy(f + v1 + 5, v1ma, 6);       /* top_master_addr */
+	f[v1 + 11] = 0x2a;                 /* some metric LSB, != 0 */
+
+	/* v2 election TLV (type 24) but declared length 30 (< 40): reads at off 36 fail.
+	 * Put a different master_addr (V2MA) at value off 0 to detect a clobber. */
+	uint8_t v2ma[6] = {0x02, 0x22, 0x22, 0x22, 0x22, 0x22};
+	f[o++] = AWDL_TLV_ELECTION_PARAMS_V2; f[o++] = 30; f[o++] = 0;
+	size_t v2 = o;
+	for (int i = 0; i < 30; i++) f[o++] = 0;
+	memcpy(f + v2 + 0, v2ma, 6);
+
+	awdl_peer_view_t pv;
+	CHECK(awdl_parse_action(f, o, &pv) == AWDL_OK, "parse crafted frame");
+	CHECK(pv.has_election, "v1 election should have been parsed");
+	CHECK(memcmp(pv.master_addr, v1ma, 6) == 0,
+	      "truncated v2 clobbered the v1 master_addr");
+	CHECK(pv.el_self_counter == 0, "self_counter should remain v1's 0");
+}
+
 int main(void) {
 	test_mif_roundtrip();
 	test_psf_roundtrip();
@@ -226,6 +289,8 @@ int main(void) {
 	test_sync_election_parse();
 	test_sync_math();
 	test_election_run();
+	test_builder_respects_cap();
+	test_truncated_v2_no_clobber();
 
 	if (g_fail == 0) printf("\nALL TESTS PASSED\n");
 	else printf("\n%d CHECK(S) FAILED\n", g_fail);
