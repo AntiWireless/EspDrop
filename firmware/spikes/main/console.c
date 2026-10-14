@@ -27,6 +27,7 @@
 #include "esp_wifi.h"
 
 #include "awdl_frame.h"
+#include "awdl_app.h"
 #include "radio.h"
 
 static awdl_self_t s_self;
@@ -69,6 +70,7 @@ static int cmd_mac(int argc, char **argv) {
 	int err = radio_set_self_mac(mac);
 	if (err) { printf("set_mac failed: 0x%x\n", err); return 1; }
 	refresh_self();
+	awdl_app_set_self(mac, radio_get_channel()); /* rebuild node (resets sync) */
 	printf("MAC set\n");
 	return 0;
 }
@@ -80,6 +82,9 @@ static int cmd_chan(int argc, char **argv) {
 	int err = radio_set_channel((uint8_t)ch);
 	if (err) { printf("set_channel failed: 0x%x\n", err); return 1; }
 	refresh_self();
+	uint8_t mac[6];
+	radio_get_self_mac(mac);
+	awdl_app_set_self(mac, (uint8_t)ch); /* rebuild node (resets sync) */
 	printf("channel %d\n", ch);
 	return 0;
 }
@@ -103,17 +108,10 @@ static int cmd_tx(int argc, char **argv) {
 	int count = (argc >= 3) ? atoi(argv[2]) : 1;
 	if (count < 1) count = 1;
 
-	uint8_t buf[1500];
-	int sent = 0, failed = 0;
-	for (int i = 0; i < count; i++) {
-		int n = awdl_build_action(buf, sizeof(buf), &s_self, subtype,
-		                          (uint64_t)esp_timer_get_time());
-		if (n <= 0) { printf("build failed: %d\n", n); return 1; }
-		if (radio_tx(buf, n) == 0) sent++; else failed++;
-	}
-	printf("tx %s x%d: %d ok, %d err (len=%d)\n",
-	       argv[1], count, sent, failed,
-	       awdl_build_action(buf, sizeof(buf), &s_self, subtype, 0));
+	/* Built with the node's synchronised AW clock. Results show up in `stats`. */
+	for (int i = 0; i < count; i++)
+		awdl_app_tx(subtype);
+	printf("tx %s x%d requested (see `stats` for tx counters)\n", argv[1], count);
 	return 0;
 }
 
@@ -147,23 +145,25 @@ static int cmd_txdata(int argc, char **argv) {
 
 static int cmd_peers(int argc, char **argv) {
 	(void)argc; (void)argv;
-	radio_peer_event_t ev;
-	int n = 0;
-	while (radio_poll_peer_event(&ev)) {
-		n++;
-		printf("peer %02x:%02x:%02x:%02x:%02x:%02x  %-4s  rssi %d  ch %u  name '%s'\n",
-		       ev.addr[0], ev.addr[1], ev.addr[2], ev.addr[3], ev.addr[4], ev.addr[5],
-		       ev.subtype == AWDL_SUBTYPE_MIF ? "MIF" : "PSF",
-		       ev.rssi, ev.channel, ev.has_name ? ev.name : "?");
-		if (ev.has_chanseq) {
-			printf("     chanseq:");
-			for (int i = 0; i < AWDL_CHANSEQ_LEN; i++) printf(" %u", ev.chanseq[i]);
-			printf("\n");
-		}
-		printf("     rx_ts=%" PRIu32 " us  esp_timer=%lld us\n",
-		       ev.rx_timestamp, (long long)ev.esp_timer_us);
-	}
-	if (n == 0) printf("(no peer events queued)\n");
+	static char buf[1024];
+	int n = awdl_app_format_peers(buf, sizeof(buf));
+	if (n <= 0) printf("(no peers)\n");
+	else        printf("%s", buf);
+	return 0;
+}
+
+static int cmd_sync(int argc, char **argv) {
+	(void)argc; (void)argv;
+	awdl_node_status_t st;
+	if (!awdl_app_status(&st)) { printf("awdl not started\n"); return 1; }
+	if (st.have_master)
+		printf("master %02x:%02x:%02x:%02x:%02x:%02x  height %" PRIu32 "  "
+		       "sync_err %lld TU  peers %d\n",
+		       st.master_addr[0], st.master_addr[1], st.master_addr[2],
+		       st.master_addr[3], st.master_addr[4], st.master_addr[5],
+		       st.height, (long long)st.last_sync_err_tu, st.peer_count);
+	else
+		printf("no master (we are our own master)  peers %d\n", st.peer_count);
 	return 0;
 }
 
@@ -239,7 +239,8 @@ void console_register_commands(void) {
 	reg("rx",       "rx on|off - promiscuous AWDL receive", cmd_rx);
 	reg("tx",       "tx psf|mif [count] - inject action frame(s)", cmd_tx);
 	reg("txdata",   "txdata <hexpayload> - inject one AWDL data frame", cmd_txdata);
-	reg("peers",    "drain and print discovered-peer events", cmd_peers);
+	reg("peers",    "print the current peer table (name, age, channel seq)", cmd_peers);
+	reg("sync",     "print master, sync-tree height, sync error, peer count", cmd_sync);
 	reg("stats",    "print rx/tx counters", cmd_stats);
 	reg("reset",    "zero the counters", cmd_reset);
 	reg("chanlat",  "chanlat [n] - measure channel-switch latency", cmd_chanlat);

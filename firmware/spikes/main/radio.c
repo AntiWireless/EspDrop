@@ -21,13 +21,12 @@
 
 static const char *TAG = "radio";
 
-static radio_stats_t   s_stats;
-static portMUX_TYPE    s_stats_mux = portMUX_INITIALIZER_UNLOCKED;
-static QueueHandle_t   s_peer_q;      /* radio_peer_event_t */
-static volatile bool   s_promisc;
-static uint8_t         s_channel = 6;
-
-#define PEER_Q_LEN 16
+static radio_stats_t          s_stats;
+static portMUX_TYPE           s_stats_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool          s_promisc;
+static uint8_t                s_channel = 6;
+static radio_action_handler_t s_action_handler;
+static void                  *s_action_ctx;
 
 static inline void stat_inc(uint64_t *field) {
 	portENTER_CRITICAL(&s_stats_mux);
@@ -67,34 +66,17 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 	}
 
 	if (type == WIFI_PKT_MGMT) {
-		radio_peer_event_t ev;
 		awdl_peer_view_t pv;
 		int r = awdl_parse_action(frame, (size_t)len, &pv);
 		if (r != AWDL_OK) { stat_inc(&s_stats.rx_parse_err); return; }
 		stat_inc(&s_stats.rx_action);
 
-		memset(&ev, 0, sizeof(ev));
-		memcpy(ev.addr, pv.src_addr, 6);
-		ev.rssi        = pkt->rx_ctrl.rssi;
-		ev.channel     = pkt->rx_ctrl.channel;
-		ev.subtype     = pv.subtype;
-		ev.has_name    = pv.has_name;
-		if (pv.has_name) memcpy(ev.name, pv.name, sizeof(ev.name));
-		ev.has_chanseq = pv.has_chanseq;
-		if (pv.has_chanseq) memcpy(ev.chanseq, pv.chanseq, sizeof(ev.chanseq));
-		ev.rx_timestamp = pkt->rx_ctrl.timestamp;
-		ev.esp_timer_us = esp_timer_get_time();
-
-		if (s_peer_q) {
-			BaseType_t hp = pdFALSE;
-			/* drop oldest on overflow so the newest always gets through */
-			if (xQueueSendFromISR(s_peer_q, &ev, &hp) != pdTRUE) {
-				radio_peer_event_t drop;
-				xQueueReceiveFromISR(s_peer_q, &drop, &hp);
-				xQueueSendFromISR(s_peer_q, &ev, &hp);
-			}
-			if (hp) portYIELD_FROM_ISR();
-		}
+		/* Hand the parsed view to the registered consumer (the awdl task). The
+		 * promiscuous callback runs in Wi-Fi task context, so the handler must
+		 * be quick and non-blocking (copy into a queue and return). */
+		if (s_action_handler)
+			s_action_handler(&pv, pkt->rx_ctrl.rssi, pkt->rx_ctrl.channel,
+			                 esp_timer_get_time(), s_action_ctx);
 	} else { /* WIFI_PKT_DATA */
 		size_t poff; uint16_t et;
 		if (awdl_parse_data(frame, (size_t)len, &poff, &et))
@@ -119,9 +101,6 @@ int radio_init(uint8_t channel) {
 	if ((err = esp_netif_init()) != ESP_OK) return err;
 	err = esp_event_loop_create_default();
 	if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err; /* already created: fine */
-
-	s_peer_q = xQueueCreate(PEER_Q_LEN, sizeof(radio_peer_event_t));
-	if (!s_peer_q) return ESP_ERR_NO_MEM;
 
 	wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
 	if ((err = esp_wifi_init(&cfg)) != ESP_OK) return err;
@@ -208,7 +187,7 @@ void radio_reset_stats(void) {
 	portEXIT_CRITICAL(&s_stats_mux);
 }
 
-bool radio_poll_peer_event(radio_peer_event_t *ev) {
-	if (!s_peer_q) return false;
-	return xQueueReceive(s_peer_q, ev, 0) == pdTRUE;
+void radio_set_action_handler(radio_action_handler_t h, void *ctx) {
+	s_action_ctx = ctx;
+	s_action_handler = h;
 }

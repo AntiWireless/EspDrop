@@ -1,0 +1,72 @@
+/*
+ * EspDrop - AWDL node brain (platform independent).
+ *
+ * Ties together our transmit state, the AW sync clock, the election state and
+ * the peer table. This is the logic OWL's daemon/core.c drives from its event
+ * loop, factored out with no ESP-IDF dependency so it stays host-testable; the
+ * firmware (main/) only provides a task, timers and the radio.
+ *
+ * All timestamps are microseconds on one monotonic clock (esp_timer on the
+ * ESP32). Call awdl_node_on_rx_action() for every received AWDL action frame
+ * and awdl_node_tick() periodically (~1 Hz) to age peers and re-run election.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026  EspDrop contributors
+ */
+#ifndef ESPDROP_AWDL_NODE_H
+#define ESPDROP_AWDL_NODE_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "awdl_frame.h"
+#include "awdl_sync.h"
+#include "awdl_election.h"
+#include "awdl_peers.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct {
+	awdl_self_t       self;     /* transmit state (addr, name, channel sequence) */
+	awdl_sync_t       sync;     /* our AW clock */
+	awdl_election_t   election; /* our election state (who we sync to) */
+	awdl_peer_table_t peers;    /* known peers */
+
+	/* Last phase error (TU) measured against our master just before we adopted
+	 * its timing; small and stable means we are well synced. */
+	int64_t last_sync_err_tu;
+	bool    have_master;        /* we sync to a peer, not to ourselves */
+} awdl_node_t;
+
+/* now_us: a monotonic microsecond timestamp (esp_timer_get_time() on hardware). */
+void awdl_node_init(awdl_node_t *n, const uint8_t self_addr[6],
+                    const char *name, uint8_t chan_num, uint64_t now_us);
+
+/* Fold a received, parsed action frame into the node state. */
+void awdl_node_on_rx_action(awdl_node_t *n, const awdl_peer_view_t *pv,
+                            int8_t rssi, uint64_t now_us);
+
+/* Age out stale peers and re-run election. Call ~1 Hz. */
+void awdl_node_tick(awdl_node_t *n, uint64_t now_us);
+
+/* Build one of our own PSF/MIF frames with timing from our AW clock. */
+int awdl_node_build_action(awdl_node_t *n, uint8_t *buf, size_t cap,
+                           uint8_t subtype, uint64_t now_us);
+
+typedef struct {
+	bool     have_master;
+	uint8_t  master_addr[6];
+	uint32_t height;
+	int64_t  last_sync_err_tu;
+	int      peer_count;
+} awdl_node_status_t;
+
+void awdl_node_status(const awdl_node_t *n, awdl_node_status_t *out);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* ESPDROP_AWDL_NODE_H */

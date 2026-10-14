@@ -31,19 +31,14 @@ typedef struct {
 	uint64_t tx_done_fail;  /* 80211 tx-done callbacks with status FAIL */
 } radio_stats_t;
 
-/* A discovered peer, snapshotted from a received action frame. */
-typedef struct {
-	uint8_t  addr[6];
-	int8_t   rssi;
-	uint8_t  channel;       /* channel the frame was received on */
-	uint8_t  subtype;       /* PSF / MIF */
-	bool     has_name;
-	char     name[AWDL_NAME_MAX + 1];
-	bool     has_chanseq;
-	uint8_t  chanseq[AWDL_CHANSEQ_LEN];
-	uint32_t rx_timestamp;  /* rx_ctrl.timestamp (us), hardware receive time */
-	int64_t  esp_timer_us;  /* esp_timer_get_time() at callback entry */
-} radio_peer_event_t;
+/*
+ * Handler for a received, parsed AWDL action frame. Invoked from Wi-Fi task
+ * context inside the promiscuous callback, so it MUST be quick and must not
+ * block (copy what it needs into a queue and return). pv is only valid for the
+ * duration of the call. now_us is esp_timer_get_time() at reception.
+ */
+typedef void (*radio_action_handler_t)(const awdl_peer_view_t *pv, int8_t rssi,
+                                       uint8_t channel, uint64_t now_us, void *ctx);
 
 /*
  * Bring up Wi-Fi in station mode without connecting, on the given 2.4 GHz
@@ -76,11 +71,8 @@ bool radio_promisc_enabled(void);
 void radio_get_stats(radio_stats_t *out);
 void radio_reset_stats(void);
 
-/*
- * Pop the next discovered-peer event, if any, without blocking.
- * Returns true and fills *ev if one was queued, false otherwise.
- */
-bool radio_poll_peer_event(radio_peer_event_t *ev);
+/* Register the consumer for received AWDL action frames (NULL to clear). */
+void radio_set_action_handler(radio_action_handler_t h, void *ctx);
 
 #ifdef __cplusplus
 }

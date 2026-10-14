@@ -16,13 +16,14 @@
 #include "esp_log.h"
 
 #include "radio.h"
+#include "awdl_app.h"
 
 #define DEFAULT_CHANNEL 6  /* AWDL 2.4 GHz social channel, the only one on the C3 */
 
 void console_register_commands(void);
 
 void app_main(void) {
-	ESP_LOGI("espdrop", "EspDrop AWDL spike (M0) starting");
+	ESP_LOGI("espdrop", "EspDrop AWDL spike (M1) starting");
 
 	int err = radio_init(DEFAULT_CHANNEL);
 	if (err != ESP_OK) {
@@ -30,10 +31,16 @@ void app_main(void) {
 		return;
 	}
 
+	uint8_t mac[6];
+	radio_get_self_mac(mac);
+	if (awdl_app_start(mac, "espdrop-c3", DEFAULT_CHANNEL) != 0)
+		ESP_LOGE("espdrop", "awdl_app_start failed");
+
 	esp_console_repl_t *repl = NULL;
 	esp_console_repl_config_t repl_cfg = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
 	repl_cfg.prompt = "espdrop>";
 	repl_cfg.max_cmdline_length = 256;
+	repl_cfg.task_stack_size = 8192; /* cmd_txdata/tx build ~1.5 KB frames */
 
 	esp_console_dev_usb_serial_jtag_config_t usb_cfg =
 		ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();

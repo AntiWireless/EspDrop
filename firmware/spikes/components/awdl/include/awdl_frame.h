@@ -177,13 +177,16 @@ typedef struct {
 /*
  * Build a complete AWDL action frame (PSF or MIF) starting at the 802.11 MAC
  * header, ready to hand to esp_wifi_80211_tx() (no radiotap, no FCS). The
- * destination is the AWDL broadcast target. now_us is a monotonic microsecond
- * timestamp used to fill the sync-parameter timing fields.
+ * destination is the AWDL broadcast target. now_us fills the action header's
+ * phy_tx/target_tx timestamps; sync_tx_down_tu (TU until our next AW) and
+ * sync_aw_counter (our current AW counter) fill the synchronization-parameters
+ * TLV and must come from our AW clock (see awdl_sync.h / awdl_node.h), so the
+ * timing we advertise matches the master we have adopted.
  *
  * Returns the number of bytes written, or a negative enum awdl_result.
  */
-int awdl_build_action(uint8_t *buf, size_t cap, awdl_self_t *self,
-                      uint8_t subtype, uint64_t now_us);
+int awdl_build_action(uint8_t *buf, size_t cap, awdl_self_t *self, uint8_t subtype,
+                      uint64_t now_us, uint16_t sync_tx_down_tu, uint16_t sync_aw_counter);
 
 /*
  * Build a complete AWDL data frame carrying an IPv6 payload: 802.11 data header

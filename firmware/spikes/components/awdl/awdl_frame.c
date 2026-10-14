@@ -116,13 +116,9 @@ static bool put_dot11_hdr(uint8_t *buf, size_t cap, size_t *off, uint16_t fc,
 /* ------------------------------------------------------------------------ */
 
 static bool put_tlv_sync_params(uint8_t *buf, size_t cap, size_t *off,
-                                const awdl_self_t *self, uint64_t now_us) {
-	/* Free-running AW clock with epoch 0 (spike: not yet synced to a master). */
-	uint64_t since_tu   = now_us / AWDL_TU_US;
-	uint32_t eaw        = AWDL_EAW_TU; /* 64 */
-	uint16_t tx_down    = (uint16_t)(eaw - (since_tu % eaw));          /* TU to next AW */
-	uint16_t cur_aw     = (uint16_t)(((since_tu % eaw) / AWDL_AW_PERIOD_TU) +
-	                                 AWDL_PRESENCE_MODE * (since_tu / eaw));
+                                const awdl_self_t *self,
+                                uint16_t tx_down, uint16_t cur_aw) {
+	/* Timing comes from the caller's (synchronised) AW clock. */
 	uint16_t aw_com     = AWDL_AW_PERIOD_TU;
 	uint16_t consumed   = (uint16_t)(AWDL_AW_PERIOD_TU * AWDL_PRESENCE_MODE - tx_down);
 	uint16_t remaining  = (aw_com < consumed) ? 0 : (uint16_t)(aw_com - consumed);
@@ -268,8 +264,8 @@ static bool put_tlv_version(uint8_t *buf, size_t cap, size_t *off, const awdl_se
 /* Public builders                                                          */
 /* ------------------------------------------------------------------------ */
 
-int awdl_build_action(uint8_t *buf, size_t cap, awdl_self_t *self,
-                      uint8_t subtype, uint64_t now_us) {
+int awdl_build_action(uint8_t *buf, size_t cap, awdl_self_t *self, uint8_t subtype,
+                      uint64_t now_us, uint16_t sync_tx_down_tu, uint16_t sync_aw_counter) {
 	if (!buf || !self) return AWDL_ERR_ARG;
 
 	size_t off = 0;
@@ -287,7 +283,7 @@ int awdl_build_action(uint8_t *buf, size_t cap, awdl_self_t *self,
 	ok &= wire_put_le32(buf, cap, &off, (uint32_t)now_us); /* phy_tx */
 	ok &= wire_put_le32(buf, cap, &off, (uint32_t)now_us); /* target_tx */
 
-	ok &= put_tlv_sync_params(buf, cap, &off, self, now_us);
+	ok &= put_tlv_sync_params(buf, cap, &off, self, sync_tx_down_tu, sync_aw_counter);
 	ok &= put_tlv_election_params(buf, cap, &off, self);
 	ok &= put_tlv_chanseq(buf, cap, &off, self);
 	ok &= put_tlv_election_params_v2(buf, cap, &off, self);

@@ -9,7 +9,7 @@ COMP     = ../..
 INCLUDE  = -I$(COMP)/include
 
 SRCS = $(COMP)/awdl_frame.c $(COMP)/awdl_sync.c $(COMP)/awdl_election.c \
-       $(COMP)/awdl_peers.c test_awdl_frame.c
+       $(COMP)/awdl_peers.c $(COMP)/awdl_node.c test_awdl_frame.c
 BIN  = test_awdl_frame
 HEADERS = $(wildcard $(COMP)/include/*.h)
 

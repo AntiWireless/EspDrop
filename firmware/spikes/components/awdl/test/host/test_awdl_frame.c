@@ -14,6 +14,7 @@
 #include "awdl_frame.h"
 #include "awdl_sync.h"
 #include "awdl_peers.h"
+#include "awdl_node.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,7 +56,7 @@ static void test_mif_roundtrip(void) {
 	awdl_self_init(&self, self_mac, "espdrop-c3", 6);
 
 	uint8_t buf[1500];
-	int n = awdl_build_action(buf, sizeof(buf), &self, AWDL_SUBTYPE_MIF, 123456789ull);
+	int n = awdl_build_action(buf, sizeof(buf), &self, AWDL_SUBTYPE_MIF, 123456789ull, 64, 0);
 	CHECK(n > 0, "build MIF failed: %d", n);
 
 	/* 802.11 action frame control */
@@ -88,7 +89,7 @@ static void test_psf_roundtrip(void) {
 	awdl_self_init(&self, self_mac, "x", 149);
 
 	uint8_t buf[1500];
-	int n = awdl_build_action(buf, sizeof(buf), &self, AWDL_SUBTYPE_PSF, 0);
+	int n = awdl_build_action(buf, sizeof(buf), &self, AWDL_SUBTYPE_PSF, 0, 64, 0);
 	CHECK(n > 0, "build PSF failed: %d", n);
 	check_tlv_consistency(buf, n);
 
@@ -136,7 +137,7 @@ static void test_sync_election_parse(void) {
 	awdl_self_init(&self, self_mac, "espdrop-c3", 6);
 
 	uint8_t buf[1500];
-	int n = awdl_build_action(buf, sizeof(buf), &self, AWDL_SUBTYPE_MIF, 0 /* now_us */);
+	int n = awdl_build_action(buf, sizeof(buf), &self, AWDL_SUBTYPE_MIF, 0 /* now_us */, AWDL_EAW_TU, 0 /* tx_down, aw_counter */);
 	CHECK(n > 0, "build failed: %d", n);
 
 	awdl_peer_view_t pv;
@@ -229,7 +230,7 @@ static void test_builder_respects_cap(void) {
 	uint8_t buf[80];
 	memset(buf, 0xAB, sizeof(buf));
 	for (size_t cap = 24; cap <= 48; cap++) {
-		int r = awdl_build_action(buf, cap, &self, AWDL_SUBTYPE_MIF, 0);
+		int r = awdl_build_action(buf, cap, &self, AWDL_SUBTYPE_MIF, 0, 64, 0);
 		CHECK(r == AWDL_ERR_ARG, "cap=%zu should fail, got %d", cap, r);
 		/* nothing beyond cap may be touched */
 		for (size_t i = cap; i < sizeof(buf); i++)
@@ -281,6 +282,78 @@ static void test_truncated_v2_no_clobber(void) {
 	CHECK(pv.el_self_counter == 0, "self_counter should remain v1's 0");
 }
 
+/* Craft what a real iPhone's action frame parses to, with a clock `iph` so the
+ * announced timing is self-consistent and a strong election so it wins. */
+static void iphone_announce(awdl_sync_t *iph, uint64_t t, const uint8_t ip[6],
+                            awdl_peer_view_t *pv) {
+	memset(pv, 0, sizeof(*pv));
+	memcpy(pv->src_addr, ip, 6);
+	pv->subtype = AWDL_SUBTYPE_MIF;
+	pv->has_name = true;
+	snprintf(pv->name, sizeof(pv->name), "iPhone");
+	pv->has_version = true;
+	pv->version = 0x3f;
+	pv->devclass = AWDL_DEVCLASS_IOS;
+	pv->has_chanseq = true;
+	pv->chanseq_enc = AWDL_CHAN_ENC_OPCLASS;
+	pv->chanseq[0] = 6;
+	pv->chanseq[8] = 6; /* present on channel 6 in slots 0 and 8 */
+	pv->has_election = true;
+	memcpy(pv->master_addr, ip, 6); /* its own top master */
+	pv->el_height = 0;
+	pv->el_master_metric = 1000;
+	pv->el_master_counter = 7;
+	pv->el_self_metric = 1000;
+	pv->el_self_counter = 7;
+	pv->has_sync = true;
+	pv->sync_tx_down_tu = awdl_sync_next_aw_tu(t, iph);
+	pv->sync_aw_counter = awdl_sync_current_aw(t, iph);
+}
+
+static void test_node_sync_hold(void) {
+	uint8_t me[6] = {0x02, 0, 0, 0, 0, 0x01};
+	uint8_t ip[6] = {0xca, 0x2a, 0xd6, 0x10, 0x8e, 0xae};
+
+	awdl_node_t n;
+	awdl_node_init(&n, me, "espdrop-c3", 6, 0);
+
+	/* The iPhone has its own AW clock, offset from ours. */
+	awdl_sync_t iph;
+	awdl_sync_init(&iph, 7000);
+
+	awdl_peer_view_t pv;
+	uint64_t t1 = 100000; /* 100 ms */
+	iphone_announce(&iph, t1, ip, &pv);
+	awdl_node_on_rx_action(&n, &pv, -40, t1);
+
+	awdl_node_status_t st;
+	awdl_node_status(&n, &st);
+	CHECK(st.have_master, "no master adopted");
+	CHECK(memcmp(st.master_addr, ip, 6) == 0, "master is not the iPhone");
+	CHECK(st.height == 1, "height %u != 1", st.height);
+	CHECK(st.peer_count == 1, "peer_count %d", st.peer_count);
+
+	/* After adopting the iPhone's timing, a later consistent announcement must
+	 * measure a small residual error. */
+	uint64_t t2 = t1 + 300000;
+	iphone_announce(&iph, t2, ip, &pv);
+	awdl_node_on_rx_action(&n, &pv, -40, t2);
+	awdl_node_status(&n, &st);
+	CHECK(st.last_sync_err_tu > -3 && st.last_sync_err_tu < 3,
+	      "sync error should be ~0 after adopting, got %lld",
+	      (long long)st.last_sync_err_tu);
+
+	/* The peer is held within the timeout and aged out past it. */
+	awdl_node_tick(&n, t2 + 1500000); /* +1.5 s, within 2 s */
+	awdl_node_status(&n, &st);
+	CHECK(st.peer_count == 1, "peer aged out too early");
+
+	awdl_node_tick(&n, t2 + 3000000); /* +3 s past last update */
+	awdl_node_status(&n, &st);
+	CHECK(st.peer_count == 0, "peer should have aged out");
+	CHECK(!st.have_master, "master should be gone after the peer aged out");
+}
+
 int main(void) {
 	test_mif_roundtrip();
 	test_psf_roundtrip();
@@ -291,6 +364,7 @@ int main(void) {
 	test_election_run();
 	test_builder_respects_cap();
 	test_truncated_v2_no_clobber();
+	test_node_sync_hold();
 
 	if (g_fail == 0) printf("\nALL TESTS PASSED\n");
 	else printf("\n%d CHECK(S) FAILED\n", g_fail);
