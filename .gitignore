@@ -33,3 +33,6 @@ venv/
 captures/
 logs/
 *.log
+
+# Native host test binary
+test_awdl_frame
