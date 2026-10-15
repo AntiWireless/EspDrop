@@ -47,6 +47,12 @@ static void send_test_frame(void) {
 	bridge_send(BRIDGE_MSG_FRAME, eth, sizeof(eth));
 }
 
+/* Send a NUL-terminated string as a CMD_REPLY (length from strlen, so a
+ * truncated snprintf can never be reported as longer than the buffer). */
+static void cmd_reply(const char *s) {
+	bridge_send(BRIDGE_MSG_CMD_REPLY, s, strlen(s));
+}
+
 /* A short text command from the host (BRIDGE_MSG_CMD) -> a CMD_REPLY. */
 static void handle_cmd(const uint8_t *p, size_t n) {
 	char cmd[64];
@@ -57,25 +63,24 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		cmd[--k] = '\0';
 
 	char out[96];
-	int len;
 	if (strcmp(cmd, "ping") == 0) {
-		bridge_send(BRIDGE_MSG_CMD_REPLY, "pong", 4);
+		cmd_reply("pong");
 	} else if (strcmp(cmd, "mac") == 0) {
 		uint8_t mac[6] = {0};
 		esp_read_mac(mac, ESP_MAC_WIFI_STA);
-		len = snprintf(out, sizeof(out), "mac %02x:%02x:%02x:%02x:%02x:%02x",
-		               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-		if (len > 0) bridge_send(BRIDGE_MSG_CMD_REPLY, out, (size_t)len);
+		snprintf(out, sizeof(out), "mac %02x:%02x:%02x:%02x:%02x:%02x",
+		         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+		cmd_reply(out);
 	} else if (strcmp(cmd, "stats") == 0) {
-		len = snprintf(out, sizeof(out), "frames_from_host=%u bytes_from_host=%u",
-		               (unsigned)s_frames_from_host, (unsigned)s_bytes_from_host);
-		if (len > 0) bridge_send(BRIDGE_MSG_CMD_REPLY, out, (size_t)len);
+		snprintf(out, sizeof(out), "frames_from_host=%u bytes_from_host=%u",
+		         (unsigned)s_frames_from_host, (unsigned)s_bytes_from_host);
+		cmd_reply(out);
 	} else if (strcmp(cmd, "testframe") == 0) {
 		send_test_frame();
-		bridge_send(BRIDGE_MSG_CMD_REPLY, "sent testframe", 14);
+		cmd_reply("sent testframe");
 	} else {
-		len = snprintf(out, sizeof(out), "unknown cmd '%s'", cmd);
-		if (len > 0) bridge_send(BRIDGE_MSG_CMD_REPLY, out, (size_t)len);
+		snprintf(out, sizeof(out), "unknown cmd '%s'", cmd);
+		cmd_reply(out);
 	}
 }
 

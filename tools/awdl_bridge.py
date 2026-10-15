@@ -63,7 +63,11 @@ def mac_str(b: bytes) -> str:
 
 def query_mac(usb_fd: int, reader: link.Reader, timeout: float = 2.0):
     """Ask the device for its Wi-Fi MAC; print any LOG lines seen meanwhile."""
-    link.write_all(usb_fd, link.frame(link.MSG_CMD, b"mac"))
+    try:
+        link.write_all(usb_fd, link.frame(link.MSG_CMD, b"mac"))
+    except (OSError, TimeoutError) as e:
+        print(f"warning: could not query device MAC ({e})", file=sys.stderr)
+        return None
     for t, p in link.read_frames(usb_fd, reader, timeout):
         text = p.decode("utf-8", "replace").strip()
         if t == link.MSG_LOG:
@@ -89,38 +93,42 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
+    from_tap = 0  # host -> device frames read from awdl0
+    to_tap = 0    # device -> host frames written to awdl0
     usb_fd = link.open_serial_raw(args.port)
     reader = link.Reader()
-
-    # Learn the device MAC (and drain boot chatter) before bringing the link up.
-    mac = args.mac or query_mac(usb_fd, reader)
-    if mac and not MAC_RE.match(mac):
-        print(f"warning: ignoring malformed MAC {mac!r}", file=sys.stderr)
-        mac = None
-
-    tap_fd = open_tap(args.dev)
-    os.set_blocking(tap_fd, False)
-
-    if not args.no_config:
-        if mac:
-            try:
-                ip("link", "set", "dev", args.dev, "address", mac)
-            except subprocess.CalledProcessError as e:
-                print(f"warning: could not set MAC {mac}: {e}", file=sys.stderr)
-        ip("link", "set", "dev", args.dev, "mtu", str(args.mtu), "up")
-
-    print(f"{args.dev} up (mtu {args.mtu}, mac {mac or 'kernel-assigned'}); "
-          f"bridging {args.port}")
-    print("commands: mac | stats | ping | testframe   (Ctrl-C to quit)")
-
-    stdin_fd = sys.stdin.fileno()
-    stdin_buf = bytearray()
-    stdin_open = True
-    to_tap = 0    # device -> host frames written to awdl0
-    from_tap = 0  # host -> device frames read from awdl0
-    read_cap = args.mtu + 64  # one Ethernet frame plus slack
+    tap_fd = None
 
     try:
+        # Learn the device MAC (and drain boot chatter) before bringing the link up.
+        mac = args.mac or query_mac(usb_fd, reader)
+        if mac and not MAC_RE.match(mac):
+            print(f"warning: ignoring malformed MAC {mac!r}", file=sys.stderr)
+            mac = None
+
+        tap_fd = open_tap(args.dev)
+        os.set_blocking(tap_fd, False)
+
+        if not args.no_config:
+            if mac:
+                try:
+                    ip("link", "set", "dev", args.dev, "address", mac)
+                except subprocess.CalledProcessError as e:
+                    print(f"warning: could not set MAC {mac}: {e}", file=sys.stderr)
+            ip("link", "set", "dev", args.dev, "mtu", str(args.mtu), "up")
+
+        print(f"{args.dev} up (mtu {args.mtu}, mac {mac or 'kernel-assigned'}); "
+              f"bridging {args.port}")
+        print("commands: mac | stats | ping | testframe   (Ctrl-C to quit)")
+
+        stdin_fd = sys.stdin.fileno()
+        stdin_buf = bytearray()
+        stdin_open = True
+        read_cap = args.mtu + 64  # one Ethernet frame plus slack
+
+        # Single-threaded select pump. Writes use a bounded 1s timeout so one
+        # direction stalling on USB backpressure cannot block the other for long
+        # (M2.1 traffic is light; a queued non-blocking design is for M2.3+).
         while True:
             watch = [usb_fd, tap_fd]
             if stdin_open:
@@ -131,31 +139,38 @@ def main() -> int:
                 try:
                     data = os.read(usb_fd, 65536)
                 except BlockingIOError:
-                    data = b""
-                for t, p in reader.feed(data):
-                    if t == link.MSG_FRAME:
-                        try:
-                            link.write_all(tap_fd, p)
-                            to_tap += 1
-                        except (OSError, TimeoutError) as e:
-                            print(f"tap write failed: {e}", file=sys.stderr)
-                    elif t == link.MSG_LOG:
-                        print(f"[device] {p.decode('utf-8', 'replace')}")
-                    elif t == link.MSG_CMD_REPLY:
-                        print(f"[reply] {p.decode('utf-8', 'replace')}")
-                    elif t == link.MSG_PEER_ADD and len(p) == 6:
-                        print(f"[peer+] {mac_str(p)}")
-                    elif t == link.MSG_PEER_REMOVE and len(p) == 6:
-                        print(f"[peer-] {mac_str(p)}")
+                    data = None  # spurious readiness; try again next iteration
+                except OSError as e:
+                    print(f"device disconnected (usb read: {e})", file=sys.stderr)
+                    break
+                if data == b"":
+                    print("device disconnected (EOF on usb)", file=sys.stderr)
+                    break
+                if data:
+                    for t, p in reader.feed(data):
+                        if t == link.MSG_FRAME:
+                            try:
+                                link.write_all(tap_fd, p, timeout=1.0)
+                                to_tap += 1
+                            except (OSError, TimeoutError) as e:
+                                print(f"tap write failed: {e}", file=sys.stderr)
+                        elif t == link.MSG_LOG:
+                            print(f"[device] {p.decode('utf-8', 'replace')}")
+                        elif t == link.MSG_CMD_REPLY:
+                            print(f"[reply] {p.decode('utf-8', 'replace')}")
+                        elif t == link.MSG_PEER_ADD and len(p) == 6:
+                            print(f"[peer+] {mac_str(p)}")
+                        elif t == link.MSG_PEER_REMOVE and len(p) == 6:
+                            print(f"[peer-] {mac_str(p)}")
 
             if tap_fd in r:
                 try:
                     pkt = os.read(tap_fd, read_cap)
-                except BlockingIOError:
+                except (BlockingIOError, OSError):
                     pkt = b""
                 if pkt:
                     try:
-                        link.write_all(usb_fd, link.frame(link.MSG_FRAME, pkt))
+                        link.write_all(usb_fd, link.frame(link.MSG_FRAME, pkt), timeout=1.0)
                         from_tap += 1
                     except (OSError, TimeoutError) as e:
                         print(f"usb write failed: {e}", file=sys.stderr)
@@ -164,21 +179,25 @@ def main() -> int:
                 try:
                     chunk = os.read(stdin_fd, 4096)
                 except BlockingIOError:
-                    chunk = b""
-                if not chunk:
+                    chunk = None
+                if chunk == b"":
                     stdin_open = False  # EOF (Ctrl-D or piped input exhausted)
-                else:
+                elif chunk:
                     stdin_buf += chunk
                     while b"\n" in stdin_buf:
                         line, _, rest = stdin_buf.partition(b"\n")
                         stdin_buf = bytearray(rest)
                         cmd = line.strip()
                         if cmd:
-                            link.write_all(usb_fd, link.frame(link.MSG_CMD, bytes(cmd)))
+                            try:
+                                link.write_all(usb_fd, link.frame(link.MSG_CMD, bytes(cmd)))
+                            except (OSError, TimeoutError) as e:
+                                print(f"command send failed: {e}", file=sys.stderr)
     except KeyboardInterrupt:
         print()
     finally:
-        os.close(tap_fd)  # removes the non-persistent interface
+        if tap_fd is not None:
+            os.close(tap_fd)  # removes the non-persistent interface
         os.close(usb_fd)
         print(f"stopped. host->device frames: {from_tap}, device->host frames: {to_tap}")
     return 0
