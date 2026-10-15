@@ -36,3 +36,4 @@ logs/
 
 # Native host test binary
 test_awdl_frame
+test_awdl_cobs

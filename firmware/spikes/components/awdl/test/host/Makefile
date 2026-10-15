@@ -1,4 +1,4 @@
-# Native host build of the platform-independent AWDL frame unit test.
+# Native host build of the platform-independent unit tests.
 # No ESP-IDF required: pure C against the component's own headers.
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -8,19 +8,25 @@ CFLAGS  ?= -std=c11 -Wall -Wextra -Werror -O2 -g
 COMP     = ../..
 INCLUDE  = -I$(COMP)/include
 
-SRCS = $(COMP)/awdl_frame.c $(COMP)/awdl_sync.c $(COMP)/awdl_election.c \
-       $(COMP)/awdl_peers.c $(COMP)/awdl_node.c test_awdl_frame.c
-BIN  = test_awdl_frame
+# Platform-independent sources under test.
+LIB = $(COMP)/awdl_frame.c $(COMP)/awdl_sync.c $(COMP)/awdl_election.c \
+      $(COMP)/awdl_peers.c $(COMP)/awdl_node.c $(COMP)/awdl_cobs.c
 HEADERS = $(wildcard $(COMP)/include/*.h)
+
+BINS = test_awdl_frame test_awdl_cobs
 
 .PHONY: all run clean
 all: run
 
-$(BIN): $(SRCS) $(HEADERS)
-	$(CC) $(CFLAGS) $(INCLUDE) $(SRCS) -o $(BIN)
+test_awdl_frame: $(LIB) test_awdl_frame.c $(HEADERS)
+	$(CC) $(CFLAGS) $(INCLUDE) $(LIB) test_awdl_frame.c -o $@
 
-run: $(BIN)
-	./$(BIN)
+test_awdl_cobs: $(LIB) test_awdl_cobs.c $(HEADERS)
+	$(CC) $(CFLAGS) $(INCLUDE) $(LIB) test_awdl_cobs.c -o $@
+
+run: $(BINS)
+	./test_awdl_frame
+	./test_awdl_cobs
 
 clean:
-	rm -f $(BIN)
+	rm -f $(BINS)

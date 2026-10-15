@@ -1,0 +1,12 @@
+menu "EspDrop"
+
+config ESPDROP_BRIDGE_MODE
+    bool "Bridge mode (USB host-link instead of interactive console)"
+    default n
+    help
+        When enabled, the firmware starts the COBS-framed USB host-link bridge
+        (see bridge.c / the M2 data-path plan) instead of the interactive serial
+        console. Use this build to run the host-side awdl0 bridge and the M2.0
+        echo test. Leave it off for the M0/M1 console workflow (tx/rx/sync/...).
+
+endmenu
