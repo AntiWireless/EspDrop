@@ -37,3 +37,6 @@ logs/
 # Native host test binary
 test_awdl_frame
 test_awdl_cobs
+
+# Separate build dir for the bridge-mode firmware
+build_bridge/

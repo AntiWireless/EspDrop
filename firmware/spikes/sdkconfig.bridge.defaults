@@ -1,0 +1,11 @@
+# EspDrop bridge-mode overrides. Layer this AFTER sdkconfig.defaults:
+#   idf.py -B build_bridge -DSDKCONFIG=build_bridge/sdkconfig \
+#          -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.bridge.defaults" build
+#
+# The bridge owns the USB-Serial/JTAG with the native driver, so the interactive
+# console must NOT also sit on that endpoint (its echo and CR/LF translation
+# corrupt the binary COBS stream). Disable the console entirely; device-side
+# visibility goes out as BRIDGE_MSG_LOG frames instead.
+
+CONFIG_ESPDROP_BRIDGE_MODE=y
+CONFIG_ESP_CONSOLE_NONE=y
