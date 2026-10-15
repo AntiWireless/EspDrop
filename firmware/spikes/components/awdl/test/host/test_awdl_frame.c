@@ -396,6 +396,62 @@ static void test_node_chanseq_mirror(void) {
 		      i, ours.chanseq[i]);
 }
 
+static void test_chanseq_empty_intersection(void) {
+	uint8_t me[6] = {0x02, 0, 0, 0, 0, 0x01};
+	awdl_self_t self;
+	awdl_self_init(&self, me, "x", 6);
+	/* master with no channel-6 slot at all: must fall back to static all-6,
+	 * never advertise presence nowhere. */
+	uint8_t mseq[AWDL_CHANSEQ_LEN] = {0};
+	mseq[2] = 44; mseq[10] = 149;
+	awdl_self_set_chanseq_intersect(&self, mseq, 6);
+	for (int i = 0; i < (int)AWDL_CHANSEQ_LEN; i++)
+		CHECK(self.seq[i][0] == 6, "empty-intersection fallback slot %d = %u",
+		      i, self.seq[i][0]);
+}
+
+static void test_chanseq_realistic_slot0(void) {
+	/* A realistic idle iPhone sequence: slot 0 is a 5 GHz infra channel, ch6
+	 * appears only at slot 8. We advertise 6 at slot 8 and absent (0) elsewhere,
+	 * slot 0 included. This documents the actual behaviour; whether iOS accepts
+	 * slot-0-absent is an open hardware question (see awdl_frame.h). */
+	uint8_t me[6] = {0x02, 0, 0, 0, 0, 0x01};
+	awdl_self_t self;
+	awdl_self_init(&self, me, "x", 6);
+	uint8_t mseq[AWDL_CHANSEQ_LEN] = {0};
+	mseq[0] = 132; mseq[2] = 149; mseq[8] = 6; mseq[10] = 149;
+	awdl_self_set_chanseq_intersect(&self, mseq, 6);
+	for (int i = 0; i < (int)AWDL_CHANSEQ_LEN; i++) {
+		uint8_t exp = (i == 8) ? 6 : 0;
+		CHECK(self.seq[i][0] == exp, "slot0-infra case slot %d = %u expected %u",
+		      i, self.seq[i][0], exp);
+	}
+}
+
+static void test_tx_slot_gating(void) {
+	uint8_t me[6] = {0x02, 0, 0, 0, 0, 0x01};
+	awdl_node_t n;
+	awdl_node_init(&n, me, "x", 6, 0);
+
+	/* Alone (static all-6): every slot is present, so TX is always ready. */
+	uint64_t eaw_us = (uint64_t)AWDL_EAW_TU * AWDL_TU_US;
+	for (int s = 0; s < (int)AWDL_CHANSEQ_LEN; s++)
+		CHECK(awdl_node_tx_slot_ready(&n, (uint64_t)s * eaw_us + 1000),
+		      "static: slot %d not ready", s);
+
+	/* Sparse (ch6 only in slots 0 and 8): ready only in those slots. */
+	uint8_t mseq[AWDL_CHANSEQ_LEN] = {0};
+	mseq[0] = 6; mseq[8] = 6;
+	awdl_self_set_chanseq_intersect(&n.self, mseq, 6);
+	awdl_sync_init(&n.sync, 0);
+	for (int s = 0; s < (int)AWDL_CHANSEQ_LEN; s++) {
+		bool present = (s == 0 || s == 8);
+		bool ready = awdl_node_tx_slot_ready(&n, (uint64_t)s * eaw_us + 1000);
+		CHECK(ready == present, "sparse: slot %d ready=%d expected %d",
+		      s, ready, present);
+	}
+}
+
 int main(void) {
 	test_mif_roundtrip();
 	test_psf_roundtrip();
@@ -408,6 +464,9 @@ int main(void) {
 	test_truncated_v2_no_clobber();
 	test_node_sync_hold();
 	test_node_chanseq_mirror();
+	test_chanseq_empty_intersection();
+	test_chanseq_realistic_slot0();
+	test_tx_slot_gating();
 
 	if (g_fail == 0) printf("\nALL TESTS PASSED\n");
 	else printf("\n%d CHECK(S) FAILED\n", g_fail);

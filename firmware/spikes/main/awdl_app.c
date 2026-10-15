@@ -19,8 +19,10 @@
 
 static const char *TAG = "awdl_app";
 
-/* How often we emit our own frames and clean the peer table. PSF timing is not
- * critical for M1 (sync is receive-driven); these just keep us advertising. */
+/* How often we emit our own frames and clean the peer table. These are upper
+ * bounds: send_frame() additionally gates on the advertised slot (see there),
+ * so a due frame waits for a slot we advertise as present. Our own sync stays
+ * accurate regardless, because it is driven by the master's received frames. */
 #define PSF_INTERVAL_US (AWDL_PSF_INTERVAL_TU * AWDL_TU_US)           /* ~112 ms */
 #define MIF_INTERVAL_US (6 * AWDL_PSF_INTERVAL_TU * AWDL_TU_US)       /* ~675 ms */
 #define TICK_INTERVAL_US AWDL_PEER_CLEAN_INTERVAL_US                  /* 1 s */
@@ -52,17 +54,30 @@ static void on_action(const awdl_peer_view_t *pv, int8_t rssi, uint8_t channel,
 	(void)xQueueSend(s_rx_q, &ev, 0);
 }
 
-static void send_frame(uint8_t subtype) {
-	/* Static (not on the stack): send_frame runs on both the awdl task and the
-	 * console task, and a 1500-byte stack frame would risk overflowing either.
-	 * The mutex serialises use of the shared buffer and the node. */
+/*
+ * Build and transmit a PSF/MIF. When force is false, the frame is only sent if
+ * the current EAW slot is one we advertise presence in (so we do not announce
+ * ourselves in slots our own sequence marks absent, and our frames land when
+ * the master is on our channel). Returns true if a frame was actually sent.
+ * The mutex is NOT recursive, so the slot check happens under the same single
+ * lock acquisition as the build. The 1500-byte buffer is static because this
+ * runs on both the awdl task and the console task, and a stack frame that large
+ * would risk overflowing either.
+ */
+static bool send_frame(uint8_t subtype, bool force) {
 	static uint8_t buf[1500];
+	bool sent = false;
+	uint64_t now = (uint64_t)esp_timer_get_time();
 	xSemaphoreTake(s_lock, portMAX_DELAY);
-	int n = awdl_node_build_action(&s_node, buf, sizeof(buf), subtype,
-	                               (uint64_t)esp_timer_get_time());
-	if (n > 0)
-		radio_tx(buf, n);
+	if (force || awdl_node_tx_slot_ready(&s_node, now)) {
+		int n = awdl_node_build_action(&s_node, buf, sizeof(buf), subtype, now);
+		if (n > 0) {
+			radio_tx(buf, n);
+			sent = true;
+		}
+	}
 	xSemaphoreGive(s_lock);
+	return sent;
 }
 
 static void awdl_task(void *arg) {
@@ -81,14 +96,13 @@ static void awdl_task(void *arg) {
 		}
 
 		now = esp_timer_get_time();
-		if (now >= next_psf) {
-			send_frame(AWDL_SUBTYPE_PSF);
+		/* Only advance the timer once the frame actually went out; if the
+		 * current slot is one we advertise as absent, retry on the next loop
+		 * (~20 ms) until we reach an advertised-present slot. */
+		if (now >= next_psf && send_frame(AWDL_SUBTYPE_PSF, false))
 			next_psf = now + PSF_INTERVAL_US;
-		}
-		if (now >= next_mif) {
-			send_frame(AWDL_SUBTYPE_MIF);
+		if (now >= next_mif && send_frame(AWDL_SUBTYPE_MIF, false))
 			next_mif = now + MIF_INTERVAL_US;
-		}
 		if (now >= next_tick) {
 			xSemaphoreTake(s_lock, portMAX_DELAY);
 			awdl_node_tick(&s_node, (uint64_t)now);
@@ -158,5 +172,5 @@ int awdl_app_format_peers(char *buf, size_t cap) {
 
 void awdl_app_tx(uint8_t subtype) {
 	if (!s_started) return;
-	send_frame(subtype);
+	send_frame(subtype, true); /* console `tx`: send now regardless of slot */
 }

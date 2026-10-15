@@ -107,6 +107,19 @@ void awdl_self_set_chanseq_static(awdl_self_t *self, uint8_t chan_num) {
 void awdl_self_set_chanseq_intersect(awdl_self_t *self,
                                      const uint8_t master_chanseq[AWDL_CHANSEQ_LEN],
                                      uint8_t keep_chan) {
+	unsigned present = 0;
+	for (unsigned i = 0; i < AWDL_CHANSEQ_LEN; i++)
+		if (master_chanseq[i] == keep_chan) present++;
+
+	/* Never advertise "present nowhere": if the master names keep_chan in no
+	 * slot, fall back to the static sequence. We really are on keep_chan in
+	 * every slot, so claiming all 16 is honest and keeps us discoverable; an
+	 * all-absent sequence would be strictly worse than the old flat one. */
+	if (present == 0) {
+		awdl_self_set_chanseq_static(self, keep_chan);
+		return;
+	}
+
 	uint8_t opclass = opclass_for(keep_chan);
 	for (unsigned i = 0; i < AWDL_CHANSEQ_LEN; i++) {
 		if (master_chanseq[i] == keep_chan) {

@@ -143,10 +143,18 @@ void awdl_self_set_chanseq_static(awdl_self_t *self, uint8_t chan_num);
 
 /*
  * Mirror a master's channel sequence into ours: advertise keep_chan only in the
- * slots where the master is on keep_chan, and "absent" (0) everywhere else.
- * On a single-band device this is the honest sequence and the structurally
- * Apple-like shape that an iPhone will answer, unlike a flat all-one-channel
- * sequence (see docs/UEBERBLICK.md and the airdrop-mt7921 findings).
+ * slots where the master is on keep_chan, and "absent" (0) everywhere else. On a
+ * single-band device this is the honest sequence (we can only be on keep_chan),
+ * and far closer to the sparse shape Apple emits than a flat all-one-channel
+ * sequence, which iOS rejects (airdrop-mt7921 findings; docs/UEBERBLICK.md).
+ *
+ * If the master names keep_chan in NO slot, this falls back to the static
+ * all-keep_chan sequence rather than advertising presence nowhere.
+ *
+ * NOT yet confirmed on hardware: whether iOS accepts a sequence that carries 0
+ * in slot 0 (a real Apple device puts its infra channel there, which we have
+ * none of) or that contains only keep_chan. Treat acceptance as an open
+ * question to validate against a real iPhone (see M2).
  */
 void awdl_self_set_chanseq_intersect(awdl_self_t *self,
                                      const uint8_t master_chanseq[AWDL_CHANSEQ_LEN],

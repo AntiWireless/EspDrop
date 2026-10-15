@@ -59,6 +59,16 @@ void awdl_node_tick(awdl_node_t *n, uint64_t now_us);
 int awdl_node_build_action(awdl_node_t *n, uint8_t *buf, size_t cap,
                            uint8_t subtype, uint64_t now_us);
 
+/*
+ * True if, at now_us, the EAW slot we are in is one our advertised channel
+ * sequence marks as present (non-zero). Transmitting only in these slots keeps
+ * our behaviour consistent with what we advertise, and (since we are physically
+ * on our channel every slot) lines our frames up with the slots the master is
+ * also on that channel, i.e. when it can actually hear us. When we advertise a
+ * flat sequence (no master), every slot is present, so this is always true.
+ */
+bool awdl_node_tx_slot_ready(const awdl_node_t *n, uint64_t now_us);
+
 typedef struct {
 	bool     have_master;
 	uint8_t  master_addr[6];

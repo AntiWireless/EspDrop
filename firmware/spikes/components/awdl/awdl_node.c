@@ -114,6 +114,11 @@ int awdl_node_build_action(awdl_node_t *n, uint8_t *buf, size_t cap,
 	return awdl_build_action(buf, cap, &n->self, subtype, now_us, txd, awc);
 }
 
+bool awdl_node_tx_slot_ready(const awdl_node_t *n, uint64_t now_us) {
+	uint16_t slot = awdl_sync_current_eaw(now_us, &n->sync) % AWDL_CHANSEQ_LEN;
+	return n->self.seq[slot][0] != 0; /* non-zero channel => we advertise presence */
+}
+
 void awdl_node_status(const awdl_node_t *n, awdl_node_status_t *out) {
 	out->have_master = n->have_master;
 	memcpy(out->master_addr, n->election.sync_addr, 6);
