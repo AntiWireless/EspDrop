@@ -15,7 +15,7 @@ if(IDF_VERSION_MAJOR EQUAL 5 AND IDF_VERSION_MINOR LESS 3)
 else()
     set(ESPDROP_USJ_COMPONENT esp_driver_usb_serial_jtag)
 endif()
-message(STATUS "EspDrop: USB-Serial/JTAG via '${ESPDROP_USJ_COMPONENT}' (IDF ${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR})")
+message(STATUS "EspDrop: target '${IDF_TARGET}', USB-Serial/JTAG via '${ESPDROP_USJ_COMPONENT}' (IDF ${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR})")
 
 idf_component_register(
     SRCS "app_main.c" "radio.c" "console.c" "awdl_app.c" "bridge.c"
