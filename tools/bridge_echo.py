@@ -76,23 +76,35 @@ def frame(msg_type: int, payload: bytes) -> bytes:
 
 
 class Reader:
-    """Accumulates bytes and yields (type, payload) per 0x00-delimited frame."""
+    """Accumulates bytes; feed() returns completed (type, payload) frames.
+
+    feed() consumes the whole chunk and returns a list (it must NOT be a
+    generator): the caller breaks out of its read loop as soon as it sees the
+    reply it wants, and a suspended generator would (a) never run the buffer
+    reset that follows a yield, so every later frame would be decoded merged
+    onto the previous ones, and (b) drop any bytes after the delimiter in the
+    current chunk. Returning a list keeps self.buf correct no matter when the
+    caller stops reading.
+    """
     def __init__(self):
         self.buf = bytearray()
 
     def feed(self, data: bytes):
+        frames = []
         for b in data:
             if b == 0:
                 if self.buf:
+                    frame_bytes = bytes(self.buf)
+                    self.buf = bytearray()  # reset BEFORE handing the frame out
                     try:
-                        dec = cobs_decode(bytes(self.buf))
+                        dec = cobs_decode(frame_bytes)
                         if dec:
-                            yield dec[0], dec[1:]
+                            frames.append((dec[0], dec[1:]))
                     except ValueError:
                         pass
-                    self.buf = bytearray()
             else:
                 self.buf.append(b)
+        return frames
 
 
 def open_raw(port: str) -> int:
@@ -115,7 +127,8 @@ def read_for(fd: int, reader: Reader, seconds: float):
         except BlockingIOError:
             continue
         if data:
-            yield from reader.feed(data)
+            for fr in reader.feed(data):
+                yield fr
 
 
 def main() -> int:
