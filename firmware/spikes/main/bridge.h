@@ -6,9 +6,9 @@
  * (CONFIG_ESPDROP_BRIDGE_MODE). The platform-independent framing lives in
  * awdl_cobs.*; this module owns the USB driver, the RX task and the dispatch.
  *
- * M2.0 handles only ECHO (for a host-side transport test) and LOG. The data and
- * control message types are declared now so the host protocol is fixed, and are
- * wired to AWDL in later M2 stages.
+ * M2.0 added ECHO (host-side transport test) and LOG. M2.1 adds CMD/CMD_REPLY
+ * (mac, stats, ping, testframe) and accounts incoming FRAME messages; the radio
+ * that gives FRAME and PEER_* real meaning is wired in later M2 stages.
  *
  * Wire format per message: COBS(type_byte || payload) followed by a 0x00
  * delimiter. COBS guarantees the body carries no 0x00, so the delimiter is

@@ -12,6 +12,7 @@
 
 #include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -26,6 +27,58 @@
 static SemaphoreHandle_t s_tx_lock;
 static bool s_started;
 
+/* Counters touched only from the single RX task (handle_msg), so no locking. */
+static uint32_t s_frames_from_host;
+static uint32_t s_bytes_from_host;
+
+/* Emit one synthetic Ethernet frame to the host so the device->host->awdl0 path
+ * can be exercised before any radio exists (M2.1). ff:ff:ff:ff:ff:ff <- our MAC,
+ * ethertype 0x88b5 (IEEE local experimental, inert) + a marker body. */
+static void send_test_frame(void) {
+	uint8_t mac[6] = {0};
+	esp_read_mac(mac, ESP_MAC_WIFI_STA);
+	static const char body[] = "EspDrop M2.1 testframe";
+	uint8_t eth[14 + sizeof(body) - 1];
+	memset(eth, 0xff, 6);          /* destination: broadcast */
+	memcpy(eth + 6, mac, 6);       /* source: our Wi-Fi MAC */
+	eth[12] = 0x88;
+	eth[13] = 0xb5;                /* ethertype 0x88b5 */
+	memcpy(eth + 14, body, sizeof(body) - 1);
+	bridge_send(BRIDGE_MSG_FRAME, eth, sizeof(eth));
+}
+
+/* A short text command from the host (BRIDGE_MSG_CMD) -> a CMD_REPLY. */
+static void handle_cmd(const uint8_t *p, size_t n) {
+	char cmd[64];
+	size_t k = n < sizeof(cmd) - 1 ? n : sizeof(cmd) - 1;
+	memcpy(cmd, p, k);
+	cmd[k] = '\0';
+	while (k && (cmd[k - 1] == '\n' || cmd[k - 1] == '\r' || cmd[k - 1] == ' '))
+		cmd[--k] = '\0';
+
+	char out[96];
+	int len;
+	if (strcmp(cmd, "ping") == 0) {
+		bridge_send(BRIDGE_MSG_CMD_REPLY, "pong", 4);
+	} else if (strcmp(cmd, "mac") == 0) {
+		uint8_t mac[6] = {0};
+		esp_read_mac(mac, ESP_MAC_WIFI_STA);
+		len = snprintf(out, sizeof(out), "mac %02x:%02x:%02x:%02x:%02x:%02x",
+		               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+		if (len > 0) bridge_send(BRIDGE_MSG_CMD_REPLY, out, (size_t)len);
+	} else if (strcmp(cmd, "stats") == 0) {
+		len = snprintf(out, sizeof(out), "frames_from_host=%u bytes_from_host=%u",
+		               (unsigned)s_frames_from_host, (unsigned)s_bytes_from_host);
+		if (len > 0) bridge_send(BRIDGE_MSG_CMD_REPLY, out, (size_t)len);
+	} else if (strcmp(cmd, "testframe") == 0) {
+		send_test_frame();
+		bridge_send(BRIDGE_MSG_CMD_REPLY, "sent testframe", 14);
+	} else {
+		len = snprintf(out, sizeof(out), "unknown cmd '%s'", cmd);
+		if (len > 0) bridge_send(BRIDGE_MSG_CMD_REPLY, out, (size_t)len);
+	}
+}
+
 /* Dispatch a fully decoded message (type byte + payload). */
 static void handle_msg(const uint8_t *msg, size_t len) {
 	if (len < 1) return;
@@ -37,7 +90,16 @@ static void handle_msg(const uint8_t *msg, size_t len) {
 	case BRIDGE_MSG_ECHO:
 		bridge_send(BRIDGE_MSG_ECHO_REPLY, payload, plen);
 		break;
-	/* FRAME / CMD / PEER_* are wired up in later M2 stages. */
+	case BRIDGE_MSG_FRAME:
+		/* Host -> device Ethernet frame for awdl0. M2.1 has no radio, so account
+		 * and drop; M2.2+ translates this to an AWDL data frame and transmits. */
+		s_frames_from_host++;
+		s_bytes_from_host += (uint32_t)plen;
+		break;
+	case BRIDGE_MSG_CMD:
+		handle_cmd(payload, plen);
+		break;
+	/* PEER_* are device->host only; produced once the radio lands. */
 	default:
 		break;
 	}
