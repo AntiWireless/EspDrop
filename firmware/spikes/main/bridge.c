@@ -52,6 +52,7 @@ static void bridge_rx_task(void *arg) {
 
 	for (;;) {
 		int n = usb_serial_jtag_read_bytes(chunk, sizeof(chunk), portMAX_DELAY);
+		if (n <= 0) continue;
 		for (int i = 0; i < n; i++) {
 			int r = cobs_rx_byte(&rx, chunk[i], out, sizeof(out));
 			if (r > 0)
@@ -72,18 +73,30 @@ int bridge_start(void) {
 		.rx_buffer_size = USB_RX_BUF,
 	};
 	esp_err_t e = usb_serial_jtag_driver_install(&cfg);
-	if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) /* INVALID_STATE: console already installed it */
+	if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) { /* INVALID_STATE: console already installed it */
+		vSemaphoreDelete(s_tx_lock);
+		s_tx_lock = NULL;
 		return e;
+	}
 
-	/* Nothing else may write to the USB-Serial/JTAG now, or it would corrupt the
-	 * binary frame stream. Silence the default log output; visibility goes
-	 * through BRIDGE_MSG_LOG instead. */
+	/* Reduce corruption of the binary frame stream by silencing ESP_LOG. This is
+	 * not absolute: ROM/early-boot output (before this runs) and the panic
+	 * handler (esp_rom_printf, crash only) still reach the same peripheral. Those
+	 * are pre-stream or crash-only, and COBS resynchronises at the next 0x00
+	 * delimiter, so steady-state framing is unaffected. */
 	esp_log_level_set("*", ESP_LOG_NONE);
 
-	if (xTaskCreate(bridge_rx_task, "bridge_rx", 4096, NULL, 6, NULL) != pdPASS)
-		return -1;
-
+	/* Set started before creating the task: the RX task runs at a higher
+	 * priority and may dispatch (and reply to) a queued ECHO before xTaskCreate
+	 * returns; bridge_send must not reject that first reply. */
 	s_started = true;
+	if (xTaskCreate(bridge_rx_task, "bridge_rx", 4096, NULL, 6, NULL) != pdPASS) {
+		s_started = false;
+		vSemaphoreDelete(s_tx_lock);
+		s_tx_lock = NULL;
+		return -1;
+	}
+
 	bridge_log("bridge up (M2.0 echo)");
 	return 0;
 }
@@ -102,8 +115,17 @@ int bridge_send(uint8_t type, const void *payload, size_t len) {
 	int ret = -1;
 	if (enc_len > 0) {
 		enc[enc_len++] = 0x00; /* frame delimiter */
-		usb_serial_jtag_write_bytes(enc, enc_len, portMAX_DELAY);
+		/* Write the whole frame, looping over short writes. A bounded timeout
+		 * keeps a host that stops draining from wedging the lock (and thus every
+		 * other sender) forever; on timeout we drop the rest of this frame. */
+		size_t off = 0;
 		ret = 0;
+		while (off < enc_len) {
+			int w = usb_serial_jtag_write_bytes(enc + off, enc_len - off,
+			                                    pdMS_TO_TICKS(1000));
+			if (w <= 0) { ret = -1; break; } /* host not draining: drop */
+			off += (size_t)w;
+		}
 	}
 	xSemaphoreGive(s_tx_lock);
 	return ret;

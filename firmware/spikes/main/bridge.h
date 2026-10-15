@@ -38,8 +38,9 @@ enum bridge_msg_type {
 	BRIDGE_MSG_CMD_REPLY   = 8, /* device -> host: command output text */
 };
 
-/* Start the bridge: install the USB driver, silence stdout logging (so it can
- * not corrupt the binary stream), and spawn the RX task. Returns 0 on success. */
+/* Start the bridge: install the USB driver, silence ESP_LOG (to reduce
+ * corruption of the binary stream; the host resynchronises at the next frame
+ * delimiter after any stray bytes), and spawn the RX task. Returns 0 on success. */
 int bridge_start(void);
 
 /* Send one framed message. Thread-safe. Returns 0 on success. */
