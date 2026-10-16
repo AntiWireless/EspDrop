@@ -6,8 +6,9 @@
  *    USB-serial console (tx/rx/sync/peers/...). Used for the M0/M1 workflow;
  *    see console.c and docs/SPIKES.md.
  *  - Bridge mode (CONFIG_ESPDROP_BRIDGE_MODE): starts the COBS-framed USB
- *    host-link bridge instead of the console, for the M2 data path. M2.0 is a
- *    transport echo test and does not bring up Wi-Fi yet.
+ *    host-link bridge instead of the console, for the M2 data path. M2.0/M2.1
+ *    were transport-only; M2.2 brings up Wi-Fi + the AWDL node and forwards
+ *    received AWDL data frames to the host as Ethernet (awdl0 RX path).
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2026  EspDrop contributors
@@ -22,11 +23,37 @@
 #if CONFIG_ESPDROP_BRIDGE_MODE
 
 #include "bridge.h"
+#include "radio.h"
+#include "awdl_app.h"
 
 void app_main(void) {
-	/* M2.0: transport only. Wi-Fi / AWDL data wiring comes in later M2 stages. */
-	if (bridge_start() != 0)
+	/* Bring up the radio and AWDL node FIRST: their one-time init logs (incl.
+	 * non-maskable PHY/ROM prints) go out at boot, before the host opens the
+	 * port. bridge_start() then silences ESP_LOG and takes over the USB endpoint,
+	 * so steady-state traffic is clean COBS. */
+	int err = radio_init(DEFAULT_CHANNEL);
+	if (err != ESP_OK) {
+		ESP_LOGE("espdrop", "radio_init failed: 0x%x", err);
+		return;
+	}
+
+	uint8_t mac[6];
+	radio_get_self_mac(mac);
+	if (awdl_app_start(mac, "espdrop-c3", DEFAULT_CHANNEL) != 0) {
+		ESP_LOGE("espdrop", "awdl_app_start failed");
+		return;
+	}
+
+	if (bridge_start() != 0) {
 		ESP_LOGE("espdrop", "bridge_start failed");
+		return;
+	}
+
+	/* Forward received AWDL data frames to the host as Ethernet, then start RX. */
+	radio_set_data_handler(bridge_rx_frame, NULL);
+	if (radio_promisc(true) != ESP_OK)
+		bridge_log("warning: promiscuous RX did not enable");
+	bridge_log("awdl rx up on ch %u (M2.2)", DEFAULT_CHANNEL);
 }
 
 #else /* console mode */

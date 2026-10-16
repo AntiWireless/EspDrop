@@ -504,13 +504,27 @@ int awdl_parse_action(const uint8_t *buf, size_t len, awdl_peer_view_t *out) {
 
 bool awdl_parse_data(const uint8_t *buf, size_t len,
                      size_t *payload_off, uint16_t *ethertype) {
-	if (!buf || len < IEEE80211_HDR_LEN + 8 + 8) return false;
+	if (!buf || len < IEEE80211_HDR_LEN) return false;
 
+	/* Match on frame type/subtype only; ignore the flag bits (retry, power-mgmt,
+	 * protected, order, ...) and version, so real Apple frames are not rejected
+	 * on a stray flag. Accept both plain data (subtype 0) and QoS data (subtype
+	 * 8, which inserts a 2-byte QoS control field after the base header). AWDL is
+	 * ad-hoc (ToDS=FromDS=0), so addr1/2/3 stay at offsets 4/10/16 either way and
+	 * the radio layer's BSSID check remains valid. */
 	uint16_t fc;
-	wire_get_le16(buf, len, 0, &fc);
-	if (fc != FC_DATA) return false;
+	if (!wire_get_le16(buf, len, 0, &fc)) return false;
+	uint8_t ftype = (uint8_t)((fc >> 2) & 0x3);  /* 2 = data */
+	uint8_t fsub  = (uint8_t)((fc >> 4) & 0xf);  /* 0 = data, 8 = QoS data */
+	if (ftype != 2) return false;
+	size_t hdr;
+	if (fsub == 0)      hdr = IEEE80211_HDR_LEN;      /* 24 */
+	else if (fsub == 8) hdr = IEEE80211_HDR_LEN + 2; /* + QoS control */
+	else                return false;
 
-	size_t llc = IEEE80211_HDR_LEN;
+	if (len < hdr + 8 + 8) return false; /* LLC/SNAP (8) + AWDL data header (8) */
+
+	size_t llc = hdr;
 	uint8_t dsap = 0, ssap = 0, ctrl = 0;
 	wire_get_u8(buf, len, llc + 0, &dsap);
 	wire_get_u8(buf, len, llc + 1, &ssap);

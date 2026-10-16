@@ -235,8 +235,9 @@ int awdl_parse_action(const uint8_t *buf, size_t len, awdl_peer_view_t *out);
 
 /*
  * True if the frame looks like an AWDL data frame (802.11 data, AWDL LLC/SNAP).
- * On success, *payload_off is the offset of the IPv6 payload and *ethertype the
- * carried ethertype (expected ETHERTYPE_IPV6).
+ * Accepts both plain data and QoS-data subtypes and ignores the 802.11 flag
+ * bits, so real Apple frames parse. On success, *payload_off is the offset of
+ * the L3 payload and *ethertype the carried ethertype (usually ETHERTYPE_IPV6).
  */
 bool awdl_parse_data(const uint8_t *buf, size_t len,
                      size_t *payload_off, uint16_t *ethertype);

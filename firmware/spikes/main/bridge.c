@@ -15,6 +15,7 @@
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 
 #include "awdl_cobs.h"
@@ -24,12 +25,27 @@
 #define USB_RX_BUF         1024
 #define USB_TX_BUF         2048
 
+/* Device->host RX forwarding: one Ethernet frame per queue slot. The Wi-Fi task
+ * only builds+enqueues (never blocks on USB); a dedicated task drains and sends. */
+#define BRIDGE_RX_PAYLOAD_MAX 1500                 /* L3 payload cap (awdl0 MTU) */
+#define BRIDGE_RX_Q_LEN       8
+typedef struct {
+	uint16_t len;
+	uint8_t  eth[14 + BRIDGE_RX_PAYLOAD_MAX];
+} rx_frame_t;
+
 static SemaphoreHandle_t s_tx_lock;
+static QueueHandle_t     s_rx_fwd_q;   /* rx_frame_t: Wi-Fi task -> fwd task */
 static bool s_started;
 
 /* Counters touched only from the single RX task (handle_msg), so no locking. */
 static uint32_t s_frames_from_host;
 static uint32_t s_bytes_from_host;
+/* Touched across tasks (written by Wi-Fi/fwd tasks, read by the stats command).
+ * 32-bit aligned loads/stores are atomic on the C3, and a stale stats read is
+ * harmless, so these are volatile rather than locked. */
+static volatile uint32_t s_frames_to_host;
+static volatile uint32_t s_rx_drops;
 
 /* Emit one synthetic Ethernet frame to the host so the device->host->awdl0 path
  * can be exercised before any radio exists (M2.1). ff:ff:ff:ff:ff:ff <- our MAC,
@@ -47,6 +63,38 @@ static void send_test_frame(void) {
 	bridge_send(BRIDGE_MSG_FRAME, eth, sizeof(eth));
 }
 
+/* Wi-Fi task context: build the Ethernet frame into a scratch slot and enqueue
+ * it for the forwarding task. rx_cb is serialized (one Wi-Fi task), so a single
+ * static scratch buffer is safe and keeps this off the Wi-Fi task's stack. */
+void bridge_rx_frame(const uint8_t dst[6], const uint8_t src[6], uint16_t ethertype,
+                     const uint8_t *payload, size_t plen, void *ctx) {
+	(void)ctx;
+	static rx_frame_t scratch;
+	if (!s_rx_fwd_q) return;
+	if (plen > BRIDGE_RX_PAYLOAD_MAX) { s_rx_drops++; return; }
+	memcpy(scratch.eth, dst, 6);
+	memcpy(scratch.eth + 6, src, 6);
+	scratch.eth[12] = (uint8_t)(ethertype >> 8);
+	scratch.eth[13] = (uint8_t)(ethertype & 0xff);
+	if (plen) memcpy(scratch.eth + 14, payload, plen);
+	scratch.len = (uint16_t)(14 + plen);
+	if (xQueueSend(s_rx_fwd_q, &scratch, 0) != pdTRUE)
+		s_rx_drops++; /* host not keeping up: drop rather than stall Wi-Fi */
+}
+
+/* Drain the RX-forward queue to the host. A dedicated task so the (bounded but
+ * blocking) USB write never runs on the Wi-Fi task or the AWDL timing task. */
+static void bridge_fwd_task(void *arg) {
+	(void)arg;
+	static rx_frame_t fr;
+	for (;;) {
+		if (xQueueReceive(s_rx_fwd_q, &fr, portMAX_DELAY) == pdTRUE) {
+			if (bridge_send(BRIDGE_MSG_FRAME, fr.eth, fr.len) == 0)
+				s_frames_to_host++;
+		}
+	}
+}
+
 /* Send a NUL-terminated string as a CMD_REPLY (length from strlen, so a
  * truncated snprintf can never be reported as longer than the buffer). */
 static void cmd_reply(const char *s) {
@@ -62,7 +110,7 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 	while (k && (cmd[k - 1] == '\n' || cmd[k - 1] == '\r' || cmd[k - 1] == ' '))
 		cmd[--k] = '\0';
 
-	char out[96];
+	char out[128];
 	if (strcmp(cmd, "ping") == 0) {
 		cmd_reply("pong");
 	} else if (strcmp(cmd, "mac") == 0) {
@@ -72,8 +120,10 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 		cmd_reply(out);
 	} else if (strcmp(cmd, "stats") == 0) {
-		snprintf(out, sizeof(out), "frames_from_host=%u bytes_from_host=%u",
-		         (unsigned)s_frames_from_host, (unsigned)s_bytes_from_host);
+		snprintf(out, sizeof(out),
+		         "frames_from_host=%u bytes_from_host=%u frames_to_host=%u rx_drops=%u",
+		         (unsigned)s_frames_from_host, (unsigned)s_bytes_from_host,
+		         (unsigned)s_frames_to_host, (unsigned)s_rx_drops);
 		cmd_reply(out);
 	} else if (strcmp(cmd, "testframe") == 0) {
 		send_test_frame();
@@ -96,8 +146,9 @@ static void handle_msg(const uint8_t *msg, size_t len) {
 		bridge_send(BRIDGE_MSG_ECHO_REPLY, payload, plen);
 		break;
 	case BRIDGE_MSG_FRAME:
-		/* Host -> device Ethernet frame for awdl0. M2.1 has no radio, so account
-		 * and drop; M2.2+ translates this to an AWDL data frame and transmits. */
+		/* Host -> device Ethernet frame for awdl0. M2.2 is RX-only (device->host),
+		 * so account and drop; M2.3 translates this to an AWDL data frame and
+		 * transmits it over the radio. */
 		s_frames_from_host++;
 		s_bytes_from_host += (uint32_t)plen;
 		break;
@@ -146,6 +197,13 @@ int bridge_start(void) {
 		return e;
 	}
 
+	s_rx_fwd_q = xQueueCreate(BRIDGE_RX_Q_LEN, sizeof(rx_frame_t));
+	if (!s_rx_fwd_q) {
+		vSemaphoreDelete(s_tx_lock);
+		s_tx_lock = NULL;
+		return -1;
+	}
+
 	/* Reduce corruption of the binary frame stream by silencing ESP_LOG. This is
 	 * not absolute: ROM/early-boot output (before this runs) and the panic
 	 * handler (esp_rom_printf, crash only) still reach the same peripheral. Those
@@ -159,12 +217,18 @@ int bridge_start(void) {
 	s_started = true;
 	if (xTaskCreate(bridge_rx_task, "bridge_rx", 4096, NULL, 6, NULL) != pdPASS) {
 		s_started = false;
+		vQueueDelete(s_rx_fwd_q);
+		s_rx_fwd_q = NULL;
 		vSemaphoreDelete(s_tx_lock);
 		s_tx_lock = NULL;
 		return -1;
 	}
+	/* The forwarding task is best-effort: if it fails to start, RX frames are
+	 * dropped (queue fills) but the control link stays up, so do not fail. */
+	if (xTaskCreate(bridge_fwd_task, "bridge_fwd", 3072, NULL, 5, NULL) != pdPASS)
+		bridge_log("warning: rx-forward task did not start");
 
-	bridge_log("bridge up (M2.0 echo)");
+	bridge_log("bridge up");
 	return 0;
 }
 

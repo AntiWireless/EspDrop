@@ -41,6 +41,17 @@ typedef void (*radio_action_handler_t)(const awdl_peer_view_t *pv, int8_t rssi,
                                        uint8_t channel, uint64_t now_us, void *ctx);
 
 /*
+ * Handler for a received, parsed AWDL *data* frame, reconstructed as Ethernet:
+ * dst = 802.11 addr1, src = addr2, plus the ethertype and L3 payload the AWDL
+ * data header carried. Invoked from Wi-Fi task context inside the promiscuous
+ * callback, so it MUST be quick and non-blocking (copy what it needs into a
+ * queue and return). All pointers are only valid for the duration of the call.
+ */
+typedef void (*radio_data_handler_t)(const uint8_t dst[6], const uint8_t src[6],
+                                     uint16_t ethertype, const uint8_t *payload,
+                                     size_t plen, void *ctx);
+
+/*
  * Bring up Wi-Fi in station mode without connecting, on the given 2.4 GHz
  * channel. Safe to call once at startup. Returns an esp_err_t (0 == ESP_OK).
  */
@@ -73,6 +84,9 @@ void radio_reset_stats(void);
 
 /* Register the consumer for received AWDL action frames (NULL to clear). */
 void radio_set_action_handler(radio_action_handler_t h, void *ctx);
+
+/* Register the consumer for received AWDL data frames (NULL to clear). */
+void radio_set_data_handler(radio_data_handler_t h, void *ctx);
 
 #ifdef __cplusplus
 }

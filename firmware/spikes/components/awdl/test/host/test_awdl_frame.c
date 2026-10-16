@@ -121,6 +121,51 @@ static void test_data_roundtrip(void) {
 	CHECK(memcmp(buf + poff, payload, sizeof(payload)) == 0, "payload mismatch");
 }
 
+/* M2.2: the RX parser must accept real Apple data frames, which may be QoS data
+ * (subtype 8, +2-byte QoS control) and may carry 802.11 flag bits. */
+static void test_data_qos_and_flags(void) {
+	uint8_t self_mac[6] = {0x02, 0, 0, 0, 0, 0x01};
+	uint8_t dst_mac[6]  = {0x02, 0, 0, 0, 0, 0x02};
+	awdl_self_t self;
+	awdl_self_init(&self, self_mac, "x", 6);
+	const uint8_t payload[] = {0x60, 0, 0, 0, 0, 8, 58, 255, 1, 2, 3, 4};
+	uint8_t buf[1500];
+	int n = awdl_build_data(buf, sizeof(buf), &self, dst_mac, payload, sizeof(payload));
+	CHECK(n > 0, "build data failed: %d", n);
+
+	size_t poff0; uint16_t et;
+	CHECK(awdl_parse_data(buf, (size_t)n, &poff0, &et), "baseline parse failed");
+
+	/* Flag bits set (retry + power-mgmt) must not cause rejection. */
+	uint8_t f[1500];
+	memcpy(f, buf, (size_t)n);
+	f[1] = 0x18;
+	size_t poff;
+	CHECK(awdl_parse_data(f, (size_t)n, &poff, &et) && poff == poff0 && et == ETHERTYPE_IPV6,
+	      "flagged frame rejected");
+
+	/* QoS data: subtype 8, 2-byte QoS control inserted after the 24-byte header.
+	 * Payload offset must shift by exactly 2, everything else unchanged. */
+	uint8_t q[1500];
+	memcpy(q, buf, IEEE80211_HDR_LEN);
+	q[0] = 0x88;                               /* data, QoS-data subtype (8) */
+	q[IEEE80211_HDR_LEN] = 0x00;               /* QoS control */
+	q[IEEE80211_HDR_LEN + 1] = 0x00;
+	memcpy(q + IEEE80211_HDR_LEN + 2, buf + IEEE80211_HDR_LEN,
+	       (size_t)n - IEEE80211_HDR_LEN);
+	int qn = n + 2;
+	CHECK(awdl_parse_data(q, (size_t)qn, &poff, &et), "QoS parse failed");
+	CHECK(poff == poff0 + 2, "QoS poff %zu != %zu+2", poff, poff0);
+	CHECK(et == ETHERTYPE_IPV6, "QoS ethertype %04x", et);
+	CHECK(memcmp(q + poff, payload, sizeof(payload)) == 0, "QoS payload mismatch");
+
+	/* A non-data subtype (4 = Null/other) must be rejected. */
+	uint8_t bad[1500];
+	memcpy(bad, buf, (size_t)n);
+	bad[0] = 0x48;
+	CHECK(!awdl_parse_data(bad, (size_t)n, &poff, &et), "subtype 4 not rejected");
+}
+
 static void test_reject_garbage(void) {
 	uint8_t junk[64];
 	memset(junk, 0xA5, sizeof(junk));
@@ -456,6 +501,7 @@ int main(void) {
 	test_mif_roundtrip();
 	test_psf_roundtrip();
 	test_data_roundtrip();
+	test_data_qos_and_flags();
 	test_reject_garbage();
 	test_sync_election_parse();
 	test_sync_math();

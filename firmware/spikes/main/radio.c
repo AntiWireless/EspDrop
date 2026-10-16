@@ -27,6 +27,8 @@ static volatile bool          s_promisc;
 static uint8_t                s_channel = 6;
 static radio_action_handler_t s_action_handler;
 static void                  *s_action_ctx;
+static radio_data_handler_t   s_data_handler;
+static void                  *s_data_ctx;
 
 static inline void stat_inc(uint64_t *field) {
 	portENTER_CRITICAL(&s_stats_mux);
@@ -79,8 +81,15 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 			                 esp_timer_get_time(), s_action_ctx);
 	} else { /* WIFI_PKT_DATA */
 		size_t poff; uint16_t et;
-		if (awdl_parse_data(frame, (size_t)len, &poff, &et))
+		if (awdl_parse_data(frame, (size_t)len, &poff, &et)) {
 			stat_inc(&s_stats.rx_data);
+			/* Reconstruct Ethernet (dst=addr1, src=addr2) and hand it to the
+			 * consumer. addr1/addr2 sit at the fixed offsets 4/10, and the BSSID
+			 * check above already guaranteed len >= IEEE80211_HDR_LEN + 4. */
+			if (s_data_handler && poff <= (size_t)len)
+				s_data_handler(frame + 4, frame + 10, et,
+				               frame + poff, (size_t)len - poff, s_data_ctx);
+		}
 	}
 }
 
@@ -190,4 +199,9 @@ void radio_reset_stats(void) {
 void radio_set_action_handler(radio_action_handler_t h, void *ctx) {
 	s_action_ctx = ctx;
 	s_action_handler = h;
+}
+
+void radio_set_data_handler(radio_data_handler_t h, void *ctx) {
+	s_data_ctx = ctx;
+	s_data_handler = h;
 }
