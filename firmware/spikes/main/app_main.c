@@ -15,6 +15,7 @@
  */
 #include <stdio.h>
 
+#include "esp_err.h"   /* ESP_OK, used by both the bridge and console branches */
 #include "esp_log.h"
 #include "sdkconfig.h"
 

@@ -221,6 +221,9 @@ int bridge_start(void) {
 		s_rx_fwd_q = NULL;
 		vSemaphoreDelete(s_tx_lock);
 		s_tx_lock = NULL;
+		/* Logging was just silenced; restore it so the caller's error is visible
+		 * (nothing was transmitted yet, so no COBS stream to corrupt). */
+		esp_log_level_set("*", ESP_LOG_ERROR);
 		return -1;
 	}
 	/* The forwarding task is best-effort: if it fails to start, RX frames are
