@@ -57,6 +57,14 @@ int bridge_send(uint8_t type, const void *payload, size_t len);
 void bridge_rx_frame(const uint8_t dst[6], const uint8_t src[6], uint16_t ethertype,
                      const uint8_t *payload, size_t plen, void *ctx);
 
+/*
+ * Sink for host->device Ethernet frames (BRIDGE_MSG_FRAME): invoked from the
+ * bridge RX task with the raw Ethernet frame. Returns 0 on accept. Registered by
+ * app_main to the AWDL data-TX path; if none is set the frame is only accounted.
+ */
+typedef int (*bridge_frame_sink_t)(const uint8_t *eth, size_t len, void *ctx);
+void bridge_set_frame_sink(bridge_frame_sink_t fn, void *ctx);
+
 /* printf-style LOG message to the host. */
 void bridge_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 

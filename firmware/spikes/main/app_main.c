@@ -50,11 +50,13 @@ void app_main(void) {
 		return;
 	}
 
-	/* Forward received AWDL data frames to the host as Ethernet, then start RX. */
+	/* RX: forward received AWDL data frames to the host as Ethernet.
+	 * TX: hand host Ethernet frames to the AWDL data-TX path. Then start RX. */
 	radio_set_data_handler(bridge_rx_frame, NULL);
+	bridge_set_frame_sink(awdl_app_tx_ethernet, NULL);
 	if (radio_promisc(true) != ESP_OK)
 		bridge_log("warning: promiscuous RX did not enable");
-	bridge_log("awdl rx up on ch %u (M2.2)", DEFAULT_CHANNEL);
+	bridge_log("awdl rx/tx up on ch %u (M2.3)", DEFAULT_CHANNEL);
 }
 
 #else /* console mode */

@@ -28,6 +28,12 @@ static const char *TAG = "awdl_app";
 #define TICK_INTERVAL_US AWDL_PEER_CLEAN_INTERVAL_US                  /* 1 s */
 #define RX_Q_LEN 16
 
+/* Host->radio data TX: one IPv6 packet (awdl0 MTU) per slot, queued from the
+ * bridge RX task and flushed by the AWDL task during advertised-present slots. */
+#define TX_Q_LEN        8
+#define TX_PAYLOAD_MAX  1484u   /* awdl0 MTU */
+#define TX_FLUSH_BUDGET 8       /* data frames sent per ready slot visit */
+
 typedef struct {
 	awdl_peer_view_t pv;
 	int8_t   rssi;
@@ -35,9 +41,16 @@ typedef struct {
 	uint64_t now_us;
 } rx_event_t;
 
+typedef struct {
+	uint8_t  dst[6];
+	uint16_t len;
+	uint8_t  ip[TX_PAYLOAD_MAX];
+} tx_data_t;
+
 static awdl_node_t      s_node;
 static SemaphoreHandle_t s_lock;     /* guards s_node */
 static QueueHandle_t    s_rx_q;
+static QueueHandle_t    s_tx_q;      /* tx_data_t: bridge RX task -> awdl task */
 static TaskHandle_t     s_task;
 static bool             s_started;
 
@@ -109,7 +122,42 @@ static void awdl_task(void *arg) {
 			xSemaphoreGive(s_lock);
 			next_tick = now + TICK_INTERVAL_US;
 		}
+
+		/* Flush queued host data frames, but only during a slot we advertise as
+		 * present (= the master's ch6 slots), so our data TX lands when the peer
+		 * is on our channel. Build+send under the same lock that guards self. */
+		if (s_tx_q && uxQueueMessagesWaiting(s_tx_q) > 0) {
+			static uint8_t txbuf[1600];
+			tx_data_t td;
+			now = esp_timer_get_time();
+			xSemaphoreTake(s_lock, portMAX_DELAY);
+			if (awdl_node_tx_slot_ready(&s_node, (uint64_t)now)) {
+				int budget = TX_FLUSH_BUDGET;
+				while (budget-- > 0 && xQueueReceive(s_tx_q, &td, 0) == pdTRUE) {
+					int n = awdl_build_data(txbuf, sizeof(txbuf), &s_node.self,
+					                        td.dst, td.ip, td.len);
+					if (n > 0) radio_tx(txbuf, n);
+				}
+			}
+			xSemaphoreGive(s_lock);
+		}
 	}
+}
+
+int awdl_app_tx_ethernet(const uint8_t *eth, size_t len, void *ctx) {
+	(void)ctx;
+	/* Called only from the single bridge RX task, so a static staging buffer is
+	 * safe and keeps this large struct off that task's stack. */
+	static tx_data_t td;
+	if (!s_started || !s_tx_q || len < 14) return -1;
+	uint16_t et = (uint16_t)(((uint16_t)eth[12] << 8) | eth[13]);
+	if (et != ETHERTYPE_IPV6) return 0;   /* awdl0 is IPv6-only; ignore the rest */
+	size_t plen = len - 14;
+	if (plen > TX_PAYLOAD_MAX) return -1;
+	memcpy(td.dst, eth, 6);
+	td.len = (uint16_t)plen;
+	if (plen) memcpy(td.ip, eth + 14, plen);
+	return (xQueueSend(s_tx_q, &td, 0) == pdTRUE) ? 0 : -1; /* drop on overflow */
 }
 
 int awdl_app_start(const uint8_t self_mac[6], const char *name, uint8_t chan) {
@@ -117,7 +165,8 @@ int awdl_app_start(const uint8_t self_mac[6], const char *name, uint8_t chan) {
 
 	s_lock = xSemaphoreCreateMutex();
 	s_rx_q = xQueueCreate(RX_Q_LEN, sizeof(rx_event_t));
-	if (!s_lock || !s_rx_q) return -1;
+	s_tx_q = xQueueCreate(TX_Q_LEN, sizeof(tx_data_t));
+	if (!s_lock || !s_rx_q || !s_tx_q) return -1;
 
 	awdl_node_init(&s_node, self_mac, name, chan, (uint64_t)esp_timer_get_time());
 

@@ -19,6 +19,7 @@
 #include "freertos/semphr.h"
 
 #include "awdl_cobs.h"
+#include "radio.h"   /* radio_get_stats, for the `radio` diagnostic command */
 
 #define BRIDGE_MAX_PAYLOAD 1600
 #define BRIDGE_MAX_MSG     (1 + BRIDGE_MAX_PAYLOAD)   /* type + payload */
@@ -46,6 +47,15 @@ static uint32_t s_bytes_from_host;
  * harmless, so these are volatile rather than locked. */
 static volatile uint32_t s_frames_to_host;
 static volatile uint32_t s_rx_drops;
+
+/* Sink for host->device Ethernet frames (set by app_main to the AWDL TX path). */
+static bridge_frame_sink_t s_frame_sink;
+static void               *s_frame_sink_ctx;
+
+void bridge_set_frame_sink(bridge_frame_sink_t fn, void *ctx) {
+	s_frame_sink_ctx = ctx;
+	s_frame_sink = fn;
+}
 
 /* Emit one synthetic Ethernet frame to the host so the device->host->awdl0 path
  * can be exercised before any radio exists (M2.1). ff:ff:ff:ff:ff:ff <- our MAC,
@@ -125,6 +135,20 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		         (unsigned)s_frames_from_host, (unsigned)s_bytes_from_host,
 		         (unsigned)s_frames_to_host, (unsigned)s_rx_drops);
 		cmd_reply(out);
+	} else if (strcmp(cmd, "radio") == 0) {
+		radio_stats_t st;
+		radio_get_stats(&st);
+		char rbuf[200];
+		/* tx_ack = unicast frames the peer hardware-ACKed (our TX reached it);
+		 * for broadcast/multicast tx_ack is always success. */
+		snprintf(rbuf, sizeof(rbuf),
+		         "rx_action=%llu rx_data=%llu rx_other=%llu rx_perr=%llu "
+		         "tx_ok=%llu tx_err=%llu tx_ack=%llu tx_noack=%llu",
+		         (unsigned long long)st.rx_action, (unsigned long long)st.rx_data,
+		         (unsigned long long)st.rx_other_bssid, (unsigned long long)st.rx_parse_err,
+		         (unsigned long long)st.tx_ok, (unsigned long long)st.tx_err,
+		         (unsigned long long)st.tx_done_ok, (unsigned long long)st.tx_done_fail);
+		cmd_reply(rbuf);
 	} else if (strcmp(cmd, "testframe") == 0) {
 		send_test_frame();
 		cmd_reply("sent testframe");
@@ -146,11 +170,12 @@ static void handle_msg(const uint8_t *msg, size_t len) {
 		bridge_send(BRIDGE_MSG_ECHO_REPLY, payload, plen);
 		break;
 	case BRIDGE_MSG_FRAME:
-		/* Host -> device Ethernet frame for awdl0. M2.2 is RX-only (device->host),
-		 * so account and drop; M2.3 translates this to an AWDL data frame and
-		 * transmits it over the radio. */
+		/* Host -> device Ethernet frame for awdl0. Account it, then hand it to the
+		 * TX sink (the AWDL data-TX path) if one is registered. */
 		s_frames_from_host++;
 		s_bytes_from_host += (uint32_t)plen;
+		if (s_frame_sink)
+			s_frame_sink(payload, plen, s_frame_sink_ctx);
 		break;
 	case BRIDGE_MSG_CMD:
 		handle_cmd(payload, plen);

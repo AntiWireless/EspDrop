@@ -42,6 +42,16 @@ int awdl_app_format_peers(char *buf, size_t cap);
 /* Build and transmit one of our own PSF/MIF frames immediately (console `tx`). */
 void awdl_app_tx(uint8_t subtype);
 
+/*
+ * Queue one host Ethernet frame (dst||src||ethertype||payload) for transmission
+ * as an AWDL data frame. Only IPv6 (ethertype 0x86dd) is forwarded; other types
+ * are ignored. The frame is sent from the AWDL task during a slot we advertise
+ * as present, so it lines up with when the peer is on our channel. Signature
+ * matches bridge_frame_sink_t so it can be registered with bridge_set_frame_sink.
+ * Returns 0 if queued (or intentionally ignored), -1 on overflow/bad input.
+ */
+int awdl_app_tx_ethernet(const uint8_t *eth, size_t len, void *ctx);
+
 #ifdef __cplusplus
 }
 #endif

@@ -17,7 +17,7 @@
 #   ip -d link show awdl0
 #   sudo tcpdump -i awdl0 -e      # then type `testframe` at the bridge prompt
 #
-# Interactive stdin commands (forwarded to the device): mac | stats | ping | testframe
+# Interactive stdin commands (forwarded to the device): mac | stats | radio | ping | testframe
 #
 # Needs root: creating a TAP and running `ip link` both require CAP_NET_ADMIN.
 # The interface is not persistent - it disappears when this process exits.
@@ -119,7 +119,7 @@ def main() -> int:
 
         print(f"{args.dev} up (mtu {args.mtu}, mac {mac or 'kernel-assigned'}); "
               f"bridging {args.port}")
-        print("commands: mac | stats | ping | testframe   (Ctrl-C to quit)")
+        print("commands: mac | stats | radio | ping | testframe   (Ctrl-C to quit)")
 
         stdin_fd = sys.stdin.fileno()
         stdin_buf = bytearray()
