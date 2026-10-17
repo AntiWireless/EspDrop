@@ -61,6 +61,10 @@ int awdl_app_tx_ethernet(const uint8_t *eth, size_t len, void *ctx);
 typedef void (*awdl_peer_cb_t)(bool added, const uint8_t mac[6], void *ctx);
 void awdl_app_set_peer_cb(awdl_peer_cb_t cb, void *ctx);
 
+/* Re-emit every current peer as added on the next tick (e.g. when a new host
+ * session attaches). Safe to call from any task. */
+void awdl_app_resync_peers(void);
+
 #ifdef __cplusplus
 }
 #endif

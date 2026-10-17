@@ -15,6 +15,7 @@
 #include "awdl_sync.h"
 #include "awdl_peers.h"
 #include "awdl_node.h"
+#include "awdl_dedup.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -164,6 +165,70 @@ static void test_data_qos_and_flags(void) {
 	memcpy(bad, buf, (size_t)n);
 	bad[0] = 0x48;
 	CHECK(!awdl_parse_data(bad, (size_t)n, &poff, &et), "subtype 4 not rejected");
+}
+
+/* M2.3b: 802.11 retransmissions captured in promiscuous mode must be dropped
+ * (they showed up as "+N duplicates" in ping), but genuinely new frames not. */
+static void test_dedup(void) {
+	uint8_t a_mac[6] = {0x02, 0, 0, 0, 0, 0x0a};
+	uint8_t b_mac[6] = {0x02, 0, 0, 0, 0, 0x0b};
+	uint8_t dst[6]   = {0x02, 0, 0, 0, 0, 0x02};
+	const uint8_t payload[] = {0x60, 0, 0, 0, 0, 8, 58, 255, 1, 2, 3, 4};
+	awdl_self_t a, b;
+	awdl_self_init(&a, a_mac, "a", 6);
+	awdl_self_init(&b, b_mac, "b", 6);
+
+	uint8_t f1[200], f2[200], fb[200];
+	int n1 = awdl_build_data(f1, sizeof(f1), &a, dst, payload, sizeof(payload));
+	int n2 = awdl_build_data(f2, sizeof(f2), &a, dst, payload, sizeof(payload)); /* next seq */
+	int nb = awdl_build_data(fb, sizeof(fb), &b, dst, payload, sizeof(payload));
+	CHECK(n1 > 0 && n2 > 0 && nb > 0, "build failed");
+	/* b's first frame has the same sequence number as a's first frame */
+	CHECK(fb[22] == f1[22] && fb[23] == f1[23], "test setup: seq mismatch");
+
+	awdl_dedup_t d;
+	awdl_dedup_init(&d);
+	CHECK(!awdl_dedup_is_dup(&d, f1, (size_t)n1), "first frame flagged dup");
+
+	uint8_t r1[200];
+	memcpy(r1, f1, (size_t)n1);
+	r1[1] |= 0x08; /* Retry bit */
+	CHECK(awdl_dedup_is_dup(&d, r1, (size_t)n1), "retry of same seq not dropped");
+	CHECK(awdl_dedup_is_dup(&d, r1, (size_t)n1), "second retry not dropped");
+
+	/* Same seq without Retry is a new frame per 802.11 (e.g. after seq wrap). */
+	CHECK(!awdl_dedup_is_dup(&d, f1, (size_t)n1), "non-retry same seq dropped");
+
+	/* Next sequence number from a, even with Retry set, is new. */
+	uint8_t r2[200];
+	memcpy(r2, f2, (size_t)n2);
+	r2[1] |= 0x08;
+	CHECK(!awdl_dedup_is_dup(&d, r2, (size_t)n2), "new seq with retry dropped");
+
+	/* Another sender reusing the same seq is independent. */
+	uint8_t rb[200];
+	memcpy(rb, fb, (size_t)nb);
+	rb[1] |= 0x08;
+	CHECK(!awdl_dedup_is_dup(&d, rb, (size_t)nb), "other sender's frame dropped");
+
+	/* QoS: the same seq on a different TID is a different sequence space. */
+	uint8_t q0[200], q5[200];
+	memcpy(q0, f1, IEEE80211_HDR_LEN);
+	q0[0] = 0x88; q0[IEEE80211_HDR_LEN] = 0x00; q0[IEEE80211_HDR_LEN + 1] = 0x00;
+	memcpy(q0 + IEEE80211_HDR_LEN + 2, f1 + IEEE80211_HDR_LEN, (size_t)n1 - IEEE80211_HDR_LEN);
+	memcpy(q5, q0, (size_t)n1 + 2);
+	q5[IEEE80211_HDR_LEN] = 0x05;
+	awdl_dedup_init(&d);
+	CHECK(!awdl_dedup_is_dup(&d, q0, (size_t)n1 + 2), "QoS tid0 first flagged");
+	q5[1] |= 0x08;
+	CHECK(!awdl_dedup_is_dup(&d, q5, (size_t)n1 + 2), "QoS tid5 retry wrongly dropped");
+	q0[1] |= 0x08;
+	CHECK(awdl_dedup_is_dup(&d, q0, (size_t)n1 + 2), "QoS tid0 retry not dropped");
+
+	/* Too short to carry sequence control: never a duplicate, no crash. */
+	CHECK(!awdl_dedup_is_dup(&d, f1, 10), "short frame flagged dup");
+	/* QoS frame truncated before the QoS control field. */
+	CHECK(!awdl_dedup_is_dup(&d, q0, 24), "truncated QoS flagged dup");
 }
 
 static void test_reject_garbage(void) {
@@ -502,6 +567,7 @@ int main(void) {
 	test_psf_roundtrip();
 	test_data_roundtrip();
 	test_data_qos_and_flags();
+	test_dedup();
 	test_reject_garbage();
 	test_sync_election_parse();
 	test_sync_math();

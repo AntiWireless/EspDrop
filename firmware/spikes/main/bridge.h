@@ -21,6 +21,7 @@
 #ifndef ESPDROP_BRIDGE_H
 #define ESPDROP_BRIDGE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -64,6 +65,13 @@ void bridge_rx_frame(const uint8_t dst[6], const uint8_t src[6], uint16_t ethert
  */
 typedef int (*bridge_frame_sink_t)(const uint8_t *eth, size_t len, void *ctx);
 void bridge_set_frame_sink(bridge_frame_sink_t fn, void *ctx);
+
+/*
+ * Queue a PEER_ADD (added=true) or PEER_REMOVE notification for the host. Never
+ * blocks (drop on overflow): safe to call from the AWDL timing task. A dedicated
+ * bridge task performs the USB write.
+ */
+void bridge_notify_peer(bool added, const uint8_t mac[6]);
 
 /* printf-style LOG message to the host. */
 void bridge_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

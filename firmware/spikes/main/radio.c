@@ -29,6 +29,7 @@ static radio_action_handler_t s_action_handler;
 static void                  *s_action_ctx;
 static radio_data_handler_t   s_data_handler;
 static void                  *s_data_ctx;
+static awdl_dedup_t           s_dedup;   /* touched only by rx_cb (Wi-Fi task) */
 
 static inline void stat_inc(uint64_t *field) {
 	portENTER_CRITICAL(&s_stats_mux);
@@ -82,6 +83,12 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 	} else { /* WIFI_PKT_DATA */
 		size_t poff; uint16_t et;
 		if (awdl_parse_data(frame, (size_t)len, &poff, &et)) {
+			/* Promiscuous capture sees every 802.11 retry of a frame; a normal
+			 * receiver would discard those, so do the same before forwarding. */
+			if (awdl_dedup_is_dup(&s_dedup, frame, (size_t)len)) {
+				stat_inc(&s_stats.rx_dup);
+				return;
+			}
 			stat_inc(&s_stats.rx_data);
 			/* Reconstruct Ethernet (dst=addr1, src=addr2) and hand it to the
 			 * consumer. addr1/addr2 sit at the fixed offsets 4/10, and the BSSID
@@ -96,6 +103,7 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 /* ------------------------------------------------------------------------ */
 
 int radio_init(uint8_t channel) {
+	awdl_dedup_init(&s_dedup);   /* before promiscuous RX can run */
 	esp_err_t err = nvs_flash_init();
 	if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
 		nvs_flash_erase();

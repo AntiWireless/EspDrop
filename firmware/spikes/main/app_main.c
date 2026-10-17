@@ -28,10 +28,11 @@
 #include "awdl_app.h"
 
 /* AWDL peer appeared/left -> tell the host so it can manage the awdl0 neighbour
- * table (runs on the AWDL task; bridge_send is thread-safe). */
+ * table. Runs on the AWDL timing task, so it only enqueues (bridge_notify_peer
+ * never blocks); the USB write happens on a bridge task. */
 static void on_peer_evt(bool added, const uint8_t mac[6], void *ctx) {
 	(void)ctx;
-	bridge_send(added ? BRIDGE_MSG_PEER_ADD : BRIDGE_MSG_PEER_REMOVE, mac, 6);
+	bridge_notify_peer(added, mac);
 }
 
 void app_main(void) {

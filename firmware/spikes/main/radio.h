@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "awdl_frame.h"
+#include "awdl_dedup.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,7 +23,8 @@ extern "C" {
 
 typedef struct {
 	uint64_t rx_action;     /* AWDL action frames received (BSSID match) */
-	uint64_t rx_data;       /* AWDL data frames received */
+	uint64_t rx_data;       /* AWDL data frames received (duplicates excluded) */
+	uint64_t rx_dup;        /* AWDL data frames dropped as 802.11 retransmissions */
 	uint64_t rx_other_bssid;/* frames seen in promiscuous with a different BSSID */
 	uint64_t rx_parse_err;  /* AWDL-looking frames that failed to parse */
 	uint64_t tx_ok;         /* esp_wifi_80211_tx calls that returned ESP_OK */

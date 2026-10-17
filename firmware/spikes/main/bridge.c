@@ -19,7 +19,8 @@
 #include "freertos/semphr.h"
 
 #include "awdl_cobs.h"
-#include "radio.h"   /* radio_get_stats, for the `radio` diagnostic command */
+#include "awdl_app.h" /* awdl_app_resync_peers, for the `resync` command */
+#include "radio.h"    /* radio_get_stats, for the `radio` diagnostic command */
 
 #define BRIDGE_MAX_PAYLOAD 1600
 #define BRIDGE_MAX_MSG     (1 + BRIDGE_MAX_PAYLOAD)   /* type + payload */
@@ -35,8 +36,17 @@ typedef struct {
 	uint8_t  eth[14 + BRIDGE_RX_PAYLOAD_MAX];
 } rx_frame_t;
 
+/* Peer add/remove notifications, queued by the AWDL task and sent by their own
+ * task, so the AWDL timing task never blocks on a USB write. */
+#define BRIDGE_PEER_Q_LEN 16
+typedef struct {
+	bool    added;
+	uint8_t mac[6];
+} peer_evt_t;
+
 static SemaphoreHandle_t s_tx_lock;
 static QueueHandle_t     s_rx_fwd_q;   /* rx_frame_t: Wi-Fi task -> fwd task */
+static QueueHandle_t     s_peer_q;     /* peer_evt_t: AWDL task -> peer task */
 static bool s_started;
 
 /* Counters touched only from the single RX task (handle_msg), so no locking. */
@@ -105,6 +115,27 @@ static void bridge_fwd_task(void *arg) {
 	}
 }
 
+void bridge_notify_peer(bool added, const uint8_t mac[6]) {
+	if (!s_peer_q) return;
+	peer_evt_t ev;
+	ev.added = added;
+	memcpy(ev.mac, mac, 6);
+	/* Never block the caller (the AWDL task). On overflow the event is dropped;
+	 * the host recovers the full peer set with `resync`. */
+	(void)xQueueSend(s_peer_q, &ev, 0);
+}
+
+/* Drain peer notifications to the host (USB write off the AWDL timing task). */
+static void bridge_peer_task(void *arg) {
+	(void)arg;
+	peer_evt_t ev;
+	for (;;) {
+		if (xQueueReceive(s_peer_q, &ev, portMAX_DELAY) == pdTRUE)
+			bridge_send(ev.added ? BRIDGE_MSG_PEER_ADD : BRIDGE_MSG_PEER_REMOVE,
+			            ev.mac, 6);
+	}
+}
+
 /* Send a NUL-terminated string as a CMD_REPLY (length from strlen, so a
  * truncated snprintf can never be reported as longer than the buffer). */
 static void cmd_reply(const char *s) {
@@ -143,9 +174,9 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		 * for broadcast/multicast tx_ack is always success. Counts are cast to
 		 * 32-bit (ample for a test run) and printed with %u, matching `stats`. */
 		snprintf(rbuf, sizeof(rbuf),
-		         "rx_action=%u rx_data=%u rx_other=%u rx_perr=%u "
+		         "rx_action=%u rx_data=%u rx_dup=%u rx_other=%u rx_perr=%u "
 		         "tx_ok=%u tx_err=%u tx_ack=%u tx_noack=%u",
-		         (unsigned)st.rx_action, (unsigned)st.rx_data,
+		         (unsigned)st.rx_action, (unsigned)st.rx_data, (unsigned)st.rx_dup,
 		         (unsigned)st.rx_other_bssid, (unsigned)st.rx_parse_err,
 		         (unsigned)st.tx_ok, (unsigned)st.tx_err,
 		         (unsigned)st.tx_done_ok, (unsigned)st.tx_done_fail);
@@ -153,6 +184,13 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 	} else if (strcmp(cmd, "testframe") == 0) {
 		send_test_frame();
 		cmd_reply("sent testframe");
+	} else if (strcmp(cmd, "resync") == 0) {
+		/* Re-announce every known peer on the next AWDL tick. The host sends this
+		 * on connect, because the C3 keeps running across host sessions (its USB
+		 * port does not reset the chip) and would otherwise never re-emit peers
+		 * it already knew before the host attached. */
+		awdl_app_resync_peers();
+		cmd_reply("resync");
 	} else {
 		snprintf(out, sizeof(out), "unknown cmd '%s'", cmd);
 		cmd_reply(out);
@@ -181,7 +219,7 @@ static void handle_msg(const uint8_t *msg, size_t len) {
 	case BRIDGE_MSG_CMD:
 		handle_cmd(payload, plen);
 		break;
-	/* PEER_* are device->host only; produced once the radio lands. */
+	/* PEER_* are device->host only (see bridge_notify_peer). */
 	default:
 		break;
 	}
@@ -224,7 +262,12 @@ int bridge_start(void) {
 	}
 
 	s_rx_fwd_q = xQueueCreate(BRIDGE_RX_Q_LEN, sizeof(rx_frame_t));
-	if (!s_rx_fwd_q) {
+	s_peer_q   = xQueueCreate(BRIDGE_PEER_Q_LEN, sizeof(peer_evt_t));
+	if (!s_rx_fwd_q || !s_peer_q) {
+		if (s_rx_fwd_q) vQueueDelete(s_rx_fwd_q);
+		if (s_peer_q)   vQueueDelete(s_peer_q);
+		s_rx_fwd_q = NULL;
+		s_peer_q = NULL;
 		vSemaphoreDelete(s_tx_lock);
 		s_tx_lock = NULL;
 		return -1;
@@ -245,6 +288,8 @@ int bridge_start(void) {
 		s_started = false;
 		vQueueDelete(s_rx_fwd_q);
 		s_rx_fwd_q = NULL;
+		vQueueDelete(s_peer_q);
+		s_peer_q = NULL;
 		vSemaphoreDelete(s_tx_lock);
 		s_tx_lock = NULL;
 		/* Logging was just silenced; restore it so the caller's error is visible
@@ -256,6 +301,8 @@ int bridge_start(void) {
 	 * dropped (queue fills) but the control link stays up, so do not fail. */
 	if (xTaskCreate(bridge_fwd_task, "bridge_fwd", 3072, NULL, 5, NULL) != pdPASS)
 		bridge_log("warning: rx-forward task did not start");
+	if (xTaskCreate(bridge_peer_task, "bridge_peer", 2560, NULL, 4, NULL) != pdPASS)
+		bridge_log("warning: peer-notify task did not start");
 
 	bridge_log("bridge up");
 	return 0;

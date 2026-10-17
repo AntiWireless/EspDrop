@@ -206,6 +206,10 @@ void awdl_app_set_peer_cb(awdl_peer_cb_t cb, void *ctx) {
 	s_peer_resync = true;   /* re-emit all current peers on the next tick */
 }
 
+void awdl_app_resync_peers(void) {
+	s_peer_resync = true;   /* consumed by emit_peer_changes on the AWDL task */
+}
+
 int awdl_app_start(const uint8_t self_mac[6], const char *name, uint8_t chan) {
 	if (s_started) return 0;
 

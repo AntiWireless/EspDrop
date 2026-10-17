@@ -22,7 +22,8 @@
 # from each peer's MAC by EUI-64) so the host can reach a peer by its link-local
 # without relying on NDP over the lossy link. Suppressed with --no-config.
 #
-# Interactive stdin commands (forwarded to the device): mac | stats | radio | ping | testframe
+# Interactive stdin commands (forwarded to the device):
+#   mac | stats | radio | ping | testframe | resync
 #
 # Needs root: creating a TAP and running `ip link` both require CAP_NET_ADMIN.
 # The interface is not persistent - it disappears when this process exits.
@@ -135,7 +136,15 @@ def main() -> int:
 
         print(f"{args.dev} up (mtu {args.mtu}, mac {mac or 'kernel-assigned'}); "
               f"bridging {args.port}")
-        print("commands: mac | stats | radio | ping | testframe   (Ctrl-C to quit)")
+        print("commands: mac | stats | radio | ping | testframe | resync   (Ctrl-C to quit)")
+
+        # The C3 keeps running across host sessions (its USB port does not reset
+        # the chip), so peers it learned earlier would never be re-announced. Ask
+        # it to re-emit its current peer set so the neighbour table is complete.
+        try:
+            link.write_all(usb_fd, link.frame(link.MSG_CMD, b"resync"))
+        except (OSError, TimeoutError) as e:
+            print(f"warning: could not request peer resync ({e})", file=sys.stderr)
 
         stdin_fd = sys.stdin.fileno()
         stdin_buf = bytearray()
