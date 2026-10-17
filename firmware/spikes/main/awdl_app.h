@@ -52,6 +52,15 @@ void awdl_app_tx(uint8_t subtype);
  */
 int awdl_app_tx_ethernet(const uint8_t *eth, size_t len, void *ctx);
 
+/*
+ * Register a callback for peer-table changes: added=true when a peer is first
+ * seen, false when it ages out. Fires from the AWDL task at ~1 Hz. Pass NULL to
+ * clear. Registering re-syncs: every current peer is re-emitted as added on the
+ * next tick, so a sink registered after start still learns the existing peers.
+ */
+typedef void (*awdl_peer_cb_t)(bool added, const uint8_t mac[6], void *ctx);
+void awdl_app_set_peer_cb(awdl_peer_cb_t cb, void *ctx);
+
 #ifdef __cplusplus
 }
 #endif

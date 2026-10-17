@@ -58,6 +58,13 @@ static QueueHandle_t    s_tx_q;      /* tx_data_t: bridge RX task -> awdl task *
 static TaskHandle_t     s_task;
 static bool             s_started;
 
+/* Peer-change notification. Shadow set is touched only by the AWDL task. */
+static awdl_peer_cb_t   s_peer_cb;
+static void            *s_peer_cb_ctx;
+static volatile bool    s_peer_resync;   /* set by set_peer_cb; re-emit all peers */
+static uint8_t          s_peer_shadow[AWDL_MAX_PEERS][6];
+static int              s_peer_nshadow;
+
 /* radio handler: Wi-Fi task context, must be quick. Copy into the queue. */
 static void on_action(const awdl_peer_view_t *pv, int8_t rssi, uint8_t channel,
                       uint64_t now_us, void *ctx) {
@@ -97,6 +104,29 @@ static bool send_frame(uint8_t subtype, bool force) {
 	return sent;
 }
 
+/* Diff the current peer set against the previous snapshot and fire s_peer_cb for
+ * each addition/removal. Runs on the AWDL task, outside s_lock (the cb may block
+ * briefly on a USB write). n is small (<= AWDL_MAX_PEERS), so O(n^2) is fine. */
+static void emit_peer_changes(const uint8_t cur[][6], int ncur) {
+	if (s_peer_resync) { s_peer_nshadow = 0; s_peer_resync = false; }
+	if (s_peer_cb) {
+		for (int i = 0; i < s_peer_nshadow; i++) {
+			bool found = false;
+			for (int j = 0; j < ncur; j++)
+				if (memcmp(s_peer_shadow[i], cur[j], 6) == 0) { found = true; break; }
+			if (!found) s_peer_cb(false, s_peer_shadow[i], s_peer_cb_ctx);
+		}
+		for (int j = 0; j < ncur; j++) {
+			bool found = false;
+			for (int i = 0; i < s_peer_nshadow; i++)
+				if (memcmp(s_peer_shadow[i], cur[j], 6) == 0) { found = true; break; }
+			if (!found) s_peer_cb(true, cur[j], s_peer_cb_ctx);
+		}
+	}
+	for (int j = 0; j < ncur; j++) memcpy(s_peer_shadow[j], cur[j], 6);
+	s_peer_nshadow = ncur;
+}
+
 static void awdl_task(void *arg) {
 	(void)arg;
 	int64_t now = esp_timer_get_time();
@@ -121,9 +151,15 @@ static void awdl_task(void *arg) {
 		if (now >= next_mif && send_frame(AWDL_SUBTYPE_MIF, false))
 			next_mif = now + MIF_INTERVAL_US;
 		if (now >= next_tick) {
+			uint8_t cur[AWDL_MAX_PEERS][6];
+			int ncur = 0;
 			xSemaphoreTake(s_lock, portMAX_DELAY);
 			awdl_node_tick(&s_node, (uint64_t)now);
+			for (int i = 0; i < AWDL_MAX_PEERS; i++)
+				if (s_node.peers.peers[i].used)
+					memcpy(cur[ncur++], s_node.peers.peers[i].addr, 6);
 			xSemaphoreGive(s_lock);
+			emit_peer_changes(cur, ncur);   /* notify host of peer add/remove */
 			next_tick = now + TICK_INTERVAL_US;
 		}
 
@@ -162,6 +198,12 @@ int awdl_app_tx_ethernet(const uint8_t *eth, size_t len, void *ctx) {
 	td.len = (uint16_t)plen;
 	if (plen) memcpy(td.ip, eth + 14, plen);
 	return (xQueueSend(s_tx_q, &td, 0) == pdTRUE) ? 0 : -1; /* drop on overflow */
+}
+
+void awdl_app_set_peer_cb(awdl_peer_cb_t cb, void *ctx) {
+	s_peer_cb_ctx = ctx;
+	s_peer_cb = cb;
+	s_peer_resync = true;   /* re-emit all current peers on the next tick */
 }
 
 int awdl_app_start(const uint8_t self_mac[6], const char *name, uint8_t chan) {

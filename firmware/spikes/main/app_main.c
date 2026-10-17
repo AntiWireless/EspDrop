@@ -27,6 +27,13 @@
 #include "radio.h"
 #include "awdl_app.h"
 
+/* AWDL peer appeared/left -> tell the host so it can manage the awdl0 neighbour
+ * table (runs on the AWDL task; bridge_send is thread-safe). */
+static void on_peer_evt(bool added, const uint8_t mac[6], void *ctx) {
+	(void)ctx;
+	bridge_send(added ? BRIDGE_MSG_PEER_ADD : BRIDGE_MSG_PEER_REMOVE, mac, 6);
+}
+
 void app_main(void) {
 	/* Bring up the radio and AWDL node FIRST: their one-time init logs (incl.
 	 * non-maskable PHY/ROM prints) go out at boot, before the host opens the
@@ -54,6 +61,7 @@ void app_main(void) {
 	 * TX: hand host Ethernet frames to the AWDL data-TX path. Then start RX. */
 	radio_set_data_handler(bridge_rx_frame, NULL);
 	bridge_set_frame_sink(awdl_app_tx_ethernet, NULL);
+	awdl_app_set_peer_cb(on_peer_evt, NULL);   /* host builds the neighbour table */
 	if (radio_promisc(true) != ESP_OK)
 		bridge_log("warning: promiscuous RX did not enable");
 	bridge_log("awdl rx/tx up on ch %u (M2.3)", DEFAULT_CHANNEL);

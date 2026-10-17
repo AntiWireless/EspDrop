@@ -17,6 +17,11 @@
 #   ip -d link show awdl0
 #   sudo tcpdump -i awdl0 -e      # then type `testframe` at the bridge prompt
 #
+# As the device reports AWDL peers (PEER_ADD/PEER_REMOVE), this tool keeps the
+# awdl0 IPv6 neighbour table in sync: it adds a permanent fe80:: entry (derived
+# from each peer's MAC by EUI-64) so the host can reach a peer by its link-local
+# without relying on NDP over the lossy link. Suppressed with --no-config.
+#
 # Interactive stdin commands (forwarded to the device): mac | stats | radio | ping | testframe
 #
 # Needs root: creating a TAP and running `ip link` both require CAP_NET_ADMIN.
@@ -30,6 +35,7 @@ import fcntl
 import os
 import re
 import select
+import socket
 import struct
 import subprocess
 import sys
@@ -59,6 +65,14 @@ def ip(*argv) -> None:
 
 def mac_str(b: bytes) -> str:
     return ":".join(f"{x:02x}" for x in b)
+
+
+def link_local_from_mac(mac: bytes) -> str:
+    """IPv6 link-local (fe80::/64) for a MAC, via the modified EUI-64 rule."""
+    b = bytearray(mac)
+    b[0] ^= 0x02  # flip the universal/local bit
+    iid = bytes(b[0:3]) + b"\xff\xfe" + bytes(b[3:6])
+    return socket.inet_ntop(socket.AF_INET6, b"\xfe\x80\x00\x00\x00\x00\x00\x00" + iid)
 
 
 def query_mac(usb_fd: int, reader: link.Reader, timeout: float = 2.0):
@@ -161,9 +175,22 @@ def main() -> int:
                         elif t == link.MSG_CMD_REPLY:
                             print(f"[reply] {p.decode('utf-8', 'replace')}")
                         elif t == link.MSG_PEER_ADD and len(p) == 6:
-                            print(f"[peer+] {mac_str(p)}")
+                            ll = link_local_from_mac(p)
+                            print(f"[peer+] {mac_str(p)}  ->  {ll}%{args.dev}")
+                            if not args.no_config:
+                                try:
+                                    ip("-6", "neigh", "replace", ll, "lladdr",
+                                       mac_str(p), "dev", args.dev, "nud", "permanent")
+                                except subprocess.CalledProcessError as e:
+                                    print(f"neigh add failed: {e}", file=sys.stderr)
                         elif t == link.MSG_PEER_REMOVE and len(p) == 6:
                             print(f"[peer-] {mac_str(p)}")
+                            if not args.no_config:
+                                try:
+                                    ip("-6", "neigh", "del", link_local_from_mac(p),
+                                       "dev", args.dev)
+                                except subprocess.CalledProcessError:
+                                    pass  # entry may already be gone
 
             if tap_fd in r:
                 try:
