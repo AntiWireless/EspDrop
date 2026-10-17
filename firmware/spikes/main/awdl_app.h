@@ -65,6 +65,16 @@ void awdl_app_set_peer_cb(awdl_peer_cb_t cb, void *ctx);
  * session attaches). Safe to call from any task. */
 void awdl_app_resync_peers(void);
 
+/* Data-TX path counters (host frames -> radio), for the `tx` diagnostic. */
+typedef struct {
+	uint32_t queued;    /* IPv6 frames accepted from the host into the TX queue */
+	uint32_t q_drop;    /* dropped because the TX queue was full */
+	uint32_t sent_uc;   /* unicast data frames handed to the radio */
+	uint32_t sent_mc;   /* multicast/broadcast data frames handed to the radio */
+	uint32_t tx_fail;   /* build or esp_wifi_80211_tx failures */
+} awdl_app_tx_counters_t;
+void awdl_app_get_tx_counters(awdl_app_tx_counters_t *out);
+
 #ifdef __cplusplus
 }
 #endif

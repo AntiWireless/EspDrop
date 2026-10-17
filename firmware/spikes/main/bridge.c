@@ -181,6 +181,19 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		         (unsigned)st.tx_ok, (unsigned)st.tx_err,
 		         (unsigned)st.tx_done_ok, (unsigned)st.tx_done_fail);
 		cmd_reply(rbuf);
+	} else if (strcmp(cmd, "tx") == 0) {
+		/* Host->radio data path: did the frame reach the radio, and did the peer
+		 * ACK our unicast data frames (broadcast PSF/MIF excluded)? */
+		awdl_app_tx_counters_t c;
+		awdl_app_get_tx_counters(&c);
+		radio_stats_t st;
+		radio_get_stats(&st);
+		snprintf(out, sizeof(out),
+		         "queued=%u q_drop=%u sent_uc=%u sent_mc=%u fail=%u uc_ack=%u uc_noack=%u",
+		         (unsigned)c.queued, (unsigned)c.q_drop, (unsigned)c.sent_uc,
+		         (unsigned)c.sent_mc, (unsigned)c.tx_fail,
+		         (unsigned)st.tx_uc_ack, (unsigned)st.tx_uc_noack);
+		cmd_reply(out);
 	} else if (strcmp(cmd, "testframe") == 0) {
 		send_test_frame();
 		cmd_reply("sent testframe");

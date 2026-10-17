@@ -45,11 +45,20 @@ static inline void stat_inc(uint64_t *field) {
  * ESP-IDF 5.1 through 6.x (the public esp_wifi_register_80211_tx_cb only
  * appeared in 5.5). */
 static void tx_done_cb(uint8_t ifidx, uint8_t *data, uint16_t *data_len, bool txStatus) {
-	(void)ifidx; (void)data; (void)data_len;
-	if (txStatus)
+	(void)ifidx;
+	/* Broadcast PSF/MIF always report success, so the totals above say little
+	 * about whether a peer received our data. Separately count our own unicast
+	 * data frames (frame control 0x08, addr1 without the group bit), whose status
+	 * is the peer's hardware ACK. */
+	bool uc_data = data && data_len && *data_len >= 10 &&
+	               data[0] == 0x08 && !(data[4] & 0x01);
+	if (txStatus) {
 		stat_inc(&s_stats.tx_done_ok);
-	else
+		if (uc_data) stat_inc(&s_stats.tx_uc_ack);
+	} else {
 		stat_inc(&s_stats.tx_done_fail);
+		if (uc_data) stat_inc(&s_stats.tx_uc_noack);
+	}
 }
 
 /* ---- promiscuous rx callback: filter AWDL BSSID, parse, enqueue ---- */

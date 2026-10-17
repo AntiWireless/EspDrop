@@ -65,6 +65,10 @@ static volatile bool    s_peer_resync;   /* set by set_peer_cb; re-emit all peer
 static uint8_t          s_peer_shadow[AWDL_MAX_PEERS][6];
 static int              s_peer_nshadow;
 
+/* Data-TX counters: written by the bridge RX task (queued/q_drop) and the AWDL
+ * task (sent/fail), read by the `tx` command. Aligned 32-bit, stats only. */
+static volatile uint32_t s_tx_queued, s_tx_q_drop, s_tx_sent_uc, s_tx_sent_mc, s_tx_fail;
+
 /* radio handler: Wi-Fi task context, must be quick. Copy into the queue. */
 static void on_action(const awdl_peer_view_t *pv, int8_t rssi, uint8_t channel,
                       uint64_t now_us, void *ctx) {
@@ -176,7 +180,12 @@ static void awdl_task(void *arg) {
 				while (budget-- > 0 && xQueueReceive(s_tx_q, &td, 0) == pdTRUE) {
 					int n = awdl_build_data(txbuf, sizeof(txbuf), &s_node.self,
 					                        td.dst, td.ip, td.len);
-					if (n > 0) radio_tx(txbuf, n);
+					if (n > 0 && radio_tx(txbuf, n) == 0) {
+						if (td.dst[0] & 0x01) s_tx_sent_mc++;
+						else                  s_tx_sent_uc++;
+					} else {
+						s_tx_fail++;
+					}
 				}
 			}
 			xSemaphoreGive(s_lock);
@@ -197,7 +206,17 @@ int awdl_app_tx_ethernet(const uint8_t *eth, size_t len, void *ctx) {
 	memcpy(td.dst, eth, 6);
 	td.len = (uint16_t)plen;
 	if (plen) memcpy(td.ip, eth + 14, plen);
-	return (xQueueSend(s_tx_q, &td, 0) == pdTRUE) ? 0 : -1; /* drop on overflow */
+	if (xQueueSend(s_tx_q, &td, 0) != pdTRUE) { s_tx_q_drop++; return -1; } /* full */
+	s_tx_queued++;
+	return 0;
+}
+
+void awdl_app_get_tx_counters(awdl_app_tx_counters_t *out) {
+	out->queued  = s_tx_queued;
+	out->q_drop  = s_tx_q_drop;
+	out->sent_uc = s_tx_sent_uc;
+	out->sent_mc = s_tx_sent_mc;
+	out->tx_fail = s_tx_fail;
 }
 
 void awdl_app_set_peer_cb(awdl_peer_cb_t cb, void *ctx) {

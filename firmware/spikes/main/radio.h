@@ -31,6 +31,8 @@ typedef struct {
 	uint64_t tx_err;        /* esp_wifi_80211_tx calls that returned an error */
 	uint64_t tx_done_ok;    /* 80211 tx-done callbacks with status SUCCESS */
 	uint64_t tx_done_fail;  /* 80211 tx-done callbacks with status FAIL */
+	uint64_t tx_uc_ack;     /* our unicast DATA frames the peer hardware-ACKed */
+	uint64_t tx_uc_noack;   /* our unicast DATA frames with no ACK after retries */
 } radio_stats_t;
 
 /*
