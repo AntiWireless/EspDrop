@@ -17,10 +17,13 @@
 #   ip -d link show awdl0
 #   sudo tcpdump -i awdl0 -e      # then type `testframe` at the bridge prompt
 #
-# As the device reports AWDL peers (PEER_ADD/PEER_REMOVE), this tool keeps the
-# awdl0 IPv6 neighbour table in sync: it adds a permanent fe80:: entry (derived
-# from each peer's MAC by EUI-64) so the host can reach a peer by its link-local
-# without relying on NDP over the lossy link. Suppressed with --no-config.
+# Neighbour table: every IPv6 packet received from a peer carries its real
+# link-local source address and its MAC, so this tool learns that pair from the
+# traffic and installs a permanent awdl0 neighbour entry for it. The host can then
+# reach the peer without NDP over the lossy link. The address is NOT derived from
+# the MAC (EUI-64): current iOS uses non-MAC-based link-local addresses, so a
+# guessed address would belong to nobody. Peer add/remove events from the device
+# are only logged. Suppressed with --no-config.
 #
 # Interactive stdin commands (forwarded to the device):
 #   mac | stats | radio | ping | testframe | resync
@@ -68,12 +71,21 @@ def mac_str(b: bytes) -> str:
     return ":".join(f"{x:02x}" for x in b)
 
 
-def link_local_from_mac(mac: bytes) -> str:
-    """IPv6 link-local (fe80::/64) for a MAC, via the modified EUI-64 rule."""
-    b = bytearray(mac)
-    b[0] ^= 0x02  # flip the universal/local bit
-    iid = bytes(b[0:3]) + b"\xff\xfe" + bytes(b[3:6])
-    return socket.inet_ntop(socket.AF_INET6, b"\xfe\x80\x00\x00\x00\x00\x00\x00" + iid)
+def learn_neighbor(eth: bytes):
+    """(link-local source address, source MAC) of a received IPv6 frame, or None.
+
+    Only unicast source MACs and fe80::/10 source addresses qualify; anything else
+    (multicast sender, global/unspecified source, non-IPv6) teaches us nothing.
+    """
+    if len(eth) < 14 + 40 or eth[12:14] != b"\x86\xdd":
+        return None
+    src_mac = eth[6:12]
+    if src_mac[0] & 0x01:            # group address cannot be a neighbour
+        return None
+    src_ip = eth[22:38]              # IPv6 source: Ethernet hdr (14) + 8
+    if src_ip[0] != 0xfe or (src_ip[1] & 0xc0) != 0x80:
+        return None                  # not link-local
+    return socket.inet_ntop(socket.AF_INET6, src_ip), bytes(src_mac)
 
 
 def query_mac(usb_fd: int, reader: link.Reader, timeout: float = 2.0):
@@ -140,7 +152,7 @@ def main() -> int:
 
         # The C3 keeps running across host sessions (its USB port does not reset
         # the chip), so peers it learned earlier would never be re-announced. Ask
-        # it to re-emit its current peer set so the neighbour table is complete.
+        # it to re-emit its current peer set so the [peer+] log is complete.
         try:
             link.write_all(usb_fd, link.frame(link.MSG_CMD, b"resync"))
         except (OSError, TimeoutError) as e:
@@ -150,6 +162,7 @@ def main() -> int:
         stdin_buf = bytearray()
         stdin_open = True
         read_cap = args.mtu + 64  # one Ethernet frame plus slack
+        learned = {}              # link-local address -> MAC, from received traffic
 
         # Single-threaded select pump. Writes use a bounded 1s timeout so one
         # direction stalling on USB backpressure cannot block the other for long
@@ -179,27 +192,30 @@ def main() -> int:
                                 to_tap += 1
                             except (OSError, TimeoutError) as e:
                                 print(f"tap write failed: {e}", file=sys.stderr)
+                            nb = learn_neighbor(p)
+                            if nb and learned.get(nb[0]) != nb[1]:
+                                ll, nmac = nb
+                                learned[ll] = nmac
+                                print(f"[neigh] {ll}%{args.dev} is {mac_str(nmac)}"
+                                      f" (learned from traffic)")
+                                if not args.no_config:
+                                    try:
+                                        ip("-6", "neigh", "replace", ll, "lladdr",
+                                           mac_str(nmac), "dev", args.dev,
+                                           "nud", "permanent")
+                                    except subprocess.CalledProcessError as e:
+                                        print(f"neigh add failed: {e}", file=sys.stderr)
                         elif t == link.MSG_LOG:
                             print(f"[device] {p.decode('utf-8', 'replace')}")
                         elif t == link.MSG_CMD_REPLY:
                             print(f"[reply] {p.decode('utf-8', 'replace')}")
                         elif t == link.MSG_PEER_ADD and len(p) == 6:
-                            ll = link_local_from_mac(p)
-                            print(f"[peer+] {mac_str(p)}  ->  {ll}%{args.dev}")
-                            if not args.no_config:
-                                try:
-                                    ip("-6", "neigh", "replace", ll, "lladdr",
-                                       mac_str(p), "dev", args.dev, "nud", "permanent")
-                                except subprocess.CalledProcessError as e:
-                                    print(f"neigh add failed: {e}", file=sys.stderr)
+                            print(f"[peer+] {mac_str(p)}")
                         elif t == link.MSG_PEER_REMOVE and len(p) == 6:
+                            # Logged only: peers flap on the sparse 2.4 GHz link, and
+                            # deleting the learned neighbour would just force NDP.
+                            # Stale entries are harmless and vanish with awdl0.
                             print(f"[peer-] {mac_str(p)}")
-                            if not args.no_config:
-                                try:
-                                    ip("-6", "neigh", "del", link_local_from_mac(p),
-                                       "dev", args.dev)
-                                except subprocess.CalledProcessError:
-                                    pass  # entry may already be gone
 
             if tap_fd in r:
                 try:
