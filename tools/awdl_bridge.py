@@ -81,7 +81,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="EspDrop M2.1 TAP bridge for awdl0")
     ap.add_argument("port", help="device serial port, e.g. /dev/ttyACM0")
     ap.add_argument("--dev", default="awdl0", help="TAP interface name (default awdl0)")
-    ap.add_argument("--mtu", type=int, default=1484, help="interface MTU (default 1484)")
+    ap.add_argument("--mtu", type=int, default=1460,
+                    help="interface MTU (default 1460 = 1500 - 40 B AWDL framing, "
+                         "the most the device can transmit in one data frame)")
     ap.add_argument("--mac", default=None,
                     help="interface MAC (default: query the C3)")
     ap.add_argument("--no-config", action="store_true",

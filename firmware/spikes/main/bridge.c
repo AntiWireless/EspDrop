@@ -140,14 +140,15 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		radio_get_stats(&st);
 		char rbuf[200];
 		/* tx_ack = unicast frames the peer hardware-ACKed (our TX reached it);
-		 * for broadcast/multicast tx_ack is always success. */
+		 * for broadcast/multicast tx_ack is always success. Counts are cast to
+		 * 32-bit (ample for a test run) and printed with %u, matching `stats`. */
 		snprintf(rbuf, sizeof(rbuf),
-		         "rx_action=%llu rx_data=%llu rx_other=%llu rx_perr=%llu "
-		         "tx_ok=%llu tx_err=%llu tx_ack=%llu tx_noack=%llu",
-		         (unsigned long long)st.rx_action, (unsigned long long)st.rx_data,
-		         (unsigned long long)st.rx_other_bssid, (unsigned long long)st.rx_parse_err,
-		         (unsigned long long)st.tx_ok, (unsigned long long)st.tx_err,
-		         (unsigned long long)st.tx_done_ok, (unsigned long long)st.tx_done_fail);
+		         "rx_action=%u rx_data=%u rx_other=%u rx_perr=%u "
+		         "tx_ok=%u tx_err=%u tx_ack=%u tx_noack=%u",
+		         (unsigned)st.rx_action, (unsigned)st.rx_data,
+		         (unsigned)st.rx_other_bssid, (unsigned)st.rx_parse_err,
+		         (unsigned)st.tx_ok, (unsigned)st.tx_err,
+		         (unsigned)st.tx_done_ok, (unsigned)st.tx_done_fail);
 		cmd_reply(rbuf);
 	} else if (strcmp(cmd, "testframe") == 0) {
 		send_test_frame();

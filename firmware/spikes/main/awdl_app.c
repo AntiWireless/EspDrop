@@ -31,7 +31,11 @@ static const char *TAG = "awdl_app";
 /* Host->radio data TX: one IPv6 packet (awdl0 MTU) per slot, queued from the
  * bridge RX task and flushed by the AWDL task during advertised-present slots. */
 #define TX_Q_LEN        8
-#define TX_PAYLOAD_MAX  1484u   /* awdl0 MTU */
+/* Max IPv6 payload per data frame. esp_wifi_80211_tx caps the 802.11 frame at
+ * 1500 bytes; awdl_build_data adds 40 bytes of framing (24 B 802.11 + 8 B
+ * LLC/SNAP + 8 B AWDL data header), so the payload must stay <= 1500 - 40. This
+ * is the effective awdl0 MTU (the host TAP is configured to match). */
+#define TX_PAYLOAD_MAX  1460u
 #define TX_FLUSH_BUDGET 8       /* data frames sent per ready slot visit */
 
 typedef struct {
