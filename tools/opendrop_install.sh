@@ -10,8 +10,9 @@
 #   tools/opendrop_install.sh            # as your normal user, not root
 #
 # Re-running is safe: an install that is complete and matches the pinned series
-# is left alone; one this script left incomplete (an error, Ctrl-C) or built
-# from another series/Python version is rebuilt from scratch.
+# is left alone (no network needed); one this script left incomplete (an error,
+# Ctrl-C) is rebuilt from scratch; one built from another series or Python
+# version is rebuilt too, and stays in place until the new one has worked.
 #
 # Settings (environment variables):
 #   OPENDROP_VENV        target venv            (default: ~/opendrop-venv)
@@ -67,10 +68,37 @@ fi
 pyver=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
 echo "python: $(python3 -V 2>&1)"
 
+# A venv this script made carries one of our markers (only ever written into a
+# directory this script created itself) or, from the first version of the
+# script, espdrop-freeze.txt next to pyvenv.cfg. Complete: no WIP marker left.
+ours()     { [ -e "$1/$STAMP_OK" ] || [ -e "$1/$STAMP_WIP" ] \
+               || { [ -f "$1/pyvenv.cfg" ] && [ -f "$1/espdrop-freeze.txt" ]; }; }
+complete() { [ ! -e "$1/$STAMP_WIP" ] && { [ -e "$1/$STAMP_OK" ] || [ -f "$1/espdrop-freeze.txt" ]; }; }
+# What a finished venv must match: OpenDrop and Python version, the patch
+# revision ($1) and the series (names and order).
+series_sig() { echo "opendrop $OPENDROP_VERSION python $pyver mt7921 $1 patches ${PATCHES[*]}"; }
+up_to_date() { complete "$VENV" && [ -f "$VENV/$STAMP_OK" ] && [ "$(cat "$VENV/$STAMP_OK")" = "$1" ]; }
+
+# A rebuild that was killed hard leaves the previous install aside; put it back.
+OLD="$VENV.espdrop-old"
+if [ -e "$OLD" ] && ours "$OLD" && complete "$OLD" \
+   && { [ ! -e "$VENV" ] || { ours "$VENV" && ! complete "$VENV"; }; }; then
+  rm -rf -- "$VENV"
+  mv -- "$OLD" "$VENV"
+fi
+
+# A commit id pins the patches for good, so an up-to-date install is recognised
+# without the network or the patch cache. A branch or tag is fetched each time.
+case "$REV" in ''|*[!0-9a-f]*) fixed_rev=0 ;; *) fixed_rev=1 ;; esac
+if [ $fixed_rev -eq 1 ] && up_to_date "$(series_sig "$REV")"; then
+  echo; echo "already installed and up to date: $VENV"; exit 0
+fi
+
 step "fetching the patch series ($REV)"
 if [ -d "$SRC/.git" ]; then
-  # Fetch only when the pinned revision is not here yet (re-runs work offline).
-  git -C "$SRC" cat-file -e "$REV^{commit}" 2>/dev/null || git -C "$SRC" fetch -q origin
+  if [ $fixed_rev -eq 0 ] || ! git -C "$SRC" cat-file -e "$REV^{commit}" 2>/dev/null; then
+    git -C "$SRC" fetch -q --tags --force origin
+  fi
 else
   mkdir -p "$(dirname "$SRC")"
   git clone -q https://github.com/jedbillyb/airdrop-mt7921.git "$SRC"
@@ -79,32 +107,45 @@ git -C "$SRC" -c advice.detachedHead=false checkout -q "$REV"
 for p in "${PATCHES[@]}"; do
   [ -f "$SRC/patches/opendrop-$p.patch" ] || die "patch $p missing in $SRC at $REV"
 done
-# What the finished venv must match: OpenDrop and Python version plus the
-# names, order and contents of the patches.
-sig="opendrop $OPENDROP_VERSION python $pyver series $(
-  cd "$SRC/patches" && for p in "${PATCHES[@]}"; do sha256sum "opendrop-$p.patch"; done \
-    | sha256sum | cut -d' ' -f1)"
+if [ $fixed_rev -eq 1 ]; then
+  sig=$(series_sig "$REV")
+else
+  rev_id=$(git -C "$SRC" rev-parse --short=12 HEAD)
+  echo "$REV is $rev_id"
+  sig=$(series_sig "$rev_id")
+  if up_to_date "$sig"; then echo; echo "already installed and up to date: $VENV"; exit 0; fi
+fi
 
-if [ -e "$VENV" ]; then
-  if [ -f "$VENV/$STAMP_OK" ] && [ "$(cat "$VENV/$STAMP_OK")" = "$sig" ] \
-     && [ ! -e "$VENV/$STAMP_WIP" ]; then
-    echo
-    echo "already installed and up to date: $VENV"
-    exit 0
+# A working but outdated install stays aside until the new one is verified, and
+# comes back if anything fails or is interrupted on the way. (Building the new
+# one elsewhere and moving it would not work: a venv is not relocatable.)
+restore=0
+finish() {
+  if [ "$restore" -eq 1 ]; then
+    rm -rf -- "$VENV" && mv -- "$OLD" "$VENV" && echo "kept the previous install in $VENV" >&2
   fi
-  # Only ever delete a venv this script created: it carries one of our markers,
-  # which are only written into a directory this script made itself.
-  if [ -e "$VENV/$STAMP_OK" ] || [ -e "$VENV/$STAMP_WIP" ]; then
-    step "rebuilding $VENV (previous install incomplete or outdated)"
-    rm -rf -- "$VENV"
+}
+trap finish EXIT
+if [ -e "$VENV" ]; then
+  ours "$VENV" || die "$VENV exists but is not an OpenDrop install made by this script;" \
+                      "delete it to install there, or set OPENDROP_VENV"
+  if [ -e "$OLD" ]; then
+    ours "$OLD" || die "$OLD is in the way; move it elsewhere"
+    rm -rf -- "$OLD"
+  fi
+  if complete "$VENV"; then
+    step "rebuilding $VENV (outdated; it stays usable until the new one works)"
+    mv -- "$VENV" "$OLD"
+    restore=1
   else
-    die "$VENV exists but was not made by this script; delete it or set OPENDROP_VENV"
+    step "rebuilding $VENV (previous install incomplete)"
+    rm -rf -- "$VENV"
   fi
 fi
 
 step "creating $VENV with opendrop==$OPENDROP_VERSION"
 mkdir -p "$(dirname "$VENV")"
-mkdir "$VENV"                 # fresh: it did not exist (or was ours and removed)
+mkdir "$VENV"                 # fresh: it did not exist (or was ours and set aside)
 touch "$VENV/$STAMP_WIP"
 python3 -m venv "$VENV"
 # setuptools<81: OpenDrop imports pkg_resources, which setuptools 81 removed.
@@ -143,6 +184,8 @@ grep -q 'application/x-dvzip' "$SITE/opendrop/server.py" \
 "$VENV/bin/pip" freeze > "$VENV/espdrop-freeze.txt"
 printf '%s\n' "$sig" > "$VENV/$STAMP_OK"
 rm -f "$VENV/$STAMP_WIP"
+restore=0
+if [ -e "$OLD" ] && ours "$OLD"; then rm -rf -- "$OLD"; fi
 
 echo
 echo "done: $VENV/bin/opendrop (patched, rev $REV)"
