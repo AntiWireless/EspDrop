@@ -231,6 +231,114 @@ static void test_dedup(void) {
 	CHECK(!awdl_dedup_is_dup(&d, q0, 24), "truncated QoS flagged dup");
 }
 
+/* Collects MSDUs delivered by awdl_parse_data_msdus. */
+typedef struct {
+	int     n;
+	uint8_t dst[4][6], src[4][6];
+	uint16_t et[4];
+	uint8_t pl[4][64];
+	size_t  plen[4];
+} msdu_sink_t;
+
+static void msdu_collect(const uint8_t dst[6], const uint8_t src[6], uint16_t et,
+                         const uint8_t *payload, size_t plen, void *ctx) {
+	msdu_sink_t *k = ctx;
+	if (k->n >= 4 || plen > sizeof(k->pl[0])) { k->n = 99; return; }
+	memcpy(k->dst[k->n], dst, 6);
+	memcpy(k->src[k->n], src, 6);
+	k->et[k->n] = et;
+	memcpy(k->pl[k->n], payload, plen);
+	k->plen[k->n] = plen;
+	k->n++;
+}
+
+/* M2.4: plain and A-MSDU data frames through awdl_parse_data_msdus. An A-MSDU
+ * body is subframes DA(6) SA(6) len(2, BE) + MSDU, padded to 4 bytes except
+ * after the last (as in OWL's awdl_rx_data_amsdu). */
+static void test_data_amsdu(void) {
+	uint8_t a_mac[6] = {0x02, 0, 0, 0, 0, 0x0a};
+	uint8_t dst[6]   = {0x02, 0, 0, 0, 0, 0x02};
+	uint8_t mc[6]    = {0x33, 0x33, 0, 0, 0, 0xfb};
+	awdl_self_t a;
+	awdl_self_init(&a, a_mac, "a", 6);
+	const uint8_t p1[] = {0x60, 1, 2, 3, 4};            /* 5 B: forces 1 B padding */
+	const uint8_t p2[] = {0x60, 9, 8, 7, 6, 5, 4, 3};   /* 8 B */
+
+	/* Plain frame: one MSDU, dst/src from addr1/addr2. */
+	uint8_t f[300];
+	int n = awdl_build_data(f, sizeof(f), &a, dst, p1, sizeof(p1));
+	CHECK(n > 0, "build plain");
+	msdu_sink_t k;
+	memset(&k, 0, sizeof(k));
+	CHECK(awdl_parse_data_msdus(f, (size_t)n, msdu_collect, &k) == 1 && k.n == 1,
+	      "plain: msdus=%d", k.n);
+	CHECK(memcmp(k.dst[0], dst, 6) == 0 && memcmp(k.src[0], a_mac, 6) == 0, "plain addrs");
+	CHECK(k.et[0] == ETHERTYPE_IPV6 && k.plen[0] == sizeof(p1) &&
+	      memcmp(k.pl[0], p1, sizeof(p1)) == 0, "plain payload");
+
+	/* MSDU bodies (LLC/SNAP + AWDL data header + payload) taken from built
+	 * frames: everything after the 24-byte non-QoS header. */
+	uint8_t b1[300], b2[300];
+	int n1 = awdl_build_data(b1, sizeof(b1), &a, dst, p1, sizeof(p1));
+	int n2 = awdl_build_data(b2, sizeof(b2), &a, mc, p2, sizeof(p2));
+	size_t m1 = (size_t)n1 - IEEE80211_HDR_LEN, m2 = (size_t)n2 - IEEE80211_HDR_LEN;
+
+	uint8_t q[600];
+	size_t off = 0;
+	memcpy(q, b1, IEEE80211_HDR_LEN);                     /* addr1/2/3, seq */
+	q[0] = 0x88;                                          /* QoS data */
+	off = IEEE80211_HDR_LEN;
+	q[off++] = 0x80; q[off++] = 0x00;                     /* QoS ctl: A-MSDU present */
+	/* subframe 1 */
+	memcpy(q + off, dst, 6); memcpy(q + off + 6, a_mac, 6);
+	q[off + 12] = (uint8_t)(m1 >> 8); q[off + 13] = (uint8_t)m1;
+	memcpy(q + off + 14, b1 + IEEE80211_HDR_LEN, m1);
+	off += 14 + m1;
+	/* pad so that (14 + m1) rounds up to a multiple of 4 */
+	size_t pad = (4 - ((14 + m1) % 4)) % 4;
+	off = IEEE80211_HDR_LEN + 2 + 14 + m1 + pad;
+	memset(q + IEEE80211_HDR_LEN + 2 + 14 + m1, 0, pad);
+	/* subframe 2 (multicast DA), last: no padding */
+	memcpy(q + off, mc, 6); memcpy(q + off + 6, a_mac, 6);
+	q[off + 12] = (uint8_t)(m2 >> 8); q[off + 13] = (uint8_t)m2;
+	memcpy(q + off + 14, b2 + IEEE80211_HDR_LEN, m2);
+	off += 14 + m2;
+
+	bool amsdu = false;
+	CHECK(awdl_data_hdr_len(q, off, &amsdu) == IEEE80211_HDR_LEN + 2 && amsdu,
+	      "A-MSDU not detected");
+	CHECK(!awdl_parse_data(q, off, NULL, NULL), "legacy parser must not misread A-MSDU");
+	memset(&k, 0, sizeof(k));
+	int r = awdl_parse_data_msdus(q, off, msdu_collect, &k);
+	CHECK(r == 2 && k.n == 2, "A-MSDU: r=%d msdus=%d", r, k.n);
+	CHECK(memcmp(k.dst[0], dst, 6) == 0 && memcmp(k.dst[1], mc, 6) == 0, "A-MSDU dsts");
+	CHECK(memcmp(k.src[1], a_mac, 6) == 0, "A-MSDU src");
+	CHECK(k.plen[0] == sizeof(p1) && memcmp(k.pl[0], p1, sizeof(p1)) == 0, "A-MSDU p1");
+	CHECK(k.plen[1] == sizeof(p2) && memcmp(k.pl[1], p2, sizeof(p2)) == 0, "A-MSDU p2");
+
+	/* Truncated second subframe: first is delivered, then an error. */
+	memset(&k, 0, sizeof(k));
+	r = awdl_parse_data_msdus(q, off - 3, msdu_collect, &k);
+	CHECK(r < 0 && k.n == 1, "truncated A-MSDU: r=%d msdus=%d", r, k.n);
+	/* Subframe length larger than the frame. */
+	uint8_t bad[600];
+	memcpy(bad, q, off);
+	bad[IEEE80211_HDR_LEN + 2 + 12] = 0x7f;
+	memset(&k, 0, sizeof(k));
+	CHECK(awdl_parse_data_msdus(bad, off, msdu_collect, &k) < 0 && k.n == 0,
+	      "oversized subframe length accepted");
+	/* Null data (subtype 4): no body, not an error. */
+	uint8_t nul[24];
+	memcpy(nul, f, 24);
+	nul[0] = 0x48;
+	CHECK(awdl_data_hdr_len(nul, sizeof(nul), NULL) == 0 &&
+	      awdl_parse_data_msdus(nul, sizeof(nul), msdu_collect, &k) == 0, "null data");
+	/* QoS data too short for its QoS control field. */
+	uint8_t qs[25];
+	memcpy(qs, q, 25);
+	CHECK(awdl_data_hdr_len(qs, sizeof(qs), NULL) == 0, "short QoS header accepted");
+}
+
 static void test_reject_garbage(void) {
 	uint8_t junk[64];
 	memset(junk, 0xA5, sizeof(junk));
@@ -497,26 +605,78 @@ static void test_node_chanseq_mirror(void) {
 		      i, ours.chanseq[i], expect);
 	}
 
-	/* After the master ages out, fall back to the lone static all-6 sequence. */
+	/* After the master ages out, KEEP the last mirror: falling back to a flat
+	 * all-6 sequence is the shape iOS 26 refuses to send unicast to. */
 	awdl_node_tick(&n, 100000 + 3000000);
+	CHECK(!n.have_master, "master should have aged out");
 	len = awdl_node_build_action(&n, buf, sizeof(buf), AWDL_SUBTYPE_MIF, 3200000);
 	CHECK(awdl_parse_action(buf, (size_t)len, &ours) == AWDL_OK, "parse MIF 2");
+	for (int i = 0; i < (int)AWDL_CHANSEQ_LEN; i++) {
+		uint8_t expect = (i == 0 || i == 8) ? 6 : 0;
+		CHECK(ours.chanseq[i] == expect, "kept chanseq[%d]=%u expected %u",
+		      i, ours.chanseq[i], expect);
+	}
+	awdl_node_status_t st;
+	awdl_node_status(&n, &st);
+	CHECK(st.seq_derived && !st.have_master && !st.master_has_chanseq,
+	      "status after age-out: derived=%d master=%d mseq=%d",
+	      st.seq_derived, st.have_master, st.master_has_chanseq);
+	CHECK(st.self_chanseq[8] == 6 && st.self_chanseq[2] == 0, "status self seq");
+}
+
+/* Before any master: static sequence. A master that names ch6 nowhere must not
+ * replace a good mirror, and must not produce a flat sequence either. */
+static void test_node_chanseq_keep_on_no_ch6(void) {
+	uint8_t me[6] = {0x02, 0, 0, 0, 0, 0x01};
+	uint8_t ip[6] = {0xca, 0x2a, 0xd6, 0x10, 0x8e, 0xae};
+	awdl_node_t n;
+	awdl_node_init(&n, me, "espdrop-c3", 6, 0);
+	CHECK(!n.seq_derived, "fresh node must not be derived");
 	for (int i = 0; i < (int)AWDL_CHANSEQ_LEN; i++)
-		CHECK(ours.chanseq[i] == 6, "fallback chanseq[%d]=%u expected 6",
-		      i, ours.chanseq[i]);
+		CHECK(n.self.seq[i][0] == 6, "boot static slot %d = %u", i, n.self.seq[i][0]);
+
+	awdl_sync_t iph;
+	awdl_sync_init(&iph, 0);
+	awdl_peer_view_t pv;
+	iphone_announce(&iph, 100000, ip, &pv);          /* 6 at slots 0 and 8 */
+	awdl_node_on_rx_action(&n, &pv, -40, 100000);
+	CHECK(n.seq_derived, "mirror not derived");
+
+	/* The same master now advertises no channel-6 slot at all. */
+	iphone_announce(&iph, 200000, ip, &pv);
+	memset(pv.chanseq, 0, sizeof(pv.chanseq));
+	pv.chanseq[2] = 44; pv.chanseq[10] = 149;
+	awdl_node_on_rx_action(&n, &pv, -40, 200000);
+	for (int i = 0; i < (int)AWDL_CHANSEQ_LEN; i++) {
+		uint8_t expect = (i == 0 || i == 8) ? 6 : 0;
+		CHECK(n.self.seq[i][0] == expect, "no-ch6 master: slot %d = %u expected %u",
+		      i, n.self.seq[i][0], expect);
+	}
+
+	/* And when it comes back with a different ch6 slot, follow it. */
+	iphone_announce(&iph, 300000, ip, &pv);
+	memset(pv.chanseq, 0, sizeof(pv.chanseq));
+	pv.chanseq[4] = 6; pv.chanseq[12] = 149;
+	awdl_node_on_rx_action(&n, &pv, -40, 300000);
+	for (int i = 0; i < (int)AWDL_CHANSEQ_LEN; i++) {
+		uint8_t expect = (i == 4) ? 6 : 0;
+		CHECK(n.self.seq[i][0] == expect, "re-mirror: slot %d = %u expected %u",
+		      i, n.self.seq[i][0], expect);
+	}
 }
 
 static void test_chanseq_empty_intersection(void) {
 	uint8_t me[6] = {0x02, 0, 0, 0, 0, 0x01};
 	awdl_self_t self;
 	awdl_self_init(&self, me, "x", 6);
-	/* master with no channel-6 slot at all: must fall back to static all-6,
-	 * never advertise presence nowhere. */
+	/* master with no channel-6 slot at all: report it and leave our sequence
+	 * untouched (here the static all-6 from init), never "present nowhere". */
 	uint8_t mseq[AWDL_CHANSEQ_LEN] = {0};
 	mseq[2] = 44; mseq[10] = 149;
-	awdl_self_set_chanseq_intersect(&self, mseq, 6);
+	CHECK(!awdl_self_set_chanseq_intersect(&self, mseq, 6),
+	      "empty intersection must return false");
 	for (int i = 0; i < (int)AWDL_CHANSEQ_LEN; i++)
-		CHECK(self.seq[i][0] == 6, "empty-intersection fallback slot %d = %u",
+		CHECK(self.seq[i][0] == 6, "empty-intersection left slot %d = %u",
 		      i, self.seq[i][0]);
 }
 
@@ -568,6 +728,7 @@ int main(void) {
 	test_data_roundtrip();
 	test_data_qos_and_flags();
 	test_dedup();
+	test_data_amsdu();
 	test_reject_garbage();
 	test_sync_election_parse();
 	test_sync_math();
@@ -577,6 +738,7 @@ int main(void) {
 	test_node_sync_hold();
 	test_node_chanseq_mirror();
 	test_chanseq_empty_intersection();
+	test_node_chanseq_keep_on_no_ch6();
 	test_chanseq_realistic_slot0();
 	test_tx_slot_gating();
 

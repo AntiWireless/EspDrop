@@ -48,17 +48,21 @@ static void peer_apply_view(awdl_peer_t *p, const awdl_peer_view_t *pv) {
 }
 
 /* Re-derive the channel sequence we advertise. When we track a master that has
- * advertised a channel sequence, mirror its slots on our own channel; otherwise
- * fall back to the lone static sequence. */
+ * advertised a channel sequence naming our channel, mirror its slots on our own
+ * channel. Otherwise keep the last mirror we derived; only before the very
+ * first mirror (just after boot) do we advertise the lone static sequence. */
 static void awdl_node_update_chanseq(awdl_node_t *n) {
 	if (n->have_master) {
 		awdl_peer_t *m = awdl_peers_get(&n->peers, n->election.sync_addr);
-		if (m && m->has_chanseq) {
-			awdl_self_set_chanseq_intersect(&n->self, m->chanseq, n->self.master_chan);
+		if (m && m->has_chanseq &&
+		    awdl_self_set_chanseq_intersect(&n->self, m->chanseq, n->self.master_chan)) {
+			n->seq_derived = true;
 			return;
 		}
 	}
-	awdl_self_set_chanseq_static(&n->self, n->self.master_chan);
+	if (!n->seq_derived)
+		awdl_self_set_chanseq_static(&n->self, n->self.master_chan);
+	/* else: keep the last good mirror (see seq_derived in awdl_node.h) */
 }
 
 void awdl_node_on_rx_action(awdl_node_t *n, const awdl_peer_view_t *pv,
@@ -125,4 +129,12 @@ void awdl_node_status(const awdl_node_t *n, awdl_node_status_t *out) {
 	out->height = n->election.height;
 	out->last_sync_err_tu = n->last_sync_err_tu;
 	out->peer_count = awdl_peers_count(&n->peers);
+	out->seq_derived = n->seq_derived;
+	for (unsigned i = 0; i < AWDL_CHANSEQ_LEN; i++)
+		out->self_chanseq[i] = n->self.seq[i][0];
+	const awdl_peer_t *m = n->have_master
+		? awdl_peers_get((awdl_peer_table_t *)&n->peers, n->election.sync_addr) : NULL;
+	out->master_has_chanseq = m && m->has_chanseq;
+	for (unsigned i = 0; i < AWDL_CHANSEQ_LEN; i++)
+		out->master_chanseq[i] = out->master_has_chanseq ? m->chanseq[i] : 0;
 }

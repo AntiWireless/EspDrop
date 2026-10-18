@@ -25,6 +25,9 @@ typedef struct {
 	uint64_t rx_action;     /* AWDL action frames received (BSSID match) */
 	uint64_t rx_data;       /* AWDL data frames received (duplicates excluded) */
 	uint64_t rx_dup;        /* AWDL data frames dropped as 802.11 retransmissions */
+	uint64_t rx_amsdu;      /* of rx_data: frames that were A-MSDU aggregates */
+	uint64_t rx_msdu;       /* MSDUs (L3 packets) handed to the data handler */
+	uint64_t rx_data_perr;  /* body-carrying AWDL data frames that failed to parse */
 	uint64_t rx_other_bssid;/* frames seen in promiscuous with a different BSSID */
 	uint64_t rx_parse_err;  /* AWDL-looking frames that failed to parse */
 	uint64_t tx_ok;         /* esp_wifi_80211_tx calls that returned ESP_OK */

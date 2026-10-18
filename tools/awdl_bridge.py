@@ -26,7 +26,7 @@
 # are only logged. Suppressed with --no-config.
 #
 # Interactive stdin commands (forwarded to the device):
-#   mac | stats | radio | ping | testframe | resync
+#   mac | stats | radio | tx | node | ping | testframe | resync
 #
 # Needs root: creating a TAP and running `ip link` both require CAP_NET_ADMIN.
 # The interface is not persistent - it disappears when this process exits.
@@ -88,6 +88,30 @@ def learn_neighbor(eth: bytes):
     return socket.inet_ntop(socket.AF_INET6, src_ip), bytes(src_mac)
 
 
+def ipv6_sysctl(dev: str, key: str, value: str) -> None:
+    """Set net.ipv6.conf.<dev>.<key>; warn instead of failing if unavailable."""
+    path = f"/proc/sys/net/ipv6/conf/{dev}/{key}"
+    try:
+        with open(path, "w") as f:
+            f.write(value)
+    except OSError as e:
+        print(f"warning: could not set {path} = {value} ({e})", file=sys.stderr)
+
+
+def usable_link_local(dev: str):
+    """The interface's link-local address once it is usable (not tentative), else None."""
+    try:
+        out = subprocess.run(["ip", "-6", "-o", "addr", "show", "dev", dev, "scope", "link"],
+                             capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    for line in out.splitlines():
+        parts = line.split()
+        if "inet6" in parts and "tentative" not in parts:
+            return parts[parts.index("inet6") + 1].split("/")[0]
+    return None
+
+
 def query_mac(usb_fd: int, reader: link.Reader, timeout: float = 2.0):
     """Ask the device for its Wi-Fi MAC; print any LOG lines seen meanwhile."""
     try:
@@ -144,11 +168,19 @@ def main() -> int:
                     ip("link", "set", "dev", args.dev, "address", mac)
                 except subprocess.CalledProcessError as e:
                     print(f"warning: could not set MAC {mac}: {e}", file=sys.stderr)
+            # Before bringing the link up: no DAD (only we live on this link, and
+            # an address still "tentative" makes OpenDrop's zeroconf announce into
+            # nothing), and no router solicitations/RA (no routers on AWDL; every
+            # frame we send costs scarce channel-6 airtime).
+            ipv6_sysctl(args.dev, "accept_dad", "0")
+            ipv6_sysctl(args.dev, "accept_ra", "0")
+            ipv6_sysctl(args.dev, "router_solicitations", "0")
             ip("link", "set", "dev", args.dev, "mtu", str(args.mtu), "up")
 
         print(f"{args.dev} up (mtu {args.mtu}, mac {mac or 'kernel-assigned'}); "
               f"bridging {args.port}")
-        print("commands: mac | stats | radio | ping | testframe | resync   (Ctrl-C to quit)")
+        print("commands: mac | stats | radio | tx | node | ping | testframe | resync"
+              "   (Ctrl-C to quit)")
 
         # The C3 keeps running across host sessions (its USB port does not reset
         # the chip), so peers it learned earlier would never be re-announced. Ask
@@ -163,6 +195,7 @@ def main() -> int:
         stdin_open = True
         read_cap = args.mtu + 64  # one Ethernet frame plus slack
         learned = {}              # link-local address -> MAC, from received traffic
+        ready_ll = None           # our usable link-local once announced
 
         # Single-threaded select pump. Writes use a bounded 1s timeout so one
         # direction stalling on USB backpressure cannot block the other for long
@@ -171,7 +204,12 @@ def main() -> int:
             watch = [usb_fd, tap_fd]
             if stdin_open:
                 watch.append(stdin_fd)
-            r, _, _ = select.select(watch, [], [])
+            r, _, _ = select.select(watch, [], [], None if ready_ll else 0.25)
+            if not ready_ll and not args.no_config:
+                ready_ll = usable_link_local(args.dev)
+                if ready_ll:
+                    print(f"[ready] {args.dev} has {ready_ll}%{args.dev} - "
+                          f"start OpenDrop now (tools/opendrop_receive.sh)")
 
             if usb_fd in r:
                 try:
@@ -187,11 +225,9 @@ def main() -> int:
                 if data:
                     for t, p in reader.feed(data):
                         if t == link.MSG_FRAME:
-                            try:
-                                link.write_all(tap_fd, p, timeout=1.0)
-                                to_tap += 1
-                            except (OSError, TimeoutError) as e:
-                                print(f"tap write failed: {e}", file=sys.stderr)
+                            # Learn the sender before handing the frame to the
+                            # kernel, so a reply (e.g. a SYN-ACK) already finds
+                            # its permanent neighbour entry instead of NDP.
                             nb = learn_neighbor(p)
                             if nb and learned.get(nb[0]) != nb[1]:
                                 ll, nmac = nb
@@ -205,6 +241,11 @@ def main() -> int:
                                            "nud", "permanent")
                                     except subprocess.CalledProcessError as e:
                                         print(f"neigh add failed: {e}", file=sys.stderr)
+                            try:
+                                link.write_all(tap_fd, p, timeout=1.0)
+                                to_tap += 1
+                            except (OSError, TimeoutError) as e:
+                                print(f"tap write failed: {e}", file=sys.stderr)
                         elif t == link.MSG_LOG:
                             print(f"[device] {p.decode('utf-8', 'replace')}")
                         elif t == link.MSG_CMD_REPLY:

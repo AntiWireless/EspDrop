@@ -13,6 +13,7 @@
 #include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_system.h"   /* esp_get_free_heap_size */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -30,7 +31,13 @@
 /* Device->host RX forwarding: one Ethernet frame per queue slot. The Wi-Fi task
  * only builds+enqueues (never blocks on USB); a dedicated task drains and sends. */
 #define BRIDGE_RX_PAYLOAD_MAX 1500                 /* L3 payload cap (awdl0 MTU) */
-#define BRIDGE_RX_Q_LEN       8
+/* One AWDL window delivers ~15 frames in ~50 ms (airdrop-mt7921 FINDINGS), much
+ * faster than USB drains them, so the queue must absorb a whole burst. Try the
+ * big depth first and fall back if the heap is short. */
+static const uint8_t k_rx_q_depths[] = {32, 24, 16, 8};
+/* Wi-Fi allocates its RX/TX buffers dynamically from the same heap, so never
+ * take the last of it: a larger depth is used only if this much stays free. */
+#define BRIDGE_HEAP_RESERVE (64u * 1024u)
 typedef struct {
 	uint16_t len;
 	uint8_t  eth[14 + BRIDGE_RX_PAYLOAD_MAX];
@@ -47,6 +54,7 @@ typedef struct {
 static SemaphoreHandle_t s_tx_lock;
 static QueueHandle_t     s_rx_fwd_q;   /* rx_frame_t: Wi-Fi task -> fwd task */
 static QueueHandle_t     s_peer_q;     /* peer_evt_t: AWDL task -> peer task */
+static uint8_t           s_rx_q_depth; /* depth actually allocated */
 static bool s_started;
 
 /* Counters touched only from the single RX task (handle_msg), so no locking. */
@@ -151,7 +159,7 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 	while (k && (cmd[k - 1] == '\n' || cmd[k - 1] == '\r' || cmd[k - 1] == ' '))
 		cmd[--k] = '\0';
 
-	char out[128];
+	char out[192];
 	if (strcmp(cmd, "ping") == 0) {
 		cmd_reply("pong");
 	} else if (strcmp(cmd, "mac") == 0) {
@@ -162,25 +170,58 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		cmd_reply(out);
 	} else if (strcmp(cmd, "stats") == 0) {
 		snprintf(out, sizeof(out),
-		         "frames_from_host=%u bytes_from_host=%u frames_to_host=%u rx_drops=%u",
+		         "frames_from_host=%u bytes_from_host=%u frames_to_host=%u rx_drops=%u "
+		         "rxq=%u heap=%u heap_min=%u",
 		         (unsigned)s_frames_from_host, (unsigned)s_bytes_from_host,
-		         (unsigned)s_frames_to_host, (unsigned)s_rx_drops);
+		         (unsigned)s_frames_to_host, (unsigned)s_rx_drops,
+		         (unsigned)s_rx_q_depth, (unsigned)esp_get_free_heap_size(),
+		         (unsigned)esp_get_minimum_free_heap_size());
 		cmd_reply(out);
 	} else if (strcmp(cmd, "radio") == 0) {
 		radio_stats_t st;
 		radio_get_stats(&st);
-		char rbuf[200];
+		char rbuf[256];
 		/* tx_ack = unicast frames the peer hardware-ACKed (our TX reached it);
 		 * for broadcast/multicast tx_ack is always success. Counts are cast to
 		 * 32-bit (ample for a test run) and printed with %u, matching `stats`. */
 		snprintf(rbuf, sizeof(rbuf),
-		         "rx_action=%u rx_data=%u rx_dup=%u rx_other=%u rx_perr=%u "
-		         "tx_ok=%u tx_err=%u tx_ack=%u tx_noack=%u",
+		         "rx_action=%u rx_data=%u rx_dup=%u rx_amsdu=%u rx_msdu=%u rx_dperr=%u "
+		         "rx_other=%u rx_perr=%u tx_ok=%u tx_err=%u tx_ack=%u tx_noack=%u",
 		         (unsigned)st.rx_action, (unsigned)st.rx_data, (unsigned)st.rx_dup,
+		         (unsigned)st.rx_amsdu, (unsigned)st.rx_msdu, (unsigned)st.rx_data_perr,
 		         (unsigned)st.rx_other_bssid, (unsigned)st.rx_parse_err,
 		         (unsigned)st.tx_ok, (unsigned)st.tx_err,
 		         (unsigned)st.tx_done_ok, (unsigned)st.tx_done_fail);
 		cmd_reply(rbuf);
+	} else if (strcmp(cmd, "node") == 0) {
+		/* AWDL node state: who we sync to and which slots we advertise. If iOS
+		 * stops sending to us, check here that the master is the iPhone and that
+		 * our sequence is sparse (mirrored), not 16x the same channel. */
+		awdl_node_status_t ns;
+		char nbuf[320];
+		if (!awdl_app_status(&ns)) {
+			cmd_reply("node: awdl not started");
+		} else {
+			int o = snprintf(nbuf, sizeof(nbuf),
+			                 "master=%02x:%02x:%02x:%02x:%02x:%02x%s peers=%d height=%u "
+			                 "sync_err=%d derived=%s seq=",
+			                 ns.master_addr[0], ns.master_addr[1], ns.master_addr[2],
+			                 ns.master_addr[3], ns.master_addr[4], ns.master_addr[5],
+			                 ns.have_master ? "" : "(self)", ns.peer_count,
+			                 (unsigned)ns.height, (int)ns.last_sync_err_tu,
+			                 ns.seq_derived ? "yes" : "no");
+			for (unsigned i = 0; i < AWDL_CHANSEQ_LEN && o > 0 && o < (int)sizeof(nbuf); i++)
+				o += snprintf(nbuf + o, sizeof(nbuf) - (size_t)o, "%s%u",
+				              i ? "," : "", ns.self_chanseq[i]);
+			if (o > 0 && o < (int)sizeof(nbuf))
+				o += snprintf(nbuf + o, sizeof(nbuf) - (size_t)o, " mseq=");
+			for (unsigned i = 0; i < AWDL_CHANSEQ_LEN && o > 0 && o < (int)sizeof(nbuf); i++)
+				o += ns.master_has_chanseq
+				     ? snprintf(nbuf + o, sizeof(nbuf) - (size_t)o, "%s%u",
+				                i ? "," : "", ns.master_chanseq[i])
+				     : (i ? 0 : snprintf(nbuf + o, sizeof(nbuf) - (size_t)o, "-"));
+			cmd_reply(nbuf);
+		}
 	} else if (strcmp(cmd, "tx") == 0) {
 		/* Host->radio data path: did the frame reach the radio, and did the peer
 		 * ACK our unicast data frames (broadcast PSF/MIF excluded)? */
@@ -274,7 +315,14 @@ int bridge_start(void) {
 		return e;
 	}
 
-	s_rx_fwd_q = xQueueCreate(BRIDGE_RX_Q_LEN, sizeof(rx_frame_t));
+	for (size_t i = 0; i < sizeof(k_rx_q_depths) && !s_rx_fwd_q; i++) {
+		size_t need = (size_t)k_rx_q_depths[i] * sizeof(rx_frame_t);
+		bool last = (i + 1 == sizeof(k_rx_q_depths));
+		if (!last && esp_get_free_heap_size() < need + BRIDGE_HEAP_RESERVE)
+			continue;   /* keep headroom for Wi-Fi; the smallest depth is always tried */
+		s_rx_fwd_q = xQueueCreate(k_rx_q_depths[i], sizeof(rx_frame_t));
+		if (s_rx_fwd_q) s_rx_q_depth = k_rx_q_depths[i];
+	}
 	s_peer_q   = xQueueCreate(BRIDGE_PEER_Q_LEN, sizeof(peer_evt_t));
 	if (!s_rx_fwd_q || !s_peer_q) {
 		if (s_rx_fwd_q) vQueueDelete(s_rx_fwd_q);

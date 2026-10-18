@@ -42,6 +42,12 @@ typedef struct {
 	bool    have_master;        /* we sync to a peer, not to ourselves */
 	bool    sync_locked;        /* we have adopted the current master's timing */
 	uint8_t synced_master[6];   /* the master we are currently tracking */
+
+	/* Our advertised sequence has been mirrored from a master at least once.
+	 * From then on we keep the last good mirror whenever the master briefly
+	 * ages out or names our channel nowhere, instead of falling back to the flat
+	 * all-one-channel sequence (which iOS 26 refuses to send unicast to). */
+	bool    seq_derived;
 } awdl_node_t;
 
 /* now_us: a monotonic microsecond timestamp (esp_timer_get_time() on hardware). */
@@ -75,6 +81,10 @@ typedef struct {
 	uint32_t height;
 	int64_t  last_sync_err_tu;
 	int      peer_count;
+	bool     seq_derived;                         /* see awdl_node_t */
+	uint8_t  self_chanseq[AWDL_CHANSEQ_LEN];      /* what we advertise (channel numbers) */
+	bool     master_has_chanseq;
+	uint8_t  master_chanseq[AWDL_CHANSEQ_LEN];    /* the tracked master's, if known */
 } awdl_node_status_t;
 
 void awdl_node_status(const awdl_node_t *n, awdl_node_status_t *out);

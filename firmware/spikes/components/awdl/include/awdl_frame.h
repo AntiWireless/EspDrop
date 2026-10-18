@@ -148,15 +148,11 @@ void awdl_self_set_chanseq_static(awdl_self_t *self, uint8_t chan_num);
  * and far closer to the sparse shape Apple emits than a flat all-one-channel
  * sequence, which iOS rejects (airdrop-mt7921 findings; docs/UEBERBLICK.md).
  *
- * If the master names keep_chan in NO slot, this falls back to the static
- * all-keep_chan sequence rather than advertising presence nowhere.
- *
- * NOT yet confirmed on hardware: whether iOS accepts a sequence that carries 0
- * in slot 0 (a real Apple device puts its infra channel there, which we have
- * none of) or that contains only keep_chan. Treat acceptance as an open
- * question to validate against a real iPhone (see M2).
+ * Returns false and leaves our sequence unchanged if the master names keep_chan
+ * in NO slot (we would otherwise advertise presence nowhere). The caller decides
+ * what to advertise then; awdl_node keeps the last good mirror.
  */
-void awdl_self_set_chanseq_intersect(awdl_self_t *self,
+bool awdl_self_set_chanseq_intersect(awdl_self_t *self,
                                      const uint8_t master_chanseq[AWDL_CHANSEQ_LEN],
                                      uint8_t keep_chan);
 
@@ -241,6 +237,32 @@ int awdl_parse_action(const uint8_t *buf, size_t len, awdl_peer_view_t *out);
  */
 bool awdl_parse_data(const uint8_t *buf, size_t len,
                      size_t *payload_off, uint16_t *ethertype);
+
+/*
+ * 802.11 header length of a data frame that carries a body we handle (plain
+ * data 24 B, QoS data 26 B), or 0 for anything else (management, null data,
+ * QoS null, ...). *amsdu (optional) is set when the QoS "A-MSDU present" bit is
+ * set, i.e. the body is a sequence of subframes rather than one MSDU.
+ */
+size_t awdl_data_hdr_len(const uint8_t *buf, size_t len, bool *amsdu);
+
+/*
+ * Called once per MSDU found in a data frame, reconstructed as Ethernet: dst/src
+ * are addr1/addr2 for a plain frame or the subframe DA/SA for an A-MSDU; payload
+ * is the L3 packet carried after the AWDL data header. Pointers are only valid
+ * during the call.
+ */
+typedef void (*awdl_msdu_cb_t)(const uint8_t dst[6], const uint8_t src[6],
+                               uint16_t ethertype, const uint8_t *payload,
+                               size_t plen, void *ctx);
+
+/*
+ * Parse an AWDL data frame, plain or A-MSDU, and call cb (may be NULL) for each
+ * MSDU. Returns the number of MSDUs delivered; 0 if the frame carries no body we
+ * handle (see awdl_data_hdr_len); or a negative enum awdl_result if it is
+ * malformed (subframes before the bad one have already been delivered).
+ */
+int awdl_parse_data_msdus(const uint8_t *buf, size_t len, awdl_msdu_cb_t cb, void *ctx);
 
 /* Map an operating-class-encoded or legacy channel pair to a channel number. */
 uint8_t awdl_chan_number(const uint8_t enc_bytes[2], enum awdl_chan_enc enc);

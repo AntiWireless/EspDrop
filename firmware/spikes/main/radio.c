@@ -90,21 +90,28 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 			s_action_handler(&pv, pkt->rx_ctrl.rssi, pkt->rx_ctrl.channel,
 			                 esp_timer_get_time(), s_action_ctx);
 	} else { /* WIFI_PKT_DATA */
-		size_t poff; uint16_t et;
-		if (awdl_parse_data(frame, (size_t)len, &poff, &et)) {
-			/* Promiscuous capture sees every 802.11 retry of a frame; a normal
-			 * receiver would discard those, so do the same before forwarding. */
-			if (awdl_dedup_is_dup(&s_dedup, frame, (size_t)len)) {
-				stat_inc(&s_stats.rx_dup);
-				return;
-			}
+		/* Only data frames that carry a body (plain/QoS data); null frames etc.
+		 * are ignored before they can touch the duplicate cache. */
+		bool amsdu;
+		if (!awdl_data_hdr_len(frame, (size_t)len, &amsdu)) return;
+		/* Promiscuous capture sees every 802.11 retry of a frame; a normal
+		 * receiver would discard those, so do the same before forwarding. */
+		if (awdl_dedup_is_dup(&s_dedup, frame, (size_t)len)) {
+			stat_inc(&s_stats.rx_dup);
+			return;
+		}
+		/* Reconstruct Ethernet per MSDU (one for a plain frame, several for an
+		 * A-MSDU) and hand each to the consumer; radio_data_handler_t has the
+		 * same shape as awdl_msdu_cb_t. */
+		int n = awdl_parse_data_msdus(frame, (size_t)len, s_data_handler, s_data_ctx);
+		if (n > 0) {
 			stat_inc(&s_stats.rx_data);
-			/* Reconstruct Ethernet (dst=addr1, src=addr2) and hand it to the
-			 * consumer. addr1/addr2 sit at the fixed offsets 4/10, and the BSSID
-			 * check above already guaranteed len >= IEEE80211_HDR_LEN + 4. */
-			if (s_data_handler && poff <= (size_t)len)
-				s_data_handler(frame + 4, frame + 10, et,
-				               frame + poff, (size_t)len - poff, s_data_ctx);
+			if (amsdu) stat_inc(&s_stats.rx_amsdu);
+			portENTER_CRITICAL(&s_stats_mux);
+			s_stats.rx_msdu += (uint64_t)n;
+			portEXIT_CRITICAL(&s_stats_mux);
+		} else if (n < 0) {
+			stat_inc(&s_stats.rx_data_perr);
 		}
 	}
 }

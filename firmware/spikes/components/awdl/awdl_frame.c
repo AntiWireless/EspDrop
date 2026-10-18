@@ -104,21 +104,18 @@ void awdl_self_set_chanseq_static(awdl_self_t *self, uint8_t chan_num) {
 	}
 }
 
-void awdl_self_set_chanseq_intersect(awdl_self_t *self,
+bool awdl_self_set_chanseq_intersect(awdl_self_t *self,
                                      const uint8_t master_chanseq[AWDL_CHANSEQ_LEN],
                                      uint8_t keep_chan) {
 	unsigned present = 0;
 	for (unsigned i = 0; i < AWDL_CHANSEQ_LEN; i++)
 		if (master_chanseq[i] == keep_chan) present++;
 
-	/* Never advertise "present nowhere": if the master names keep_chan in no
-	 * slot, fall back to the static sequence. We really are on keep_chan in
-	 * every slot, so claiming all 16 is honest and keeps us discoverable; an
-	 * all-absent sequence would be strictly worse than the old flat one. */
-	if (present == 0) {
-		awdl_self_set_chanseq_static(self, keep_chan);
-		return;
-	}
+	/* Never advertise "present nowhere". If the master names keep_chan in no
+	 * slot, leave our sequence untouched and report it; the caller keeps the
+	 * last good mirror rather than falling back to a flat sequence, which iOS 26
+	 * rejects (airdrop-mt7921 FINDINGS: constant sequences get no unicast). */
+	if (present == 0) return false;
 
 	uint8_t opclass = opclass_for(keep_chan);
 	for (unsigned i = 0; i < AWDL_CHANSEQ_LEN; i++) {
@@ -130,6 +127,7 @@ void awdl_self_set_chanseq_intersect(awdl_self_t *self,
 			self->seq[i][1] = 0;
 		}
 	}
+	return true;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -502,10 +500,8 @@ int awdl_parse_action(const uint8_t *buf, size_t len, awdl_peer_view_t *out) {
 	return AWDL_OK;
 }
 
-bool awdl_parse_data(const uint8_t *buf, size_t len,
-                     size_t *payload_off, uint16_t *ethertype) {
-	if (!buf || len < IEEE80211_HDR_LEN) return false;
-
+size_t awdl_data_hdr_len(const uint8_t *buf, size_t len, bool *amsdu) {
+	if (amsdu) *amsdu = false;
 	/* Match on frame type/subtype only; ignore the flag bits (retry, power-mgmt,
 	 * protected, order, ...) and version, so real Apple frames are not rejected
 	 * on a stray flag. Accept both plain data (subtype 0) and QoS data (subtype
@@ -513,35 +509,83 @@ bool awdl_parse_data(const uint8_t *buf, size_t len,
 	 * ad-hoc (ToDS=FromDS=0), so addr1/2/3 stay at offsets 4/10/16 either way and
 	 * the radio layer's BSSID check remains valid. */
 	uint16_t fc;
-	if (!wire_get_le16(buf, len, 0, &fc)) return false;
+	if (!buf || !wire_get_le16(buf, len, 0, &fc)) return 0;
 	uint8_t ftype = (uint8_t)((fc >> 2) & 0x3);  /* 2 = data */
 	uint8_t fsub  = (uint8_t)((fc >> 4) & 0xf);  /* 0 = data, 8 = QoS data */
-	if (ftype != 2) return false;
-	size_t hdr;
-	if (fsub == 0)      hdr = IEEE80211_HDR_LEN;      /* 24 */
-	else if (fsub == 8) hdr = IEEE80211_HDR_LEN + 2; /* + QoS control */
-	else                return false;
+	if (ftype != 2) return 0;
+	if (fsub == 0) return (len >= IEEE80211_HDR_LEN) ? IEEE80211_HDR_LEN : 0;
+	if (fsub == 8) {
+		uint16_t qos;
+		if (!wire_get_le16(buf, len, IEEE80211_HDR_LEN, &qos)) return 0;
+		if (amsdu) *amsdu = (qos & 0x0080u) != 0; /* QoS control: A-MSDU present */
+		return IEEE80211_HDR_LEN + 2;
+	}
+	return 0; /* null data, QoS null, CF-*: no body to deliver */
+}
 
-	if (len < hdr + 8 + 8) return false; /* LLC/SNAP (8) + AWDL data header (8) */
-
-	size_t llc = hdr;
+/* Parse "LLC/SNAP (8) + AWDL data header (8)" starting at off, with end as the
+ * exclusive bound of the MSDU (the whole frame, or one A-MSDU subframe). */
+static bool parse_awdl_msdu_hdr(const uint8_t *buf, size_t end, size_t off,
+                                size_t *payload_off, uint16_t *ethertype) {
+	if (end < off + 8 + 8) return false;
 	uint8_t dsap = 0, ssap = 0, ctrl = 0;
-	wire_get_u8(buf, len, llc + 0, &dsap);
-	wire_get_u8(buf, len, llc + 1, &ssap);
-	wire_get_u8(buf, len, llc + 2, &ctrl);
+	wire_get_u8(buf, end, off + 0, &dsap);
+	wire_get_u8(buf, end, off + 1, &ssap);
+	wire_get_u8(buf, end, off + 2, &ctrl);
 	if (dsap != 0xaa || ssap != 0xaa || ctrl != 0x03) return false;
-	if (memcmp(buf + llc + 3, AWDL_OUI, 3) != 0) return false;
+	if (memcmp(buf + off + 3, AWDL_OUI, 3) != 0) return false;
 
 	uint16_t pid = 0, head = 0, et = 0;
-	wire_get_be16(buf, len, llc + 6, &pid);
+	wire_get_be16(buf, end, off + 6, &pid);
 	if (pid != AWDL_LLC_PID) return false;
 
-	size_t adata = llc + 8;
-	wire_get_le16(buf, len, adata + 0, &head);
+	size_t adata = off + 8;
+	wire_get_le16(buf, end, adata + 0, &head);
 	if (head != AWDL_DATA_HEAD) return false;
-	wire_get_be16(buf, len, adata + 6, &et);
+	wire_get_be16(buf, end, adata + 6, &et);
 
 	if (ethertype) *ethertype = et;
 	if (payload_off) *payload_off = adata + 8;
 	return true;
+}
+
+bool awdl_parse_data(const uint8_t *buf, size_t len,
+                     size_t *payload_off, uint16_t *ethertype) {
+	size_t hdr = awdl_data_hdr_len(buf, len, NULL);
+	if (!hdr) return false;
+	return parse_awdl_msdu_hdr(buf, len, hdr, payload_off, ethertype);
+}
+
+int awdl_parse_data_msdus(const uint8_t *buf, size_t len, awdl_msdu_cb_t cb, void *ctx) {
+	bool amsdu;
+	size_t hdr = awdl_data_hdr_len(buf, len, &amsdu);
+	if (!hdr) return 0;
+
+	size_t poff;
+	uint16_t et;
+	if (!amsdu) {
+		if (!parse_awdl_msdu_hdr(buf, len, hdr, &poff, &et)) return AWDL_ERR_NOT_AWDL;
+		if (cb) cb(buf + 4, buf + 10, et, buf + poff, len - poff, ctx);
+		return 1;
+	}
+
+	/* A-MSDU (as handled by OWL's awdl_rx_data_amsdu): a run of subframes, each
+	 * DA(6) SA(6) length(2, BE) + MSDU, padded to a 4-byte boundary except after
+	 * the last one. Each MSDU is a normal AWDL data body (LLC/SNAP + header). */
+	int n = 0;
+	size_t off = hdr;
+	while (off < len) {
+		if (len - off < 14) return AWDL_ERR_SHORT;
+		uint16_t sl = 0;
+		wire_get_be16(buf, len, off + 12, &sl);
+		size_t body = off + 14;
+		if (sl > len - body) return AWDL_ERR_SHORT;
+		size_t end = body + sl;
+		if (!parse_awdl_msdu_hdr(buf, end, body, &poff, &et)) return AWDL_ERR_NOT_AWDL;
+		if (cb) cb(buf + off, buf + off + 6, et, buf + poff, end - poff, ctx);
+		n++;
+		off = end;
+		if (off < len) off += (4 - ((14u + sl) % 4u)) % 4u;
+	}
+	return n;
 }

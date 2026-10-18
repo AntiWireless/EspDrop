@@ -30,7 +30,10 @@ static const char *TAG = "awdl_app";
 
 /* Host->radio data TX: one IPv6 packet (awdl0 MTU) per slot, queued from the
  * bridge RX task and flushed by the AWDL task during advertised-present slots. */
-#define TX_Q_LEN        8
+/* TX queue depth. Kept at 8: outbound traffic while receiving is mostly small
+ * TCP ACKs (q_drop stayed 0 in the ping tests), and every entry reserves a full
+ * MTU, so the heap is better spent on the device->host RX queue (bridge.c). */
+#define TX_Q_LEN 8
 /* Max IPv6 payload per data frame. esp_wifi_80211_tx caps the 802.11 frame at
  * 1500 bytes; awdl_build_data adds 40 bytes of framing (24 B 802.11 + 8 B
  * LLC/SNAP + 8 B AWDL data header), so the payload must stay <= 1500 - 40. This
@@ -140,7 +143,12 @@ static void awdl_task(void *arg) {
 
 	for (;;) {
 		rx_event_t ev;
-		if (xQueueReceive(s_rx_q, &ev, pdMS_TO_TICKS(20)) == pdTRUE) {
+		/* With host frames waiting, wake every 2 ms (FREERTOS_HZ=1000) so a
+		 * ~65 ms present slot gets ~30 flush chances instead of ~3. */
+		TickType_t wait = (s_tx_q && uxQueueMessagesWaiting(s_tx_q) > 0)
+		                  ? pdMS_TO_TICKS(2) : pdMS_TO_TICKS(20);
+		if (wait == 0) wait = 1;
+		if (xQueueReceive(s_rx_q, &ev, wait) == pdTRUE) {
 			xSemaphoreTake(s_lock, portMAX_DELAY);
 			awdl_node_on_rx_action(&s_node, &ev.pv, ev.rssi, ev.now_us);
 			xSemaphoreGive(s_lock);
