@@ -18,6 +18,7 @@
 #           -i IFACE interface (default: awdl0)
 #           -d DIR   download directory (default: ~/Downloads/airdrop)
 #           -l FILE  log file (default: ~/espdrop-opendrop.log)
+#           -h       this help
 # Environment: OPENDROP_VENV (default ~/opendrop-venv), OPENDROP_ANNOUNCE_INTERVAL
 #           (default 2 s), ESPDROP_TLS_KEYLOG=FILE to write TLS keys for Wireshark.
 #
@@ -31,6 +32,10 @@ IFACE=awdl0
 DIR="$HOME/Downloads/airdrop"
 LOG="$HOME/espdrop-opendrop.log"
 VENV="${OPENDROP_VENV:-$HOME/opendrop-venv}"
+KEYLOG="${ESPDROP_TLS_KEYLOG:-}"
+
+# The comment block above, up to the license line.
+usage() { awk 'NR > 1 { if (/^# SPDX/) exit; sub(/^# ?/, ""); print }' "$0"; }
 
 while getopts "n:i:d:l:h" opt; do
   case "$opt" in
@@ -38,11 +43,17 @@ while getopts "n:i:d:l:h" opt; do
     i) IFACE="$OPTARG" ;;
     d) DIR="$OPTARG" ;;
     l) LOG="$OPTARG" ;;
-    *) sed -n '2,24p' "$0"; exit 1 ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
   esac
 done
 
 die() { echo "error: $*" >&2; exit 1; }
+# Relative paths would resolve against DIR after the cd below.
+abspath() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s\n' "$PWD/$1" ;; esac; }
+LOG=$(abspath "$LOG")
+VENV=$(abspath "$VENV")
+[ -n "$KEYLOG" ] && KEYLOG=$(abspath "$KEYLOG")
 
 [ "$(id -u)" -eq 0 ] && die "run as your normal user, not root (state lives in ~/.opendrop)"
 [ -x "$VENV/bin/opendrop" ] || die "no OpenDrop in $VENV - run tools/opendrop_install.sh first"
@@ -81,22 +92,42 @@ preflight() {
     echo "note: avahi-daemon is running and also speaks mDNS on $IFACE, costing scarce" >&2
     echo "      channel-6 airtime. For the test: sudo systemctl stop avahi-daemon avahi-daemon.socket" >&2
   fi
-  if command -v ufw >/dev/null && sudo -n ufw status 2>/dev/null | grep -q '^Status: active'; then
-    echo "note: ufw is active; allow tcp 8771-8772 and udp 5353 on $IFACE, e.g." >&2
+  # Firewalls: checked without root and independent of the locale (ufw's own
+  # config file, firewalld's unit state).
+  if grep -qs '^ENABLED=yes' /etc/ufw/ufw.conf; then
+    echo "note: ufw is enabled; allow tcp 8771-8772 and udp 5353 on $IFACE, e.g." >&2
     echo "      sudo ufw allow in on $IFACE to any port 8771:8772 proto tcp" >&2
     echo "      sudo ufw allow in on $IFACE to any port 5353 proto udp" >&2
+  fi
+  if command -v systemctl >/dev/null && systemctl is-active --quiet firewalld 2>/dev/null; then
+    echo "note: firewalld is running; allow tcp 8771-8772 and udp 5353 on $IFACE, e.g. for" >&2
+    echo "      the test: sudo firewall-cmd --zone=trusted --add-interface=$IFACE (until reload)" >&2
   fi
 }
 
 mkdir -p "$DIR" || die "cannot create $DIR"
+mkdir -p "$(dirname "$LOG")" || die "cannot create the directory of $LOG"
+keylog=()
+if [ -n "$KEYLOG" ]; then
+  # OpenDrop opens it while setting up TLS and would die (and respawn forever)
+  # if the directory did not exist.
+  { mkdir -p "$(dirname "$KEYLOG")" && touch "$KEYLOG"; } || die "cannot write $KEYLOG"
+  keylog=(SSLKEYLOGFILE="$KEYLOG")
+fi
 cd "$DIR" || die "cannot enter $DIR"
 
 pid=""
-# Background jobs of a script ignore Ctrl-C, so stop OpenDrop explicitly.
-trap 'echo; [ -n "$pid" ] && kill "$pid" 2>/dev/null; echo "stopped."; exit 0' INT TERM
-
-keylog=()
-[ -n "${ESPDROP_TLS_KEYLOG:-}" ] && keylog=(SSLKEYLOGFILE="$ESPDROP_TLS_KEYLOG")
+# Background jobs of a script ignore Ctrl-C, so stop OpenDrop explicitly, and
+# before anything that could fail: with stdout on a pipe that is already gone
+# (`| tee` killed by the same Ctrl-C), a write must not end us first. Ignoring
+# SIGPIPE turns such writes into plain errors (GNU tee then keeps the log).
+stop() {
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null
+  echo; echo "stopped."
+  exit 0
+}
+trap '' PIPE
+trap stop INT TERM HUP
 
 echo "receiving into $DIR as '$NAME' on $IFACE; log: $LOG"
 while :; do

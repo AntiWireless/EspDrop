@@ -82,7 +82,8 @@ static void on_action(const awdl_peer_view_t *pv, int8_t rssi, uint8_t channel,
 	ev.channel = channel;
 	ev.now_us = now_us;
 	/* drop on overflow rather than block the Wi-Fi task */
-	(void)xQueueSend(s_rx_q, &ev, 0);
+	if (xQueueSend(s_rx_q, &ev, 0) == pdTRUE && s_task)
+		xTaskNotifyGive(s_task);
 }
 
 /*
@@ -142,13 +143,18 @@ static void awdl_task(void *arg) {
 	int64_t next_tick = now + TICK_INTERVAL_US;
 
 	for (;;) {
-		rx_event_t ev;
-		/* With host frames waiting, wake every 2 ms (FREERTOS_HZ=1000) so a
-		 * ~65 ms present slot gets ~30 flush chances instead of ~3. */
+		/* Both producers (on_action, awdl_app_tx_ethernet) notify this task,
+		 * so new work is handled at once; a host frame that arrives late in a
+		 * present slot still goes out in that slot. The timeout only paces
+		 * retries: 20 ms for a due PSF/MIF, and 2 ms (FREERTOS_HZ=1000) while
+		 * host frames wait for the next present slot. */
 		TickType_t wait = (s_tx_q && uxQueueMessagesWaiting(s_tx_q) > 0)
 		                  ? pdMS_TO_TICKS(2) : pdMS_TO_TICKS(20);
 		if (wait == 0) wait = 1;
-		if (xQueueReceive(s_rx_q, &ev, wait) == pdTRUE) {
+		(void)ulTaskNotifyTake(pdTRUE, wait);
+
+		rx_event_t ev;
+		while (xQueueReceive(s_rx_q, &ev, 0) == pdTRUE) {
 			xSemaphoreTake(s_lock, portMAX_DELAY);
 			awdl_node_on_rx_action(&s_node, &ev.pv, ev.rssi, ev.now_us);
 			xSemaphoreGive(s_lock);
@@ -216,6 +222,7 @@ int awdl_app_tx_ethernet(const uint8_t *eth, size_t len, void *ctx) {
 	if (plen) memcpy(td.ip, eth + 14, plen);
 	if (xQueueSend(s_tx_q, &td, 0) != pdTRUE) { s_tx_q_drop++; return -1; } /* full */
 	s_tx_queued++;
+	xTaskNotifyGive(s_task);   /* flush now if we are inside a present slot */
 	return 0;
 }
 
@@ -247,10 +254,11 @@ int awdl_app_start(const uint8_t self_mac[6], const char *name, uint8_t chan) {
 
 	awdl_node_init(&s_node, self_mac, name, chan, (uint64_t)esp_timer_get_time());
 
-	radio_set_action_handler(on_action, NULL);
-
+	/* Task first: on_action notifies it (and skips that while s_task is unset). */
 	if (xTaskCreate(awdl_task, "awdl", 6144, NULL, 5, &s_task) != pdPASS)
 		return -1;
+
+	radio_set_action_handler(on_action, NULL);
 
 	s_started = true;
 	ESP_LOGI(TAG, "started on ch %u", chan);

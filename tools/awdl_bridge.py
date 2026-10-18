@@ -43,6 +43,7 @@ import socket
 import struct
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import espdrop_link as link
@@ -54,6 +55,7 @@ IFF_TAP   = 0x0002
 IFF_NO_PI = 0x1000
 
 MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
+MAX_LEARNED = 64     # neighbour entries kept; the oldest is dropped beyond that
 
 
 def open_tap(name: str) -> int:
@@ -71,14 +73,18 @@ def mac_str(b: bytes) -> str:
     return ":".join(f"{x:02x}" for x in b)
 
 
-def learn_neighbor(eth: bytes):
+def learn_neighbor(eth: bytes, own_mac=None):
     """(link-local source address, source MAC) of a received IPv6 frame, or None.
 
     Only unicast source MACs and fe80::/10 source addresses qualify; anything else
     (multicast sender, global/unspecified source, non-IPv6) teaches us nothing.
+    With own_mac, only frames addressed to us or to a group address count: the
+    device forwards every AWDL data frame it hears, also those between others.
     """
     if len(eth) < 14 + 40 or eth[12:14] != b"\x86\xdd":
         return None
+    if own_mac and not (eth[0] & 0x01) and eth[0:6] != own_mac:
+        return None                  # unicast to someone else
     src_mac = eth[6:12]
     if src_mac[0] & 0x01:            # group address cannot be a neighbour
         return None
@@ -162,19 +168,30 @@ def main() -> int:
         tap_fd = open_tap(args.dev)
         os.set_blocking(tap_fd, False)
 
+        have_ipv6 = os.path.isdir("/proc/sys/net/ipv6")
+        if not have_ipv6:
+            print("warning: IPv6 is disabled in this kernel (ipv6.disable=1 on the "
+                  f"kernel command line?); AirDrop needs it, {args.dev} will carry no IP",
+                  file=sys.stderr)
         if not args.no_config:
             if mac:
                 try:
                     ip("link", "set", "dev", args.dev, "address", mac)
                 except subprocess.CalledProcessError as e:
                     print(f"warning: could not set MAC {mac}: {e}", file=sys.stderr)
-            # Before bringing the link up: no DAD (only we live on this link, and
-            # an address still "tentative" makes OpenDrop's zeroconf announce into
-            # nothing), and no router solicitations/RA (no routers on AWDL; every
-            # frame we send costs scarce channel-6 airtime).
-            ipv6_sysctl(args.dev, "accept_dad", "0")
-            ipv6_sysctl(args.dev, "accept_ra", "0")
-            ipv6_sysctl(args.dev, "router_solicitations", "0")
+            if have_ipv6:
+                # Before bringing the link up. IPv6 on even where the host turns it
+                # off by default (a new interface inherits conf/default), and the
+                # link-local derived from the MAC (EUI-64) like on Apple's awdl0.
+                # No DAD (only we live on this link, and an address still
+                # "tentative" makes OpenDrop's zeroconf announce into nothing), and
+                # no router solicitations/RA (no routers on AWDL; every frame we
+                # send costs scarce channel-6 airtime).
+                ipv6_sysctl(args.dev, "disable_ipv6", "0")
+                ipv6_sysctl(args.dev, "accept_dad", "0")
+                ipv6_sysctl(args.dev, "accept_ra", "0")
+                ipv6_sysctl(args.dev, "router_solicitations", "0")
+                ipv6_sysctl(args.dev, "addr_gen_mode", "0")
             ip("link", "set", "dev", args.dev, "mtu", str(args.mtu), "up")
 
         print(f"{args.dev} up (mtu {args.mtu}, mac {mac or 'kernel-assigned'}); "
@@ -194,8 +211,15 @@ def main() -> int:
         stdin_buf = bytearray()
         stdin_open = True
         read_cap = args.mtu + 64  # one Ethernet frame plus slack
-        learned = {}              # link-local address -> MAC, from received traffic
-        ready_ll = None           # our usable link-local once announced
+        learned = {}              # link-local address -> MAC, oldest first
+        own_mac = bytes.fromhex(mac.replace(":", "")) if mac else None
+        # Our usable link-local, polled every 0.25 s until it shows up (or never,
+        # with --no-config / no IPv6); a hint follows if it takes too long.
+        probe_ll = have_ipv6 and not args.no_config
+        ready_ll = None
+        t_up = time.monotonic()
+        next_probe = t_up
+        hinted = False
 
         # Single-threaded select pump. Writes use a bounded 1s timeout so one
         # direction stalling on USB backpressure cannot block the other for long
@@ -204,12 +228,19 @@ def main() -> int:
             watch = [usb_fd, tap_fd]
             if stdin_open:
                 watch.append(stdin_fd)
-            r, _, _ = select.select(watch, [], [], None if ready_ll else 0.25)
-            if not ready_ll and not args.no_config:
+            r, _, _ = select.select(watch, [], [], 0.25 if probe_ll else None)
+            if probe_ll and time.monotonic() >= next_probe:
+                next_probe = time.monotonic() + (1.0 if hinted else 0.25)
                 ready_ll = usable_link_local(args.dev)
                 if ready_ll:
+                    probe_ll = False
                     print(f"[ready] {args.dev} has {ready_ll}%{args.dev} - "
                           f"start OpenDrop now (tools/opendrop_receive.sh)")
+                elif not hinted and time.monotonic() - t_up > 5:
+                    hinted = True
+                    print(f"warning: {args.dev} still has no usable IPv6 link-local "
+                          f"address; check `ip -6 addr show dev {args.dev}` and "
+                          f"`sysctl net.ipv6.conf.{args.dev}`", file=sys.stderr)
 
             if usb_fd in r:
                 try:
@@ -228,9 +259,10 @@ def main() -> int:
                             # Learn the sender before handing the frame to the
                             # kernel, so a reply (e.g. a SYN-ACK) already finds
                             # its permanent neighbour entry instead of NDP.
-                            nb = learn_neighbor(p)
+                            nb = learn_neighbor(p, own_mac)
                             if nb and learned.get(nb[0]) != nb[1]:
                                 ll, nmac = nb
+                                learned.pop(ll, None)   # re-learned: now newest
                                 learned[ll] = nmac
                                 print(f"[neigh] {ll}%{args.dev} is {mac_str(nmac)}"
                                       f" (learned from traffic)")
@@ -241,6 +273,15 @@ def main() -> int:
                                            "nud", "permanent")
                                     except subprocess.CalledProcessError as e:
                                         print(f"neigh add failed: {e}", file=sys.stderr)
+                                # Bounded: permanent entries never expire on their
+                                # own (peers rotate their AWDL address over time).
+                                if len(learned) > MAX_LEARNED:
+                                    old = next(iter(learned))
+                                    del learned[old]
+                                    if not args.no_config:
+                                        subprocess.run(["ip", "-6", "neigh", "del", old,
+                                                        "dev", args.dev],
+                                                       stderr=subprocess.DEVNULL)
                             try:
                                 link.write_all(tap_fd, p, timeout=1.0)
                                 to_tap += 1

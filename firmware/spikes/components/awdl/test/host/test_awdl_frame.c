@@ -590,6 +590,17 @@ static void test_node_chanseq_mirror(void) {
 	iphone_announce(&iph, 100000, ip, &pv); /* chanseq: 6 at 0/8, 44 at 2/10 */
 	awdl_node_on_rx_action(&n, &pv, -40, 100000);
 
+	/* While the master is present, status names it and reports its sequence
+	 * (what the `node` command prints as mseq=). */
+	awdl_node_status_t st;
+	awdl_node_status(&n, &st);
+	CHECK(st.have_master && memcmp(st.master_addr, ip, 6) == 0, "status: master");
+	CHECK(st.master_has_chanseq, "status: master chanseq not reported");
+	for (int i = 0; i < (int)AWDL_CHANSEQ_LEN; i++)
+		CHECK(st.master_chanseq[i] == pv.chanseq[i], "status mseq[%d]=%u expected %u",
+		      i, st.master_chanseq[i], pv.chanseq[i]);
+	CHECK(st.seq_derived, "status: mirror not derived");
+
 	/* What we now advertise must be channel 6 exactly in the master's channel-6
 	 * slots (0 and 8) and absent (0) everywhere else - never a flat all-6. */
 	uint8_t buf[1500];
@@ -616,7 +627,6 @@ static void test_node_chanseq_mirror(void) {
 		CHECK(ours.chanseq[i] == expect, "kept chanseq[%d]=%u expected %u",
 		      i, ours.chanseq[i], expect);
 	}
-	awdl_node_status_t st;
 	awdl_node_status(&n, &st);
 	CHECK(st.seq_derived && !st.have_master && !st.master_has_chanseq,
 	      "status after age-out: derived=%d master=%d mseq=%d",
@@ -669,15 +679,22 @@ static void test_chanseq_empty_intersection(void) {
 	uint8_t me[6] = {0x02, 0, 0, 0, 0, 0x01};
 	awdl_self_t self;
 	awdl_self_init(&self, me, "x", 6);
+	/* Start from a mirror rather than the static all-6 of init, so "left
+	 * untouched" cannot be confused with a fallback to the static sequence. */
+	uint8_t good[AWDL_CHANSEQ_LEN] = {0};
+	good[4] = 6; good[12] = 149;
+	CHECK(awdl_self_set_chanseq_intersect(&self, good, 6), "mirror must succeed");
 	/* master with no channel-6 slot at all: report it and leave our sequence
-	 * untouched (here the static all-6 from init), never "present nowhere". */
+	 * untouched, never "present nowhere". */
 	uint8_t mseq[AWDL_CHANSEQ_LEN] = {0};
 	mseq[2] = 44; mseq[10] = 149;
 	CHECK(!awdl_self_set_chanseq_intersect(&self, mseq, 6),
 	      "empty intersection must return false");
-	for (int i = 0; i < (int)AWDL_CHANSEQ_LEN; i++)
-		CHECK(self.seq[i][0] == 6, "empty-intersection left slot %d = %u",
-		      i, self.seq[i][0]);
+	for (int i = 0; i < (int)AWDL_CHANSEQ_LEN; i++) {
+		uint8_t exp = (i == 4) ? 6 : 0;
+		CHECK(self.seq[i][0] == exp, "empty-intersection left slot %d = %u expected %u",
+		      i, self.seq[i][0], exp);
+	}
 }
 
 static void test_chanseq_realistic_slot0(void) {

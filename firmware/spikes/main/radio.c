@@ -61,6 +61,16 @@ static void tx_done_cb(uint8_t ifidx, uint8_t *data, uint16_t *data_len, bool tx
 	}
 }
 
+/* Forward one reconstructed MSDU to the data handler and count it (ctx: int).
+ * Counting here instead of from the parser's return value keeps rx_msdu exact
+ * for an A-MSDU that is cut short: its good leading subframes are delivered
+ * before the parser reports the error. Wi-Fi task only, like rx_cb. */
+static void deliver_msdu(const uint8_t dst[6], const uint8_t src[6], uint16_t ethertype,
+                         const uint8_t *payload, size_t plen, void *ctx) {
+	(*(int *)ctx)++;
+	if (s_data_handler) s_data_handler(dst, src, ethertype, payload, plen, s_data_ctx);
+}
+
 /* ---- promiscuous rx callback: filter AWDL BSSID, parse, enqueue ---- */
 static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 	if (type != WIFI_PKT_MGMT && type != WIFI_PKT_DATA) return;
@@ -101,18 +111,17 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 			return;
 		}
 		/* Reconstruct Ethernet per MSDU (one for a plain frame, several for an
-		 * A-MSDU) and hand each to the consumer; radio_data_handler_t has the
-		 * same shape as awdl_msdu_cb_t. */
-		int n = awdl_parse_data_msdus(frame, (size_t)len, s_data_handler, s_data_ctx);
-		if (n > 0) {
+		 * A-MSDU) and hand each to the consumer via deliver_msdu. */
+		int delivered = 0;
+		int r = awdl_parse_data_msdus(frame, (size_t)len, deliver_msdu, &delivered);
+		if (delivered > 0) {
 			stat_inc(&s_stats.rx_data);
 			if (amsdu) stat_inc(&s_stats.rx_amsdu);
 			portENTER_CRITICAL(&s_stats_mux);
-			s_stats.rx_msdu += (uint64_t)n;
+			s_stats.rx_msdu += (uint64_t)delivered;
 			portEXIT_CRITICAL(&s_stats_mux);
-		} else if (n < 0) {
-			stat_inc(&s_stats.rx_data_perr);
 		}
+		if (r < 0) stat_inc(&s_stats.rx_data_perr);
 	}
 }
 

@@ -9,6 +9,10 @@
 #
 #   tools/opendrop_install.sh            # as your normal user, not root
 #
+# Re-running is safe: an install that is complete and matches the pinned series
+# is left alone; one this script left incomplete (an error, Ctrl-C) or built
+# from another series/Python version is rebuilt from scratch.
+#
 # Settings (environment variables):
 #   OPENDROP_VENV        target venv            (default: ~/opendrop-venv)
 #   AIRDROP_MT7921_DIR   where the patches live (default: ~/.cache/espdrop/airdrop-mt7921)
@@ -33,6 +37,10 @@ PATCHES=(ios26-airdrop recv-window py314-send mdns-repeat find-report tls-keylog
          upload-arms ask-confirm mdns-reannounce threaded-server url-items
          zeroconf-update-service salvage-truncated salvage-trim
          send-multifile send-status send-stall)
+# Markers in the venv: WIP while this script builds it, OK (holding the series
+# signature) once every patch landed and was verified.
+STAMP_WIP=.espdrop-installing
+STAMP_OK=.espdrop-installed
 
 die()  { echo "error: $*" >&2; exit 1; }
 step() { printf '\n==> %s\n' "$*"; }
@@ -47,32 +55,22 @@ python3 -c 'import venv, ensurepip' 2>/dev/null \
   || die "python3 venv module missing (e.g. Debian/Ubuntu: apt install python3-venv)"
 command -v git     >/dev/null || die "git not found (needed for git apply)"
 command -v openssl >/dev/null || die "openssl not found (OpenDrop creates its certificate with it)"
-if command -v ldconfig >/dev/null && ! ldconfig -p 2>/dev/null | grep -q 'libarchive\.so'; then
-  echo "warning: libarchive not found by ldconfig; OpenDrop needs it to unpack transfers" >&2
+if command -v ldconfig >/dev/null; then
+  # Captured first: `ldconfig -p | grep -q` under pipefail can report a hit as a
+  # miss when grep exits early and ldconfig dies of SIGPIPE.
+  libs=$(ldconfig -p 2>/dev/null || true)
+  case "$libs" in
+    *libarchive.so*) ;;
+    *) echo "warning: libarchive not found by ldconfig; OpenDrop needs it to unpack transfers" >&2 ;;
+  esac
 fi
+pyver=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
 echo "python: $(python3 -V 2>&1)"
-
-# `git apply` run inside a git work tree applies paths relative to that repo
-# and silently skips everything else (airdrop-mt7921 install.sh). Keep the venv
-# outside any repository; GIT_DIR below guards against it as well.
-venv_parent="$(dirname "$VENV")"
-mkdir -p "$venv_parent"
-if git -C "$venv_parent" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  die "$VENV is inside a git repository; choose another OPENDROP_VENV (e.g. ~/opendrop-venv)"
-fi
-
-if [ -d "$VENV" ]; then
-  SITE=$(echo "$VENV"/lib/python*/site-packages)
-  if grep -q 'trailing CRLF of the final chunk' "$SITE/opendrop/server.py" 2>/dev/null; then
-    echo "already installed: $VENV (delete it to reinstall)"
-    exit 0
-  fi
-  die "$VENV exists but is not a patched OpenDrop; delete it and run again"
-fi
 
 step "fetching the patch series ($REV)"
 if [ -d "$SRC/.git" ]; then
-  git -C "$SRC" fetch -q origin
+  # Fetch only when the pinned revision is not here yet (re-runs work offline).
+  git -C "$SRC" cat-file -e "$REV^{commit}" 2>/dev/null || git -C "$SRC" fetch -q origin
 else
   mkdir -p "$(dirname "$SRC")"
   git clone -q https://github.com/jedbillyb/airdrop-mt7921.git "$SRC"
@@ -81,23 +79,60 @@ git -C "$SRC" -c advice.detachedHead=false checkout -q "$REV"
 for p in "${PATCHES[@]}"; do
   [ -f "$SRC/patches/opendrop-$p.patch" ] || die "patch $p missing in $SRC at $REV"
 done
+# What the finished venv must match: OpenDrop and Python version plus the
+# names, order and contents of the patches.
+sig="opendrop $OPENDROP_VERSION python $pyver series $(
+  cd "$SRC/patches" && for p in "${PATCHES[@]}"; do sha256sum "opendrop-$p.patch"; done \
+    | sha256sum | cut -d' ' -f1)"
+
+if [ -e "$VENV" ]; then
+  if [ -f "$VENV/$STAMP_OK" ] && [ "$(cat "$VENV/$STAMP_OK")" = "$sig" ] \
+     && [ ! -e "$VENV/$STAMP_WIP" ]; then
+    echo
+    echo "already installed and up to date: $VENV"
+    exit 0
+  fi
+  # Only ever delete a venv this script created: it carries one of our markers,
+  # which are only written into a directory this script made itself.
+  if [ -e "$VENV/$STAMP_OK" ] || [ -e "$VENV/$STAMP_WIP" ]; then
+    step "rebuilding $VENV (previous install incomplete or outdated)"
+    rm -rf -- "$VENV"
+  else
+    die "$VENV exists but was not made by this script; delete it or set OPENDROP_VENV"
+  fi
+fi
 
 step "creating $VENV with opendrop==$OPENDROP_VERSION"
+mkdir -p "$(dirname "$VENV")"
+mkdir "$VENV"                 # fresh: it did not exist (or was ours and removed)
+touch "$VENV/$STAMP_WIP"
 python3 -m venv "$VENV"
 # setuptools<81: OpenDrop imports pkg_resources, which setuptools 81 removed.
 "$VENV/bin/pip" install -q "opendrop==$OPENDROP_VERSION" 'setuptools<81' \
-  || die "pip install failed"
+  || die "pip install failed (run again to retry)"
 SITE=$(echo "$VENV"/lib/python*/site-packages)
+[ -f "$SITE/opendrop/server.py" ] || die "opendrop not found in $SITE"
+
+# Digest of the package sources; all patches touch only opendrop/*.py.
+tree_sum() {
+  (cd "$SITE" && find opendrop -name '*.py' -type f -print0 | sort -z \
+     | xargs -0 sha256sum | sha256sum)
+}
 
 step "applying ${#PATCHES[@]} patches"
 for p in "${PATCHES[@]}"; do
+  before=$(tree_sum)
+  # GIT_DIR: `git apply` inside a git work tree (e.g. a home directory under
+  # version control) applies paths relative to that repo and silently skips
+  # everything else (airdrop-mt7921 install.sh). This makes it a plain patcher.
   ( cd "$SITE" && GIT_DIR=/nonexistent-espdrop-install git apply \
-      "$SRC/patches/opendrop-$p.patch" ) || die "patch $p did not apply"
+      "$SRC/patches/opendrop-$p.patch" ) || die "patch $p did not apply (run again to retry)"
+  # Do not trust the exit code alone: the patch must actually have changed code.
+  [ "$(tree_sum)" != "$before" ] || die "patch $p applied but changed nothing"
   echo "  ok  $p"
 done
 
 step "verifying"
-# Check that the patches really landed instead of trusting git apply's exit code.
 grep -q 'trailing CRLF of the final chunk' "$SITE/opendrop/server.py" \
   || die "patches did not land in $SITE (ios26-airdrop missing)"
 grep -q 'application/x-dvzip' "$SITE/opendrop/server.py" \
@@ -106,6 +141,8 @@ grep -q 'application/x-dvzip' "$SITE/opendrop/server.py" \
   || die "patched OpenDrop does not compile"
 # Dependencies are unpinned upstream; record what we got for bug reports.
 "$VENV/bin/pip" freeze > "$VENV/espdrop-freeze.txt"
+printf '%s\n' "$sig" > "$VENV/$STAMP_OK"
+rm -f "$VENV/$STAMP_WIP"
 
 echo
 echo "done: $VENV/bin/opendrop (patched, rev $REV)"
