@@ -26,7 +26,9 @@ cd spikes
 # one build dir per chip, target always given (do not use `idf.py set-target`)
 idf.py -B build_c3 -DSDKCONFIG=build_c3/sdkconfig -DIDF_TARGET=esp32c3 -p /dev/ttyACM0 build flash monitor
 idf.py -B build_c5 -DSDKCONFIG=build_c5/sdkconfig -DIDF_TARGET=esp32c5 -p /dev/ttyACM0 build flash monitor
-# bridge firmware: add -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.bridge.defaults"
+# bridge firmware: its own build dir, e.g. for the C5
+idf.py -B build_c5_bridge -DSDKCONFIG=build_c5_bridge/sdkconfig -DIDF_TARGET=esp32c5 \
+  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.bridge.defaults" -p /dev/ttyACM0 build flash
 ```
 
 `sdkconfig.defaults.esp32c5` is picked up automatically for the C5.

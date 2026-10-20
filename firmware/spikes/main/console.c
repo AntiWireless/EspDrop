@@ -4,7 +4,7 @@
  * Commands (type `help` on the device):
  *   info                 chip, MAC, channel, country, band mode, TX power
  *   mac <aa:bb:..:ff>    override the station MAC (ACK experiment)
- *   chan <n>             set the channel (2.4 GHz; on the C5 also 36..48, 149..177)
+ *   chan <n>             set the channel (1..13; on the C5 also 36..48, 149..173)
  *   rx on|off            enable/disable promiscuous AWDL receive
  *   tx psf|mif [n]       inject n (default 1) action frames
  *   txdata <hexpayload>  inject one AWDL data frame to the broadcast AWDL addr
@@ -55,9 +55,9 @@ static int parse_mac(const char *s, uint8_t out[6]) {
 }
 
 #if SOC_WIFI_SUPPORT_5G
-#define CHAN_RANGE "1..14 | 36..48 | 149..177"
+#define CHAN_RANGE "1..13 | 36..48 | 149..173"
 #else
-#define CHAN_RANGE "1..14"
+#define CHAN_RANGE "1..13"
 #endif
 
 static int cmd_info(int argc, char **argv) {
@@ -245,9 +245,9 @@ static void chanlat_report(const char *what, int32_t *v, int n) {
 /*
  * chanlat [n] [c1,c2,...]: n calls of esp_wifi_set_channel cycling through the
  * list, timed around the call (the radio may still settle afterwards). Hops
- * within a band and across bands are reported separately, the first hop on its
- * own (a band change may calibrate once). Our own AWDL TX is paused meanwhile,
- * and the power is capped if the list touches 149+.
+ * within a band and across bands are reported separately, the first band change
+ * on its own (it may calibrate once). Our own AWDL TX is paused meanwhile, and
+ * the power is capped if the list touches 149+.
  */
 static int cmd_chanlat(int argc, char **argv) {
 	int n = (argc >= 2) ? atoi(argv[1]) : 100;
@@ -294,9 +294,10 @@ static int cmd_chanlat(int argc, char **argv) {
 		uint8_t pri = 0;
 		wifi_second_chan_t sec;
 		if (esp_wifi_get_channel(&pri, &sec) != ESP_OK || pri != ch) wrong++;
-		if (first_dt < 0) {
-			first_dt = dt; first_from = prev; first_to = ch;
-		} else if ((ch > 14) != (prev > 14)) {
+		bool xband = (ch > 14) != (prev > 14);
+		if (xband && first_dt < 0) {
+			first_dt = dt; first_from = prev; first_to = ch;   /* kept apart */
+		} else if (xband) {
 			cross[nc++] = dt;
 		} else {
 			same[ns++] = dt;
@@ -309,7 +310,8 @@ static int cmd_chanlat(int argc, char **argv) {
 	printf("chanlat %d hops over %s (CPU %d MHz):\n", n,
 	       (argc >= 3) ? argv[2] : CHANLAT_DEFAULT, CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
 	if (first_dt >= 0)
-		printf("  first hop  %u -> %u: %ld us\n", first_from, first_to, (long)first_dt);
+		printf("  first band change %u -> %u: %ld us (not in the stats below)\n",
+		       first_from, first_to, (long)first_dt);
 	chanlat_report("same band", same, ns);
 	chanlat_report("cross band", cross, nc);
 	if (errs)  printf("  %d hops failed (first: %s)\n", errs, esp_err_to_name(first_err));

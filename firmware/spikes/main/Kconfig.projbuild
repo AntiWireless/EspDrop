@@ -19,7 +19,7 @@ config ESPDROP_AWDL_NAME
 
 config ESPDROP_AWDL_CHANNEL
     int "AWDL channel at boot"
-    range 1 177
+    range 1 173
     default 6
     help
         Channel the AWDL node starts on. 6 is the 2.4 GHz social channel and the

@@ -43,7 +43,7 @@ beide, die Namen unter `/dev/serial/by-id/` verwenden.
 |---|---|
 | `info` | Chip und Revision, eigene MAC, Kanal, Land, Band-Modus (C5), Sendeleistung, Promiscuous-Status |
 | `mac <aa:bb:cc:dd:ee:ff>` | Stations-MAC setzen (für den ACK-Test) |
-| `chan <n>` | Kanal wechseln: 1..14, auf dem C5 zusätzlich 36..48 und 149..177 |
+| `chan <n>` | Kanal wechseln: 1..13, auf dem C5 zusätzlich 36..48 und 149..173 |
 | `rx on` / `rx off` | Promiscuous-Empfang (nur AWDL-BSSID) an/aus |
 | `tx psf [n]` / `tx mif [n]` | n Action-Frames senden |
 | `txdata <hex>` | einen AWDL-Datenframe an die AWDL-Broadcast-MAC senden |
@@ -75,7 +75,7 @@ der Nähe – nicht committen** (die `.gitignore` blockt `*.pcap` und `*.log`).
 1. `tx mif 5` auf dem C3.
 2. Im `tcpdump`/Wireshark auf dem Laptop nachsehen: Erscheinen die Frames?
    Wireshark hat einen AWDL-Dissektor – prüfen, ob er Sync-Params, Kanalsequenz,
-   ARPA-Name (`espdrop-c3`) und Version sauber dekodiert.
+   ARPA-Name (`espdrop-c3`, auf dem C5 `espdrop-c5`) und Version sauber dekodiert.
 3. Querprobe gegen den Host-Test: `firmware/spikes/components/awdl/test/host`
    gibt denselben MIF als Hexdump aus.
 
@@ -142,15 +142,16 @@ Radarerkennung).
    am iPhone das Teilen-Menü öffnen, `peers`. In der Kanalsequenz steht 44 oder 149.
 4. **Empfang auf 5 GHz.** `chan 44` (bzw. 149), `rx on`, Teilen-Menü offen,
    `peers` und `stats`: Das iPhone muss auftauchen, `action` steigen.
-5. **Senden auf 5 GHz.** `chan 44`, `reset`, `tx mif 20`, `stats`
-   (`tx ok=20`, `tx_done ok` steigt). Mitschnitt mit einer 5-GHz-fähigen Karte:
+5. **Senden auf 5 GHz.** `chan 44`, `reset`, `tx mif 20`, `stats`:
+   `tx ok` mindestens 20 (der Knoten sendet nebenbei eigene PSF/MIF, die
+   zählen mit), `tx err` 0, `tx_done ok` steigt. Mitschnitt mit einer 5-GHz-fähigen Karte:
    `sudo iw reg set DE`, Monitor-Mode wie oben, `sudo iw dev wlan0 set channel 44`.
    Wireshark sollte saubere AWDL-Frames mit 6 Mbit/s zeigen.
 6. **Kanalwechsel (entscheidend für 5 GHz).**
    `chanlat 200 6,6`, `chanlat 200 6,44`, `chanlat 200 6,149`,
    `chanlat 200 44,149`. Ein AWDL-Slot dauert 64 TU (≈ 65 ms); ein Wechsel um
    2 ms ist gut, unter 5 ms brauchbar (MT7921: 8,5 ms). Alle Zeilen der Ausgabe
-   aufschreiben, auch den ersten Wechsel und eventuelle Fehler.
+   aufschreiben, auch den ersten Bandwechsel und eventuelle Fehler.
 7. **USB-Durchsatz** wie Spike 5.
 8. **Optional: Bridge auf 5 GHz.** Bridge-Firmware für den C5 flashen, im
    `awdl_bridge.py`-Terminal `chan 44` (bzw. den Kanal aus Test 3) eingeben,

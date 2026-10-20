@@ -155,10 +155,10 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 /* ------------------------------------------------------------------------ */
 
 bool radio_channel_supported(uint8_t ch) {
-	if (ch >= 1 && ch <= 14) return true;
+	if (ch >= 1 && ch <= 13) return true;   /* 14 is Japan-only 802.11b */
 #if SOC_WIFI_SUPPORT_5G
 	if (ch >= 36 && ch <= 48 && ch % 4 == 0) return true;   /* UNII-1, no DFS */
-	if (ch >= 149 && ch <= 177 && ch % 4 == 1) return true; /* UNII-3 / SRD */
+	if (ch >= 149 && ch <= 173 && ch % 4 == 1) return true; /* SRD band, <= 5875 MHz */
 #endif
 	return false;
 }

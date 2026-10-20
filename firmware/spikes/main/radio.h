@@ -74,10 +74,12 @@ typedef void (*radio_data_handler_t)(const uint8_t dst[6], const uint8_t src[6],
 int radio_init(uint8_t channel);
 
 /*
- * Whether this chip can be put on the channel: 1..14 everywhere, and on a 5 GHz
- * chip (ESP32-C5) also 36..48 and 149..177 (steps of 4). The DFS channels
- * 52..144 are left out on purpose: transmitting there needs radar detection.
- * The driver's country table has the final say (radio_set_channel fails).
+ * Whether this chip can be put on the channel: 1..13 everywhere, and on a 5 GHz
+ * chip (ESP32-C5) also 36..48 and 149..173 (steps of 4; 173 ends at 5875 MHz,
+ * the top of the EU short-range-device band). The DFS channels 52..144 are left
+ * out on purpose: transmitting there needs radar detection. This list is the
+ * real limit: with the driver's default country ("01", 802.11d) the driver
+ * itself accepts 1..14 and every 5 GHz channel.
  */
 bool radio_channel_supported(uint8_t channel);
 
