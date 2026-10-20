@@ -8,6 +8,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver/usb_serial_jtag.h"
@@ -234,6 +235,26 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		         (unsigned)c.queued, (unsigned)c.q_drop, (unsigned)c.sent_uc,
 		         (unsigned)c.sent_mc, (unsigned)c.tx_fail,
 		         (unsigned)st.tx_uc_ack, (unsigned)st.tx_uc_noack);
+		cmd_reply(out);
+	} else if (strcmp(cmd, "chan") == 0 || strncmp(cmd, "chan ", 5) == 0) {
+		/* `chan` shows the AWDL channel, `chan <n>` moves the node there (it
+		 * restarts: sync and peers are learned again). On the C5 that allows
+		 * single-channel 5 GHz experiments (44/149) with the full data path. */
+		if (cmd[4] == '\0') {
+			snprintf(out, sizeof(out), "chan %u", radio_get_channel());
+		} else {
+			int ch = atoi(cmd + 5);
+			int err = (ch >= 1 && ch <= 255 && radio_channel_supported((uint8_t)ch))
+			          ? radio_set_channel((uint8_t)ch) : ESP_ERR_NOT_SUPPORTED;
+			if (err != ESP_OK) {
+				snprintf(out, sizeof(out), "chan %d: %s", ch, esp_err_to_name(err));
+			} else {
+				uint8_t mac[6];
+				radio_get_self_mac(mac);
+				awdl_app_set_self(mac, (uint8_t)ch);
+				snprintf(out, sizeof(out), "chan %d (AWDL node restarted)", ch);
+			}
+		}
 		cmd_reply(out);
 	} else if (strcmp(cmd, "testframe") == 0) {
 		send_test_frame();

@@ -1,0 +1,7 @@
+# EspDrop - ESP32-C5-only defaults. ESP-IDF loads this automatically right after
+# sdkconfig.defaults when building for esp32c5 (a C3 build ignores it).
+
+# The C5 also has an 802.15.4 radio (Thread/Zigbee); enabling it switches on
+# software Wi-Fi coexistence, which arbitrates the shared RF. We do not use
+# 802.15.4, so keep the Wi-Fi timing measurements free of that arbitration.
+CONFIG_IEEE802154_ENABLED=n

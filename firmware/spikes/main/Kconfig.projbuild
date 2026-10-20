@@ -9,4 +9,33 @@ config ESPDROP_BRIDGE_MODE
         console. Use this build to run the host-side awdl0 bridge and the M2.0
         echo test. Leave it off for the M0/M1 console workflow (tx/rx/sync/...).
 
+config ESPDROP_AWDL_NAME
+    string "AWDL host name we advertise"
+    default "espdrop-c5" if IDF_TARGET_ESP32C5
+    default "espdrop-c3"
+    help
+        Name carried in our AWDL frames (ARPA TLV). Shows up in sniffer captures
+        and in the peer lists of other devices; it is not the AirDrop name.
+
+config ESPDROP_AWDL_CHANNEL
+    int "AWDL channel at boot"
+    range 1 177
+    default 6
+    help
+        Channel the AWDL node starts on. 6 is the 2.4 GHz social channel and the
+        only choice on the ESP32-C3. A 5 GHz chip (ESP32-C5) also accepts 44 or
+        149 for single-channel experiments. Both the console and the bridge can
+        change it at runtime with `chan`.
+
+config ESPDROP_WIFI_COUNTRY
+    string "Wi-Fi country code (empty = driver default)"
+    default "DE" if SOC_WIFI_SUPPORT_5G
+    default ""
+    help
+        Two-letter country code passed to esp_wifi_set_country_code() at start.
+        Empty keeps the driver default ("01", world-safe). On a 5 GHz chip a real
+        country fixes which 5 GHz channels and power limits the driver applies.
+        Independently of this, the firmware caps the TX power on channels 149
+        and up (EU short-range-device band, 25 mW EIRP).
+
 endmenu

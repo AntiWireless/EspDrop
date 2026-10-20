@@ -60,6 +60,8 @@ static QueueHandle_t    s_rx_q;
 static QueueHandle_t    s_tx_q;      /* tx_data_t: bridge RX task -> awdl task */
 static TaskHandle_t     s_task;
 static bool             s_started;
+static char             s_name[AWDL_NAME_MAX + 1];  /* kept for awdl_app_set_self */
+static volatile bool    s_tx_paused;   /* awdl_app_pause_tx: no PSF/MIF/data TX */
 
 /* Peer-change notification. Shadow set is touched only by the AWDL task. */
 static awdl_peer_cb_t   s_peer_cb;
@@ -164,9 +166,9 @@ static void awdl_task(void *arg) {
 		/* Only advance the timer once the frame actually went out; if the
 		 * current slot is one we advertise as absent, retry on the next loop
 		 * (~20 ms) until we reach an advertised-present slot. */
-		if (now >= next_psf && send_frame(AWDL_SUBTYPE_PSF, false))
+		if (!s_tx_paused && now >= next_psf && send_frame(AWDL_SUBTYPE_PSF, false))
 			next_psf = now + PSF_INTERVAL_US;
-		if (now >= next_mif && send_frame(AWDL_SUBTYPE_MIF, false))
+		if (!s_tx_paused && now >= next_mif && send_frame(AWDL_SUBTYPE_MIF, false))
 			next_mif = now + MIF_INTERVAL_US;
 		if (now >= next_tick) {
 			uint8_t cur[AWDL_MAX_PEERS][6];
@@ -184,7 +186,7 @@ static void awdl_task(void *arg) {
 		/* Flush queued host data frames, but only during a slot we advertise as
 		 * present (= the master's ch6 slots), so our data TX lands when the peer
 		 * is on our channel. Build+send under the same lock that guards self. */
-		if (s_tx_q && uxQueueMessagesWaiting(s_tx_q) > 0) {
+		if (!s_tx_paused && s_tx_q && uxQueueMessagesWaiting(s_tx_q) > 0) {
 			static uint8_t txbuf[1600];
 			tx_data_t td;
 			now = esp_timer_get_time();
@@ -252,7 +254,8 @@ int awdl_app_start(const uint8_t self_mac[6], const char *name, uint8_t chan) {
 	s_tx_q = xQueueCreate(TX_Q_LEN, sizeof(tx_data_t));
 	if (!s_lock || !s_rx_q || !s_tx_q) return -1;
 
-	awdl_node_init(&s_node, self_mac, name, chan, (uint64_t)esp_timer_get_time());
+	if (name) strncpy(s_name, name, sizeof(s_name) - 1);
+	awdl_node_init(&s_node, self_mac, s_name, chan, (uint64_t)esp_timer_get_time());
 
 	/* Task first: on_action notifies it (and skips that while s_task is unset). */
 	if (xTaskCreate(awdl_task, "awdl", 6144, NULL, 5, &s_task) != pdPASS)
@@ -268,8 +271,7 @@ int awdl_app_start(const uint8_t self_mac[6], const char *name, uint8_t chan) {
 void awdl_app_set_self(const uint8_t self_mac[6], uint8_t chan) {
 	if (!s_started) return;
 	xSemaphoreTake(s_lock, portMAX_DELAY);
-	awdl_node_init(&s_node, self_mac, "espdrop-c3", chan,
-	               (uint64_t)esp_timer_get_time());
+	awdl_node_init(&s_node, self_mac, s_name, chan, (uint64_t)esp_timer_get_time());
 	xSemaphoreGive(s_lock);
 }
 
@@ -302,6 +304,11 @@ int awdl_app_format_peers(char *buf, size_t cap) {
 	}
 	xSemaphoreGive(s_lock);
 	return off;
+}
+
+void awdl_app_pause_tx(bool paused) {
+	s_tx_paused = paused;
+	if (!paused && s_task) xTaskNotifyGive(s_task);   /* catch up on due frames */
 }
 
 void awdl_app_tx(uint8_t subtype) {

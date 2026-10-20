@@ -38,5 +38,6 @@ logs/
 test_awdl_frame
 test_awdl_cobs
 
-# Separate build dir for the bridge-mode firmware
+# Separate build dirs for the bridge-mode / per-chip firmware
 build_bridge/
+firmware/**/build_*/

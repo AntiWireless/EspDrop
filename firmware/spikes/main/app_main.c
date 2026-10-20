@@ -1,5 +1,5 @@
 /*
- * EspDrop - AWDL firmware for the ESP32-C3.
+ * EspDrop - AWDL firmware for the ESP32-C3 and ESP32-C5.
  *
  * Two build modes (menuconfig -> EspDrop -> Bridge mode):
  *  - Console mode (default): brings up Wi-Fi + the AWDL node and an interactive
@@ -19,12 +19,22 @@
 #include "esp_log.h"
 #include "sdkconfig.h"
 
-#define DEFAULT_CHANNEL 6  /* AWDL 2.4 GHz social channel, the only one on the C3 */
+#include "radio.h"
+
+/* AWDL channel at boot (menuconfig, default 6 = the 2.4 GHz social channel and
+ * the only one on the C3); falls back to 6 if this chip cannot use it. */
+static uint8_t boot_channel(void) {
+	uint8_t ch = (uint8_t)CONFIG_ESPDROP_AWDL_CHANNEL;
+	if (!radio_channel_supported(ch)) {
+		ESP_LOGW("espdrop", "channel %u not supported on this chip, using 6", ch);
+		ch = 6;
+	}
+	return ch;
+}
 
 #if CONFIG_ESPDROP_BRIDGE_MODE
 
 #include "bridge.h"
-#include "radio.h"
 #include "awdl_app.h"
 
 /* AWDL peer appeared/left -> tell the host so it can manage the awdl0 neighbour
@@ -40,7 +50,8 @@ void app_main(void) {
 	 * non-maskable PHY/ROM prints) go out at boot, before the host opens the
 	 * port. bridge_start() then silences ESP_LOG and takes over the USB endpoint,
 	 * so steady-state traffic is clean COBS. */
-	int err = radio_init(DEFAULT_CHANNEL);
+	uint8_t chan = boot_channel();
+	int err = radio_init(chan);
 	if (err != ESP_OK) {
 		ESP_LOGE("espdrop", "radio_init failed: 0x%x", err);
 		return;
@@ -48,7 +59,7 @@ void app_main(void) {
 
 	uint8_t mac[6];
 	radio_get_self_mac(mac);
-	if (awdl_app_start(mac, "espdrop-c3", DEFAULT_CHANNEL) != 0) {
+	if (awdl_app_start(mac, CONFIG_ESPDROP_AWDL_NAME, chan) != 0) {
 		ESP_LOGE("espdrop", "awdl_app_start failed");
 		return;
 	}
@@ -65,13 +76,12 @@ void app_main(void) {
 	awdl_app_set_peer_cb(on_peer_evt, NULL);   /* host builds the neighbour table */
 	if (radio_promisc(true) != ESP_OK)
 		bridge_log("warning: promiscuous RX did not enable");
-	bridge_log("awdl rx/tx up on ch %u (M2.3)", DEFAULT_CHANNEL);
+	bridge_log("awdl rx/tx up on %s ch %u", CONFIG_IDF_TARGET, chan);
 }
 
 #else /* console mode */
 
 #include "esp_console.h"
-#include "radio.h"
 #include "awdl_app.h"
 
 void console_register_commands(void);
@@ -79,7 +89,8 @@ void console_register_commands(void);
 void app_main(void) {
 	ESP_LOGI("espdrop", "EspDrop AWDL (console mode) starting");
 
-	int err = radio_init(DEFAULT_CHANNEL);
+	uint8_t chan = boot_channel();
+	int err = radio_init(chan);
 	if (err != ESP_OK) {
 		ESP_LOGE("espdrop", "radio_init failed: 0x%x", err);
 		return;
@@ -87,7 +98,7 @@ void app_main(void) {
 
 	uint8_t mac[6];
 	radio_get_self_mac(mac);
-	if (awdl_app_start(mac, "espdrop-c3", DEFAULT_CHANNEL) != 0)
+	if (awdl_app_start(mac, CONFIG_ESPDROP_AWDL_NAME, chan) != 0)
 		ESP_LOGE("espdrop", "awdl_app_start failed");
 
 	esp_console_repl_t *repl = NULL;

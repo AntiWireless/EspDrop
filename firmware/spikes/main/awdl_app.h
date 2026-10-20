@@ -24,8 +24,8 @@ extern "C" {
 #endif
 
 /*
- * Start the AWDL task on the given self MAC, name and 2.4 GHz channel. Registers
- * the radio action handler. Call once, after radio_init(). Returns 0 on success.
+ * Start the AWDL task on the given self MAC, name and channel. Registers the
+ * radio action handler. Call once, after radio_init(). Returns 0 on success.
  */
 int awdl_app_start(const uint8_t self_mac[6], const char *name, uint8_t chan);
 
@@ -41,6 +41,11 @@ int awdl_app_format_peers(char *buf, size_t cap);
 
 /* Build and transmit one of our own PSF/MIF frames immediately (console `tx`). */
 void awdl_app_tx(uint8_t subtype);
+
+/* Stop (true) / resume (false) all frames the AWDL task sends by itself: PSF,
+ * MIF and queued host data, which stays queued. For measurements that hop
+ * channels, so nothing goes out on a channel we only pass through. */
+void awdl_app_pause_tx(bool paused);
 
 /*
  * Queue one host Ethernet frame (dst||src||ethertype||payload) for transmission

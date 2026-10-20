@@ -7,9 +7,10 @@
 # corrupt the binary COBS stream). Disable the console entirely; device-side
 # visibility goes out as BRIDGE_MSG_LOG frames instead.
 
-# Pin the chip: a fresh build dir otherwise defaults to esp32, which has no
+# Default chip: a fresh build dir otherwise defaults to esp32, which has no
 # USB-Serial/JTAG peripheral, so usb_serial_jtag_driver_install would be
-# undefined at link time.
+# undefined at link time. For the C5 pass -DIDF_TARGET=esp32c5, which overrides
+# this cleanly (use a separate build dir per chip).
 CONFIG_IDF_TARGET="esp32c3"
 
 CONFIG_ESPDROP_BRIDGE_MODE=y

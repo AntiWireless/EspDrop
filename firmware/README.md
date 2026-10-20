@@ -5,7 +5,7 @@ ESP-IDF firmware for the ESP32 that acts as the AWDL radio for EspDrop.
 ## Layout
 
 ```
-spikes/                    M0 hardware spikes (ESP32-C3): prove the radio
+spikes/                    hardware spikes + AWDL node (ESP32-C3, ESP32-C5)
   components/awdl/         platform-independent AWDL frame build/parse
     include/               awdl_frame.h, awdl_wire.h
     awdl_frame.c
@@ -23,10 +23,13 @@ The `main/` code is the only part that calls `esp_wifi`.
 ```sh
 . $IDF_PATH/export.sh          # ESP-IDF >= 5.5, tested with 6.0.3
 cd spikes
-idf.py set-target esp32c3
-idf.py build
-idf.py -p /dev/ttyACM0 flash monitor
+# one build dir per chip, target always given (do not use `idf.py set-target`)
+idf.py -B build_c3 -DSDKCONFIG=build_c3/sdkconfig -DIDF_TARGET=esp32c3 -p /dev/ttyACM0 build flash monitor
+idf.py -B build_c5 -DSDKCONFIG=build_c5/sdkconfig -DIDF_TARGET=esp32c5 -p /dev/ttyACM0 build flash monitor
+# bridge firmware: add -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.bridge.defaults"
 ```
+
+`sdkconfig.defaults.esp32c5` is picked up automatically for the C5.
 
 ## Host unit test
 

@@ -229,7 +229,7 @@ docs/
 | Kanalwechsel-Latenz / Timing-Jitter auf FreeRTOS | verpasste Availability Windows | `esp_timer`, Tick 1000 Hz, Wechsel vorziehen |
 | Wi-Fi/BLE-Koexistenz auf einem Radio | verpasste AWs während BLE aktiv ist | BLE nur zur Discovery |
 | Apple ändert AirDrop/AWDL (iOS 27 …) | Protokollbruch | App-Logik auf dem Host halten (leicht aktualisierbar) |
-| Regulatorik 5 GHz (149 in DE?) | Kanalwahl | 44 als EU-Kanal prüfen |
+| Regulatorik 5 GHz: 149 in DE nur als SRD mit 25 mW EIRP, 44 nur in Innenräumen | Kanalwahl, Reichweite | Firmware begrenzt 149+ auf 11 dBm; welchen Kanal deutsche iPhones nutzen, misst der C5-Test (SPIKES.md) |
 
 Langfristig ließe sich auch Wi-Fi Aware (NAN) nutzen: ESP-IDF unterstützt NAN, und Apple
 öffnet es für Apps. Das wäre aber kein AirDrop, sondern bräuchte eine eigene App auf dem

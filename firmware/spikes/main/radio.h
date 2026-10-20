@@ -38,6 +38,12 @@ typedef struct {
 	uint64_t tx_done_fail;  /* 80211 tx-done callbacks with status FAIL */
 	uint64_t tx_uc_ack;     /* our unicast DATA frames the peer hardware-ACKed */
 	uint64_t tx_uc_noack;   /* our unicast DATA frames with no ACK after retries */
+	/* Bring-up checks for a new chip (C5): the promiscuous type disagreed with
+	 * the frame-control type bits, and whether the 4 bytes after the frame are
+	 * really its FCS (CRC-32 over AWDL action frames, so sig_len includes it). */
+	uint64_t rx_type_mismatch;
+	uint64_t rx_fcs_ok;
+	uint64_t rx_fcs_bad;
 } radio_stats_t;
 
 /*
@@ -61,10 +67,19 @@ typedef void (*radio_data_handler_t)(const uint8_t dst[6], const uint8_t src[6],
                                      size_t plen, void *ctx);
 
 /*
- * Bring up Wi-Fi in station mode without connecting, on the given 2.4 GHz
- * channel. Safe to call once at startup. Returns an esp_err_t (0 == ESP_OK).
+ * Bring up Wi-Fi in station mode without connecting, on the given channel
+ * (see radio_channel_supported). Safe to call once at startup. Returns an
+ * esp_err_t (0 == ESP_OK).
  */
 int radio_init(uint8_t channel);
+
+/*
+ * Whether this chip can be put on the channel: 1..14 everywhere, and on a 5 GHz
+ * chip (ESP32-C5) also 36..48 and 149..177 (steps of 4). The DFS channels
+ * 52..144 are left out on purpose: transmitting there needs radar detection.
+ * The driver's country table has the final say (radio_set_channel fails).
+ */
+bool radio_channel_supported(uint8_t channel);
 
 /* Our AWDL self address = the station interface MAC. Copies 6 bytes out. */
 void radio_get_self_mac(uint8_t out[6]);
@@ -76,9 +91,20 @@ void radio_get_self_mac(uint8_t out[6]);
  */
 int radio_set_self_mac(const uint8_t mac[6]);
 
-/* Set the 2.4 GHz channel (1..13). Returns esp_err_t. */
+/* Set the channel (see radio_channel_supported). Applies the TX power cap for
+ * the target channel first when moving up into the 25 mW band (149+), so we
+ * never transmit there above it. Returns esp_err_t. */
 int radio_set_channel(uint8_t channel);
 uint8_t radio_get_channel(void);
+
+/*
+ * TX power ceiling in 0.25 dBm steps (8..84, e.g. 80 = 20 dBm), as for
+ * esp_wifi_set_max_tx_power. The effective ceiling is the lower of this and the
+ * 11 dBm cap on channels 149+ (25 mW EIRP, short-range-device band in the EU).
+ * Returns esp_err_t. radio_get_max_tx_power reports what the driver applies.
+ */
+int radio_set_max_tx_power(int8_t qdbm);
+int8_t radio_get_max_tx_power(void);
 
 /* Inject a raw 802.11 frame (MAC header .. no FCS). Returns esp_err_t. */
 int radio_tx(const uint8_t *buf, int len);

@@ -1,17 +1,18 @@
 /*
- * EspDrop - serial console for the AWDL M0 hardware spikes.
+ * EspDrop - serial console for the AWDL hardware spikes (ESP32-C3 and -C5).
  *
  * Commands (type `help` on the device):
- *   info                 show self MAC, channel, promiscuous state
+ *   info                 chip, MAC, channel, country, band mode, TX power
  *   mac <aa:bb:..:ff>    override the station MAC (ACK experiment)
- *   chan <1..13>         set the 2.4 GHz channel
+ *   chan <n>             set the channel (2.4 GHz; on the C5 also 36..48, 149..177)
  *   rx on|off            enable/disable promiscuous AWDL receive
  *   tx psf|mif [n]       inject n (default 1) action frames
  *   txdata <hexpayload>  inject one AWDL data frame to the broadcast AWDL addr
  *   peers                drain and print discovered-peer events
  *   stats                print rx/tx counters
  *   reset                zero the counters
- *   chanlat [n]          measure esp_wifi_set_channel latency over n hops
+ *   chanlat [n] [c1,c2,..] time esp_wifi_set_channel over n hops through a list
+ *   txpwr [q]            show / set the TX power ceiling (0.25 dBm units)
  *   usbbench [kib]       stream kib*1024 bytes so the host can time USB CDC
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -22,9 +23,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_chip_info.h"
 #include "esp_console.h"
+#include "esp_err.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "sdkconfig.h"
+#include "soc/soc_caps.h"
 
 #include "awdl_frame.h"
 #include "awdl_app.h"
@@ -35,7 +40,7 @@ static awdl_self_t s_self;
 static void refresh_self(void) {
 	uint8_t mac[6];
 	radio_get_self_mac(mac);
-	awdl_self_init(&s_self, mac, "espdrop-c3", radio_get_channel());
+	awdl_self_init(&s_self, mac, CONFIG_ESPDROP_AWDL_NAME, radio_get_channel());
 }
 
 static int parse_mac(const char *s, uint8_t out[6]) {
@@ -49,13 +54,34 @@ static int parse_mac(const char *s, uint8_t out[6]) {
 	return 0;
 }
 
+#if SOC_WIFI_SUPPORT_5G
+#define CHAN_RANGE "1..14 | 36..48 | 149..177"
+#else
+#define CHAN_RANGE "1..14"
+#endif
+
 static int cmd_info(int argc, char **argv) {
 	(void)argc; (void)argv;
+	esp_chip_info_t ci;
+	esp_chip_info(&ci);
+	printf("chip     : %s rev v%u.%u, CPU %d MHz\n", CONFIG_IDF_TARGET,
+	       (unsigned)(ci.revision / 100), (unsigned)(ci.revision % 100),
+	       CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
 	uint8_t mac[6];
 	radio_get_self_mac(mac);
 	printf("self MAC : %02x:%02x:%02x:%02x:%02x:%02x\n",
 	       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 	printf("channel  : %u\n", radio_get_channel());
+	char cc[4] = {0};
+	if (esp_wifi_get_country_code(cc) == ESP_OK) printf("country  : %s\n", cc);
+#if SOC_WIFI_SUPPORT_5G
+	wifi_band_mode_t bm;
+	if (esp_wifi_get_band_mode(&bm) == ESP_OK)
+		printf("band mode: %s\n", bm == WIFI_BAND_MODE_AUTO ? "2.4 + 5 GHz"
+		                         : bm == WIFI_BAND_MODE_5G_ONLY ? "5 GHz only" : "2.4 GHz only");
+#endif
+	int8_t q = radio_get_max_tx_power();
+	printf("tx power : max %.2f dBm (%d)\n", q / 4.0, q);
 	printf("promisc  : %s\n", radio_promisc_enabled() ? "on" : "off");
 	printf("awdl bssid: %02x:%02x:%02x:%02x:%02x:%02x\n",
 	       AWDL_BSSID[0], AWDL_BSSID[1], AWDL_BSSID[2],
@@ -76,11 +102,14 @@ static int cmd_mac(int argc, char **argv) {
 }
 
 static int cmd_chan(int argc, char **argv) {
-	if (argc != 2) { printf("usage: chan <1..13>\n"); return 1; }
+	if (argc != 2) { printf("usage: chan <" CHAN_RANGE ">\n"); return 1; }
 	int ch = atoi(argv[1]);
-	if (ch < 1 || ch > 13) { printf("channel out of range\n"); return 1; }
+	if (ch < 1 || ch > 255 || !radio_channel_supported((uint8_t)ch)) {
+		printf("channel %d not supported here (" CHAN_RANGE ")\n", ch);
+		return 1;
+	}
 	int err = radio_set_channel((uint8_t)ch);
-	if (err) { printf("set_channel failed: 0x%x\n", err); return 1; }
+	if (err) { printf("set_channel failed: %s\n", esp_err_to_name(err)); return 1; }
 	refresh_self();
 	uint8_t mac[6];
 	radio_get_self_mac(mac);
@@ -173,8 +202,12 @@ static int cmd_stats(int argc, char **argv) {
 	radio_get_stats(&s);
 	printf("rx: action=%llu data=%llu other_bssid=%llu parse_err=%llu\n",
 	       s.rx_action, s.rx_data, s.rx_other_bssid, s.rx_parse_err);
-	printf("tx: ok=%llu err=%llu  tx_done: ok=%llu fail=%llu\n",
-	       s.tx_ok, s.tx_err, s.tx_done_ok, s.tx_done_fail);
+	printf("rx data: msdu=%llu amsdu=%llu dup=%llu data_perr=%llu\n",
+	       s.rx_msdu, s.rx_amsdu, s.rx_dup, s.rx_data_perr);
+	printf("rx checks: fcs_ok=%llu fcs_bad=%llu type_mismatch=%llu\n",
+	       s.rx_fcs_ok, s.rx_fcs_bad, s.rx_type_mismatch);
+	printf("tx: ok=%llu err=%llu  tx_done: ok=%llu fail=%llu  unicast data: ack=%llu noack=%llu\n",
+	       s.tx_ok, s.tx_err, s.tx_done_ok, s.tx_done_fail, s.tx_uc_ack, s.tx_uc_noack);
 	return 0;
 }
 
@@ -185,22 +218,117 @@ static int cmd_reset(int argc, char **argv) {
 	return 0;
 }
 
+#define CHANLAT_MAX   1000
+#define CHANLAT_CHANS 8
+#if SOC_WIFI_SUPPORT_5G
+#define CHANLAT_DEFAULT "6,44,149"   /* both bands: what a dual-band AWDL node does */
+#else
+#define CHANLAT_DEFAULT "1,6,11"
+#endif
+
+static int cmp_i32(const void *a, const void *b) {
+	int32_t x = *(const int32_t *)a, y = *(const int32_t *)b;
+	return (x > y) - (x < y);
+}
+
+static void chanlat_report(const char *what, int32_t *v, int n) {
+	if (n == 0) { printf("  %-10s no hops\n", what); return; }
+	qsort(v, (size_t)n, sizeof(v[0]), cmp_i32);
+	int64_t sum = 0;
+	for (int i = 0; i < n; i++) sum += v[i];
+	int p99 = (n * 99 + 99) / 100 - 1;   /* ceil(0.99 n) - 1 */
+	printf("  %-10s %4d hops  mean %lld  min %ld  p50 %ld  p99 %ld  max %ld us\n",
+	       what, n, (long long)(sum / n), (long)v[0], (long)v[n / 2],
+	       (long)v[p99], (long)v[n - 1]);
+}
+
+/*
+ * chanlat [n] [c1,c2,...]: n calls of esp_wifi_set_channel cycling through the
+ * list, timed around the call (the radio may still settle afterwards). Hops
+ * within a band and across bands are reported separately, the first hop on its
+ * own (a band change may calibrate once). Our own AWDL TX is paused meanwhile,
+ * and the power is capped if the list touches 149+.
+ */
 static int cmd_chanlat(int argc, char **argv) {
 	int n = (argc >= 2) ? atoi(argv[1]) : 100;
 	if (n < 1) n = 1;
-	const uint8_t chans[] = {1, 6, 11};
-	int64_t total = 0, worst = 0;
-	for (int i = 0; i < n; i++) {
-		uint8_t ch = chans[i % 3];
-		int64_t t0 = esp_timer_get_time();
-		esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
-		int64_t dt = esp_timer_get_time() - t0;
-		total += dt;
-		if (dt > worst) worst = dt;
+	if (n > CHANLAT_MAX) n = CHANLAT_MAX;
+
+	char list[64];
+	strncpy(list, (argc >= 3) ? argv[2] : CHANLAT_DEFAULT, sizeof(list) - 1);
+	list[sizeof(list) - 1] = '\0';
+	uint8_t chans[CHANLAT_CHANS];
+	int nch = 0;
+	bool srd = false;
+	for (char *tok = strtok(list, ","); tok; tok = strtok(NULL, ",")) {
+		int ch = atoi(tok);
+		if (nch == CHANLAT_CHANS || ch < 1 || ch > 255 ||
+		    !radio_channel_supported((uint8_t)ch)) {
+			printf("usage: chanlat [n] [c1,c2,...]  up to %d channels from " CHAN_RANGE "\n",
+			       CHANLAT_CHANS);
+			return 1;
+		}
+		chans[nch++] = (uint8_t)ch;
+		if (ch >= 149) srd = true;
 	}
-	radio_set_channel(radio_get_channel());
-	printf("chanlat over %d hops: mean %lld us, worst %lld us\n",
-	       n, (long long)(total / n), (long long)worst);
+	if (nch < 1) { printf("usage: chanlat [n] [c1,c2,...]\n"); return 1; }
+
+	static int32_t same[CHANLAT_MAX], cross[CHANLAT_MAX];
+	int ns = 0, nc = 0, errs = 0, wrong = 0;
+	esp_err_t first_err = ESP_OK;
+	int32_t first_dt = -1;
+	uint8_t home = radio_get_channel(), prev = home, first_from = 0, first_to = 0;
+
+	awdl_app_pause_tx(true);
+	int8_t q = radio_get_max_tx_power();
+	if (srd && q > 44) esp_wifi_set_max_tx_power(44);   /* restored with the channel */
+	for (int i = 0; i < n; i++) {
+		uint8_t ch = chans[i % nch];
+		int64_t t0 = esp_timer_get_time();
+		esp_err_t e = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+		int32_t dt = (int32_t)(esp_timer_get_time() - t0);
+		if (e != ESP_OK) {
+			if (errs++ == 0) first_err = e;
+			continue;
+		}
+		uint8_t pri = 0;
+		wifi_second_chan_t sec;
+		if (esp_wifi_get_channel(&pri, &sec) != ESP_OK || pri != ch) wrong++;
+		if (first_dt < 0) {
+			first_dt = dt; first_from = prev; first_to = ch;
+		} else if ((ch > 14) != (prev > 14)) {
+			cross[nc++] = dt;
+		} else {
+			same[ns++] = dt;
+		}
+		prev = ch;
+	}
+	int rerr = radio_set_channel(home);   /* also restores the TX power ceiling */
+	awdl_app_pause_tx(false);
+
+	printf("chanlat %d hops over %s (CPU %d MHz):\n", n,
+	       (argc >= 3) ? argv[2] : CHANLAT_DEFAULT, CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
+	if (first_dt >= 0)
+		printf("  first hop  %u -> %u: %ld us\n", first_from, first_to, (long)first_dt);
+	chanlat_report("same band", same, ns);
+	chanlat_report("cross band", cross, nc);
+	if (errs)  printf("  %d hops failed (first: %s)\n", errs, esp_err_to_name(first_err));
+	if (wrong) printf("  %d hops reported another channel afterwards\n", wrong);
+	if (rerr)  printf("  back to channel %u failed: %s\n", home, esp_err_to_name(rerr));
+	return 0;
+}
+
+static int cmd_txpwr(int argc, char **argv) {
+	if (argc >= 2) {
+		int q = atoi(argv[1]);
+		if (q < 8 || q > 84) { printf("usage: txpwr [8..84]  (0.25 dBm units, 80 = 20 dBm)\n"); return 1; }
+		int err = radio_set_max_tx_power((int8_t)q);
+		if (err) { printf("set failed: %s\n", esp_err_to_name(err)); return 1; }
+	}
+	uint8_t ch = radio_get_channel();
+	int8_t q = radio_get_max_tx_power();
+	printf("tx power ceiling %.2f dBm (%d) on channel %u%s\n", q / 4.0, q, ch,
+	       ch >= 149 ? " (capped at 11 dBm on 149+)" : "");
 	return 0;
 }
 
@@ -233,9 +361,9 @@ static void reg(const char *cmd, const char *help, esp_console_cmd_func_t fn) {
 
 void console_register_commands(void) {
 	refresh_self();
-	reg("info",     "show self MAC, channel, promiscuous state", cmd_info);
+	reg("info",     "show chip, MAC, channel, country, band mode, TX power", cmd_info);
 	reg("mac",      "mac <aa:bb:cc:dd:ee:ff> - override station MAC", cmd_mac);
-	reg("chan",     "chan <1..13> - set 2.4 GHz channel", cmd_chan);
+	reg("chan",     "chan <" CHAN_RANGE "> - set channel", cmd_chan);
 	reg("rx",       "rx on|off - promiscuous AWDL receive", cmd_rx);
 	reg("tx",       "tx psf|mif [count] - inject action frame(s)", cmd_tx);
 	reg("txdata",   "txdata <hexpayload> - inject one AWDL data frame", cmd_txdata);
@@ -243,6 +371,7 @@ void console_register_commands(void) {
 	reg("sync",     "print master, sync-tree height, sync error, peer count", cmd_sync);
 	reg("stats",    "print rx/tx counters", cmd_stats);
 	reg("reset",    "zero the counters", cmd_reset);
-	reg("chanlat",  "chanlat [n] - measure channel-switch latency", cmd_chanlat);
+	reg("chanlat",  "chanlat [n] [c1,c2,...] - measure channel-switch latency", cmd_chanlat);
+	reg("txpwr",    "txpwr [8..84] - show/set TX power ceiling (0.25 dBm)", cmd_txpwr);
 	reg("usbbench", "usbbench [kib] - stream data for host-side USB timing", cmd_usbbench);
 }

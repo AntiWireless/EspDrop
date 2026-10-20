@@ -26,7 +26,7 @@
 # are only logged. Suppressed with --no-config.
 #
 # Interactive stdin commands (forwarded to the device):
-#   mac | stats | radio | tx | node | ping | testframe | resync
+#   mac | stats | radio | tx | node | chan [n] | ping | testframe | resync
 #
 # Needs root: creating a TAP and running `ip link` both require CAP_NET_ADMIN.
 # The interface is not persistent - it disappears when this process exits.
@@ -196,7 +196,7 @@ def main() -> int:
 
         print(f"{args.dev} up (mtu {args.mtu}, mac {mac or 'kernel-assigned'}); "
               f"bridging {args.port}")
-        print("commands: mac | stats | radio | tx | node | ping | testframe | resync"
+        print("commands: mac | stats | radio | tx | node | chan [n] | ping | testframe | resync"
               "   (Ctrl-C to quit)")
 
         # The C3 keeps running across host sessions (its USB port does not reset

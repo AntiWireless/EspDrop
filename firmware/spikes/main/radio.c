@@ -15,7 +15,10 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_private/wifi.h" /* esp_wifi_set_tx_done_cb: stable across IDF 5.1..6.x */
+#include "esp_rom_crc.h"
 #include "nvs_flash.h"
+#include "sdkconfig.h"
+#include "soc/soc_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
@@ -30,6 +33,12 @@ static void                  *s_action_ctx;
 static radio_data_handler_t   s_data_handler;
 static void                  *s_data_ctx;
 static awdl_dedup_t           s_dedup;   /* touched only by rx_cb (Wi-Fi task) */
+
+/* TX power ceiling (0.25 dBm units): what the user asked for, and the cap for
+ * channels 149+ (5725-5875 MHz is a 25 mW EIRP short-range-device band in the
+ * EU; 11 dBm conducted leaves room for a few dBi of antenna gain). */
+#define TXPWR_SRD_CAP_QDBM 44
+static int8_t                 s_txpwr_user = CONFIG_ESP_PHY_MAX_WIFI_TX_POWER * 4;
 
 static inline void stat_inc(uint64_t *field) {
 	portENTER_CRITICAL(&s_stats_mux);
@@ -87,7 +96,25 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 		return;
 	}
 
-	if (type == WIFI_PKT_MGMT) {
+	/* Go by the frame-control type bits rather than the driver's label, and
+	 * count disagreements (reported on some chips; a check for the C5). */
+	wifi_promiscuous_pkt_type_t ftype;
+	switch (frame[0] & 0x0c) {
+	case 0x00: ftype = WIFI_PKT_MGMT; break;
+	case 0x08: ftype = WIFI_PKT_DATA; break;
+	default:   stat_inc(&s_stats.rx_type_mismatch); return;
+	}
+	if (ftype != type) stat_inc(&s_stats.rx_type_mismatch);
+
+	if (ftype == WIFI_PKT_MGMT) {
+		/* Is sig_len really MPDU + FCS on this chip? The 4 bytes we strip must
+		 * be the CRC-32 of the frame (esp_rom_crc32_le is the IEEE CRC-32).
+		 * Action frames only: rare and short, so the CRC is cheap. */
+		uint32_t fcs = (uint32_t)frame[len] | ((uint32_t)frame[len + 1] << 8) |
+		               ((uint32_t)frame[len + 2] << 16) | ((uint32_t)frame[len + 3] << 24);
+		stat_inc(esp_rom_crc32_le(0, frame, (uint32_t)len) == fcs
+		         ? &s_stats.rx_fcs_ok : &s_stats.rx_fcs_bad);
+
 		awdl_peer_view_t pv;
 		int r = awdl_parse_action(frame, (size_t)len, &pv);
 		if (r != AWDL_OK) { stat_inc(&s_stats.rx_parse_err); return; }
@@ -127,6 +154,66 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 
 /* ------------------------------------------------------------------------ */
 
+bool radio_channel_supported(uint8_t ch) {
+	if (ch >= 1 && ch <= 14) return true;
+#if SOC_WIFI_SUPPORT_5G
+	if (ch >= 36 && ch <= 48 && ch % 4 == 0) return true;   /* UNII-1, no DFS */
+	if (ch >= 149 && ch <= 177 && ch % 4 == 1) return true; /* UNII-3 / SRD */
+#endif
+	return false;
+}
+
+static int8_t tx_power_for(uint8_t ch) {
+	return (ch >= 149 && s_txpwr_user > TXPWR_SRD_CAP_QDBM) ? TXPWR_SRD_CAP_QDBM
+	                                                         : s_txpwr_user;
+}
+
+/* Switch channel with the matching TX power: lower the ceiling before entering
+ * the capped band, raise it only after leaving it. */
+static esp_err_t set_channel_and_power(uint8_t ch) {
+	int8_t want = tx_power_for(ch);
+	int8_t now = 0;
+	bool lower_first = esp_wifi_get_max_tx_power(&now) != ESP_OK || want < now;
+	if (lower_first) esp_wifi_set_max_tx_power(want);
+	esp_err_t err = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+	if (err != ESP_OK) {
+		/* still on the old channel: restore its ceiling */
+		esp_wifi_set_max_tx_power(tx_power_for(s_channel));
+		return err;
+	}
+	s_channel = ch;
+	if (!lower_first) esp_wifi_set_max_tx_power(want);
+	return ESP_OK;
+}
+
+/*
+ * Everything that has to be (re)applied after esp_wifi_start(): power save off
+ * (we must stay on-channel to hear/inject AWDL), country, on a dual-band chip
+ * both bands and 20 MHz (set_bandwidth is refused in AUTO band mode; AWDL runs
+ * at 20 MHz), the tx-done hook, then channel and TX power.
+ */
+static esp_err_t apply_rf(uint8_t channel) {
+	esp_wifi_set_ps(WIFI_PS_NONE);
+	if (CONFIG_ESPDROP_WIFI_COUNTRY[0] != '\0') {
+		esp_err_t e = esp_wifi_set_country_code(CONFIG_ESPDROP_WIFI_COUNTRY, false);
+		if (e != ESP_OK)
+			ESP_LOGW(TAG, "country %s: %s", CONFIG_ESPDROP_WIFI_COUNTRY, esp_err_to_name(e));
+	}
+#if SOC_WIFI_SUPPORT_5G
+	/* also guards against a 2.4G-only band mode left in NVS by older firmware */
+	esp_err_t e = esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+	if (e != ESP_OK) ESP_LOGW(TAG, "band mode: %s", esp_err_to_name(e));
+	wifi_bandwidths_t bw = { .ghz_2g = WIFI_BW20, .ghz_5g = WIFI_BW20 };
+	e = esp_wifi_set_bandwidths(WIFI_IF_STA, &bw);
+	if (e != ESP_OK) ESP_LOGW(TAG, "bandwidths: %s", esp_err_to_name(e));
+#endif
+	esp_wifi_set_tx_done_cb(tx_done_cb);
+	esp_err_t err = set_channel_and_power(channel);
+	if (err != ESP_OK)
+		ESP_LOGE(TAG, "channel %u: %s", channel, esp_err_to_name(err));
+	return err;
+}
+
 int radio_init(uint8_t channel) {
 	awdl_dedup_init(&s_dedup);   /* before promiscuous RX can run */
 	esp_err_t err = nvs_flash_init();
@@ -150,12 +237,7 @@ int radio_init(uint8_t channel) {
 	if ((err = esp_wifi_set_mode(WIFI_MODE_STA)) != ESP_OK) return err;
 	if ((err = esp_wifi_start()) != ESP_OK) return err;
 
-	/* no power save: we must stay on-channel to hear/inject AWDL */
-	esp_wifi_set_ps(WIFI_PS_NONE);
-	esp_wifi_set_tx_done_cb(tx_done_cb);
-
-	s_channel = channel;
-	esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+	if ((err = apply_rf(channel)) != ESP_OK) return err;
 
 	uint8_t mac[6];
 	esp_wifi_get_mac(WIFI_IF_STA, mac);
@@ -174,21 +256,31 @@ int radio_set_self_mac(const uint8_t mac[6]) {
 	bool was_promisc = s_promisc;
 	if (was_promisc) radio_promisc(false);
 	if ((err = esp_wifi_stop()) != ESP_OK) return err;
-	if ((err = esp_wifi_set_mac(WIFI_IF_STA, mac)) != ESP_OK) { esp_wifi_start(); return err; }
+	esp_err_t mac_err = esp_wifi_set_mac(WIFI_IF_STA, mac);
+	/* restart either way, with everything re-applied, before reporting */
 	if ((err = esp_wifi_start()) != ESP_OK) return err;
-	esp_wifi_set_ps(WIFI_PS_NONE);
-	esp_wifi_set_channel(s_channel, WIFI_SECOND_CHAN_NONE);
+	err = apply_rf(s_channel);
 	if (was_promisc) radio_promisc(true);
-	return ESP_OK;
+	return mac_err != ESP_OK ? mac_err : err;
 }
 
 int radio_set_channel(uint8_t channel) {
-	esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-	if (err == ESP_OK) s_channel = channel;
-	return err;
+	if (!radio_channel_supported(channel)) return ESP_ERR_INVALID_ARG;
+	return set_channel_and_power(channel);
 }
 
 uint8_t radio_get_channel(void) { return s_channel; }
+
+int radio_set_max_tx_power(int8_t qdbm) {
+	if (qdbm < 8 || qdbm > 84) return ESP_ERR_INVALID_ARG;
+	s_txpwr_user = qdbm;
+	return esp_wifi_set_max_tx_power(tx_power_for(s_channel));
+}
+
+int8_t radio_get_max_tx_power(void) {
+	int8_t p = 0;
+	return esp_wifi_get_max_tx_power(&p) == ESP_OK ? p : -1;
+}
 
 int radio_tx(const uint8_t *buf, int len) {
 	esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, buf, len, false /* keep our seq */);
@@ -207,7 +299,8 @@ int radio_promisc(bool on) {
 		esp_wifi_set_promiscuous_rx_cb(rx_cb);
 		if ((err = esp_wifi_set_promiscuous(true)) != ESP_OK) return err;
 		/* promiscuous resets the channel; reapply */
-		esp_wifi_set_channel(s_channel, WIFI_SECOND_CHAN_NONE);
+		if ((err = esp_wifi_set_channel(s_channel, WIFI_SECOND_CHAN_NONE)) != ESP_OK)
+			ESP_LOGW(TAG, "re-applying channel %u: %s", s_channel, esp_err_to_name(err));
 	} else {
 		if ((err = esp_wifi_set_promiscuous(false)) != ESP_OK) return err;
 	}
