@@ -15,7 +15,6 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_private/wifi.h" /* esp_wifi_set_tx_done_cb: stable across IDF 5.1..6.x */
-#include "esp_rom_crc.h"
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 #include "soc/soc_caps.h"
@@ -39,6 +38,7 @@ static awdl_dedup_t           s_dedup;   /* touched only by rx_cb (Wi-Fi task) *
  * EU; 11 dBm conducted leaves room for a few dBi of antenna gain). */
 #define TXPWR_SRD_CAP_QDBM 44
 static int8_t                 s_txpwr_user = CONFIG_ESP_PHY_MAX_WIFI_TX_POWER * 4;
+static radio_rx_probe_t       s_probe;   /* written by rx_cb under s_stats_mux */
 
 static inline void stat_inc(uint64_t *field) {
 	portENTER_CRITICAL(&s_stats_mux);
@@ -77,7 +77,35 @@ static void tx_done_cb(uint8_t ifidx, uint8_t *data, uint16_t *data_len, bool tx
 static void deliver_msdu(const uint8_t dst[6], const uint8_t src[6], uint16_t ethertype,
                          const uint8_t *payload, size_t plen, void *ctx) {
 	(*(int *)ctx)++;
+	if (ethertype == ETHERTYPE_IPV6 && plen >= 40) {
+		size_t want = 40 + (((size_t)payload[4] << 8) | payload[5]);
+		if (plen < want)      stat_inc(&s_stats.rx_ip6_short);
+		else if (plen > want) stat_inc(&s_stats.rx_ip6_long);
+	}
 	if (s_data_handler) s_data_handler(dst, src, ethertype, payload, plen, s_data_ctx);
+}
+
+/* IEEE CRC-32 (as zlib's crc32), nibble table. Our own rather than the ROM
+ * one, so the FCS check on a new chip does not depend on the ROM convention. */
+static uint32_t crc32_ieee(const uint8_t *p, int n) {
+	static const uint32_t t[16] = {
+		0x00000000, 0x1db71064, 0x3b6e20c8, 0x26d930ac, 0x76dc4190, 0x6b6b51f4,
+		0x4db26158, 0x5005713c, 0xedb88320, 0xf00f9344, 0xd6d6a3e8, 0xcb61b38c,
+		0x9b64c2b0, 0x86d3d2d4, 0xa00ae278, 0xbdbdf21c };
+	uint32_t c = 0xffffffffu;
+	while (n-- > 0) {
+		c ^= *p++;
+		c = (c >> 4) ^ t[c & 15];
+		c = (c >> 4) ^ t[c & 15];
+	}
+	return ~c;
+}
+
+/* Whether the 4 bytes at f[n] are the FCS of f[0..n) (CRC-32, little endian). */
+static bool fcs_at(const uint8_t *f, int n) {
+	uint32_t fcs = (uint32_t)f[n] | ((uint32_t)f[n + 1] << 8) |
+	               ((uint32_t)f[n + 2] << 16) | ((uint32_t)f[n + 3] << 24);
+	return crc32_ieee(f, n) == fcs;
 }
 
 /* ---- promiscuous rx callback: filter AWDL BSSID, parse, enqueue ---- */
@@ -108,12 +136,30 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 
 	if (ftype == WIFI_PKT_MGMT) {
 		/* Is sig_len really MPDU + FCS on this chip? The 4 bytes we strip must
-		 * be the CRC-32 of the frame (esp_rom_crc32_le is the IEEE CRC-32).
-		 * Action frames only: rare and short, so the CRC is cheap. */
-		uint32_t fcs = (uint32_t)frame[len] | ((uint32_t)frame[len + 1] << 8) |
-		               ((uint32_t)frame[len + 2] << 16) | ((uint32_t)frame[len + 3] << 24);
-		stat_inc(esp_rom_crc32_le(0, frame, (uint32_t)len) == fcs
-		         ? &s_stats.rx_fcs_ok : &s_stats.rx_fcs_bad);
+		 * be the CRC-32 of the frame. If not, look for the FCS right after
+		 * sig_len and after dump_len, and keep a snapshot for `rxprobe`.
+		 * Action frames only: rare and short (reading 8 bytes past sig_len
+		 * stays inside the RX buffer), so this is cheap. */
+		int sig = len + 4, dump = 0;
+#if CONFIG_SOC_WIFI_MAC_VERSION_NUM == 3
+		dump = pkt->rx_ctrl.dump_len;
+#endif
+		bool a = fcs_at(frame, len);
+		bool b = sig <= 1500 && fcs_at(frame, sig);
+		bool c = dump >= (int)IEEE80211_HDR_LEN && dump <= 1500 && fcs_at(frame, dump);
+		portENTER_CRITICAL(&s_stats_mux);
+		if (a) s_stats.rx_fcs_ok++; else s_stats.rx_fcs_bad++;
+		if (b) s_stats.rx_fcs_at_sig++;
+		if (c) s_stats.rx_fcs_at_dump++;
+		s_probe.count++;
+		s_probe.sig_len = (uint16_t)sig;
+		s_probe.dump_len = (uint16_t)dump;
+		s_probe.rx_state = (uint8_t)pkt->rx_ctrl.rx_state;
+		if (sig <= 1500) memcpy(s_probe.tail, frame + sig - 8, sizeof(s_probe.tail));
+		s_probe.fcs_at_sig_minus4 = a;
+		s_probe.fcs_at_sig = b;
+		s_probe.fcs_at_dump = c;
+		portEXIT_CRITICAL(&s_stats_mux);
 
 		awdl_peer_view_t pv;
 		int r = awdl_parse_action(frame, (size_t)len, &pv);
@@ -313,6 +359,12 @@ bool radio_promisc_enabled(void) { return s_promisc; }
 void radio_get_stats(radio_stats_t *out) {
 	portENTER_CRITICAL(&s_stats_mux);
 	*out = s_stats;
+	portEXIT_CRITICAL(&s_stats_mux);
+}
+
+void radio_get_rx_probe(radio_rx_probe_t *out) {
+	portENTER_CRITICAL(&s_stats_mux);
+	*out = s_probe;
 	portEXIT_CRITICAL(&s_stats_mux);
 }
 

@@ -50,6 +50,7 @@ beide, die Namen unter `/dev/serial/by-id/` verwenden.
 | `peers` | gesammelte Peer-Ereignisse ausgeben (Name, RSSI, Kanalsequenz, Zeitstempel) |
 | `stats` | RX/TX-Zähler, inkl. FCS- und Frame-Typ-Prüfung |
 | `reset` | Zähler nullen |
+| `rxprobe` | Längenfelder und letzte Bytes des letzten AWDL-Action-Frames (wo steht die FCS?) |
 | `chanlat [n] [c1,c2,...]` | Latenz von `esp_wifi_set_channel` über n Wechsel durch die Kanalliste messen (Standard C3: `1,6,11`, C5: `6,44,149`); getrennt nach Wechseln im selben Band und zwischen den Bändern |
 | `txpwr [q]` | Obergrenze der Sendeleistung anzeigen/setzen (0,25-dBm-Schritte, 80 = 20 dBm) |
 | `usbbench [kib]` | Datenstrom für die USB-Durchsatzmessung auf dem Host |

@@ -204,10 +204,28 @@ static int cmd_stats(int argc, char **argv) {
 	       s.rx_action, s.rx_data, s.rx_other_bssid, s.rx_parse_err);
 	printf("rx data: msdu=%llu amsdu=%llu dup=%llu data_perr=%llu\n",
 	       s.rx_msdu, s.rx_amsdu, s.rx_dup, s.rx_data_perr);
-	printf("rx checks: fcs_ok=%llu fcs_bad=%llu type_mismatch=%llu\n",
-	       s.rx_fcs_ok, s.rx_fcs_bad, s.rx_type_mismatch);
+	printf("rx checks: fcs_ok=%llu fcs_bad=%llu fcs_at_sig=%llu fcs_at_dump=%llu "
+	       "type_mismatch=%llu ip6_short=%llu ip6_long=%llu\n",
+	       s.rx_fcs_ok, s.rx_fcs_bad, s.rx_fcs_at_sig, s.rx_fcs_at_dump,
+	       s.rx_type_mismatch, s.rx_ip6_short, s.rx_ip6_long);
 	printf("tx: ok=%llu err=%llu  tx_done: ok=%llu fail=%llu  unicast data: ack=%llu noack=%llu\n",
 	       s.tx_ok, s.tx_err, s.tx_done_ok, s.tx_done_fail, s.tx_uc_ack, s.tx_uc_noack);
+	return 0;
+}
+
+/* Length fields and tail bytes of the last AWDL action frame (bring-up). */
+static int cmd_rxprobe(int argc, char **argv) {
+	(void)argc; (void)argv;
+	radio_rx_probe_t p;
+	radio_get_rx_probe(&p);
+	if (!p.count) { printf("no AWDL action frame yet (rx on?)\n"); return 1; }
+	printf("frames=%lu sig_len=%u dump_len=%u rx_state=%u\n", (unsigned long)p.count,
+	       p.sig_len, p.dump_len, p.rx_state);
+	printf("bytes [sig_len-8, sig_len+8):");
+	for (int i = 0; i < 16; i++) printf("%s%02x", i == 8 ? " | " : " ", p.tail[i]);
+	printf("\nFCS found at: sig_len-4 %s, sig_len %s, dump_len %s\n",
+	       p.fcs_at_sig_minus4 ? "yes" : "no", p.fcs_at_sig ? "yes" : "no",
+	       p.fcs_at_dump ? "yes" : "no");
 	return 0;
 }
 
@@ -373,6 +391,7 @@ void console_register_commands(void) {
 	reg("sync",     "print master, sync-tree height, sync error, peer count", cmd_sync);
 	reg("stats",    "print rx/tx counters", cmd_stats);
 	reg("reset",    "zero the counters", cmd_reset);
+	reg("rxprobe",  "length fields of the last AWDL action frame (FCS check)", cmd_rxprobe);
 	reg("chanlat",  "chanlat [n] [c1,c2,...] - measure channel-switch latency", cmd_chanlat);
 	reg("txpwr",    "txpwr [8..84] - show/set TX power ceiling (0.25 dBm)", cmd_txpwr);
 	reg("usbbench", "usbbench [kib] - stream data for host-side USB timing", cmd_usbbench);

@@ -256,6 +256,19 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 			}
 		}
 		cmd_reply(out);
+	} else if (strcmp(cmd, "checks") == 0) {
+		/* Bring-up checks on a new chip: is the frame length right (FCS where
+		 * we expect it, IPv6 packets neither cut short nor padded)? */
+		radio_stats_t st;
+		radio_get_stats(&st);
+		snprintf(out, sizeof(out),
+		         "fcs_ok=%u fcs_bad=%u fcs_at_sig=%u fcs_at_dump=%u type_mm=%u "
+		         "ip6_short=%u ip6_long=%u",
+		         (unsigned)st.rx_fcs_ok, (unsigned)st.rx_fcs_bad,
+		         (unsigned)st.rx_fcs_at_sig, (unsigned)st.rx_fcs_at_dump,
+		         (unsigned)st.rx_type_mismatch, (unsigned)st.rx_ip6_short,
+		         (unsigned)st.rx_ip6_long);
+		cmd_reply(out);
 	} else if (strcmp(cmd, "testframe") == 0) {
 		send_test_frame();
 		cmd_reply("sent testframe");

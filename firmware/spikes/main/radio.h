@@ -44,7 +44,27 @@ typedef struct {
 	uint64_t rx_type_mismatch;
 	uint64_t rx_fcs_ok;
 	uint64_t rx_fcs_bad;
+	/* Where the FCS really is when it is not at sig_len - 4: right after
+	 * sig_len (sig_len would then exclude it), or after dump_len (Wi-Fi MAC v3
+	 * chips such as the C5 report that field). Counted for action frames. */
+	uint64_t rx_fcs_at_sig;
+	uint64_t rx_fcs_at_dump;
+	/* IPv6 MSDUs shorter / longer than their IPv6 header says: a wrong frame
+	 * length cuts real bytes off (short) or keeps trailing bytes (long). */
+	uint64_t rx_ip6_short;
+	uint64_t rx_ip6_long;
 } radio_stats_t;
+
+/* Snapshot of the last AWDL action frame's length fields, for bring-up. */
+typedef struct {
+	uint32_t count;       /* action frames seen so far */
+	uint16_t sig_len;     /* rx_ctrl.sig_len */
+	uint16_t dump_len;    /* rx_ctrl.dump_len (Wi-Fi MAC v3), else 0 */
+	uint8_t  rx_state;    /* rx_ctrl.rx_state, 0 = no error */
+	uint8_t  tail[16];    /* frame bytes [sig_len - 8, sig_len + 8) */
+	bool     fcs_at_sig_minus4, fcs_at_sig, fcs_at_dump;
+} radio_rx_probe_t;
+void radio_get_rx_probe(radio_rx_probe_t *out);
 
 /*
  * Handler for a received, parsed AWDL action frame. Invoked from Wi-Fi task
