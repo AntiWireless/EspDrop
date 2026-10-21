@@ -161,6 +161,23 @@ Radarerkennung).
    dann wie in M2.4 pingen bzw. AirDrop testen. Der Knoten bleibt dabei auf
    einem Kanal und übernimmt die 5-GHz-Slots des Masters, ganz ohne Kanalwechsel.
 
+### Ergebnisse ESP32-C5 (Waveshare ESP32-C5-Zero, rev v1.0, 240 MHz, ESP-IDF 6.0.3)
+
+- **Frame-Länge:** wie beim C3, Frame = `sig_len − 4` (TLV-Kette endet dort bei
+  allen Frames). Die 4 Bytes sind auf dem C5 aber nicht die FCS, `dump_len` ist
+  `sig_len + 4`; `fcs_bad` zählt daher jeden Frame – erwartet. IPv6-Längen stimmen.
+- **iPhone in DE nutzt Kanal 44** (nicht 149). Sequenz im Leerlauf
+  `6 0 44 0 0 0 0 0 6 0 44 0 …`, mit offenem Teilen-Menü
+  `44 44 44 0 0 0 0 0 6 44 44 0 …`: 5 von 16 Slots auf 44, nur einer auf 6.
+- **Kanalwechsel** (`esp_wifi_set_channel`, Mittel / p99): gleicher Kanal 0,70 /
+  0,71 ms, innerhalb 5 GHz 0,92–1,03 / 1,01–1,15 ms, zwischen 2,4 und 5 GHz
+  1,29–1,36 / 1,38–1,50 ms, erster Bandwechsel 1,7–2,4 ms. Ein Slot dauert ≈ 65 ms,
+  ein Wechsel kostet also unter 3 % (MT7921: 8,5 ms). Gemessen ist die Dauer
+  des API-Aufrufs, nicht die Zeit bis zum ersten Empfang.
+- **Empfang und Senden auf Kanal 44** funktionieren: iPhone-Action- und
+  Datenframes kommen an, eigene MIFs gehen ohne Fehler raus. Die Sendeleistung
+  meldet der Treiber auf 44 mit 18 dBm.
+
 ## Danach
 
 Ergebnisse (auch Fehlschläge) in `docs/UEBERBLICK.md` unter „Offene Fragen"
