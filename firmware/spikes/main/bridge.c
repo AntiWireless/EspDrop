@@ -16,6 +16,7 @@
 #include "esp_mac.h"
 #include "esp_system.h"   /* esp_get_free_heap_size */
 #include "esp_timer.h"
+#include "hal/usb_serial_jtag_ll.h"   /* `usbtest raw`: write the FIFO directly */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -160,6 +161,61 @@ static void cmd_reply(const char *s) {
 }
 
 /* A short text command from the host (BRIDGE_MSG_CMD) -> a CMD_REPLY. */
+/*
+ * `usbtest raw [kib]`: the same dummy frames as `usbtest`, but written straight
+ * into the 64-byte USB FIFO by polling, instead of via the driver, which
+ * refills the FIFO from its interrupt only after the host has fetched the last
+ * packet. If this is much faster, the refill latency is the limit; if not, it
+ * is the host's polling. Holds the TX lock and masks the driver's TX interrupt
+ * meanwhile; a test tool, run it while nothing else is going on.
+ */
+static void usbtest_raw(int kib, char *out, size_t cap) {
+	if (kib < 1) kib = 1;
+	if (kib > 8192) kib = 8192;
+	static uint8_t msg[1 + 14 + 1400];
+	static uint8_t enc[COBS_ENCODE_BOUND(sizeof(msg)) + 1];
+	msg[0] = BRIDGE_MSG_FRAME;
+	memset(msg + 1, 0xff, 6);
+	radio_get_self_mac(msg + 7);
+	msg[13] = 0x88; msg[14] = 0xb5;
+	memset(msg + 15, 0x5a, sizeof(msg) - 15);
+	size_t enc_len = cobs_encode(msg, sizeof(msg), enc, sizeof(enc) - 1);
+	enc[enc_len++] = 0x00;
+
+	xSemaphoreTake(s_tx_lock, portMAX_DELAY);
+	vTaskDelay(pdMS_TO_TICKS(100));   /* let the driver drain its ring buffer */
+	usb_serial_jtag_ll_disable_intr_mask(USB_SERIAL_JTAG_INTR_SERIAL_IN_EMPTY);
+	size_t total = (size_t)kib * 1024, sent = 0;
+	bool stalled = false;
+	int64_t t0 = esp_timer_get_time(), next_yield = t0 + 50000;
+	while (sent < total && !stalled) {
+		const uint8_t *q = enc;
+		size_t left = enc_len;
+		while (left) {
+			int64_t give_up = esp_timer_get_time() + 1000000;
+			while (!usb_serial_jtag_ll_txfifo_writable())
+				if (esp_timer_get_time() > give_up) { stalled = true; break; }
+			if (stalled) break;
+			int w = usb_serial_jtag_ll_write_txfifo(q, left > 64 ? 64 : (uint32_t)left);
+			usb_serial_jtag_ll_txfifo_flush();
+			q += w;
+			left -= (size_t)w;
+		}
+		if (!stalled) sent += sizeof(msg) - 1;
+		if (esp_timer_get_time() > next_yield) {   /* keep the idle task (WDT) alive */
+			vTaskDelay(1);
+			next_yield = esp_timer_get_time() + 50000;
+		}
+	}
+	int64_t dt = esp_timer_get_time() - t0;
+	usb_serial_jtag_ll_ena_intr_mask(USB_SERIAL_JTAG_INTR_SERIAL_IN_EMPTY);
+	xSemaphoreGive(s_tx_lock);
+	snprintf(out, cap, "usbtest raw: %u bytes in %u ms = %u kB/s%s",
+	         (unsigned)sent, (unsigned)(dt / 1000),
+	         dt > 0 ? (unsigned)((uint64_t)sent * 1000u / (uint64_t)dt) : 0u,
+	         stalled ? " (host stopped reading)" : "");
+}
+
 static void handle_cmd(const uint8_t *p, size_t n) {
 	char cmd[64];
 	size_t k = n < sizeof(cmd) - 1 ? n : sizeof(cmd) - 1;
@@ -276,6 +332,10 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		         (unsigned)st.rx_fcs_at_sig, (unsigned)st.rx_fcs_at_dump,
 		         (unsigned)st.rx_type_mismatch, (unsigned)st.rx_ip6_short,
 		         (unsigned)st.rx_ip6_long);
+		cmd_reply(out);
+	} else if (strcmp(cmd, "usbtest raw") == 0 || strncmp(cmd, "usbtest raw ", 12) == 0) {
+		int kib = cmd[11] ? atoi(cmd + 12) : 1024;
+		usbtest_raw(kib, out, sizeof(out));
 		cmd_reply(out);
 	} else if (strcmp(cmd, "usbtest") == 0 || strncmp(cmd, "usbtest ", 8) == 0) {
 		/* Device->host ceiling of the bridge path: stream full-size dummy

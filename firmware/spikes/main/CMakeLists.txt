@@ -15,10 +15,18 @@ if(IDF_VERSION_MAJOR EQUAL 5 AND IDF_VERSION_MINOR LESS 3)
 else()
     set(ESPDROP_USJ_COMPONENT esp_driver_usb_serial_jtag)
 endif()
+# The USB-Serial/JTAG low-level header (bridge `usbtest raw`) moved from "hal"
+# to "esp_hal_usb" in ESP-IDF 6.
+if(IDF_VERSION_MAJOR GREATER_EQUAL 6)
+    set(ESPDROP_USJ_LL_COMPONENT esp_hal_usb)
+else()
+    set(ESPDROP_USJ_LL_COMPONENT hal)
+endif()
 message(STATUS "EspDrop: target '${IDF_TARGET}', USB-Serial/JTAG via '${ESPDROP_USJ_COMPONENT}' (IDF ${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR})")
 
 idf_component_register(
     SRCS "app_main.c" "radio.c" "console.c" "awdl_app.c" "bridge.c"
     INCLUDE_DIRS "."
-    REQUIRES awdl esp_wifi esp_event esp_netif nvs_flash console esp_timer esp_hw_support ${ESPDROP_USJ_COMPONENT}
+    REQUIRES awdl esp_wifi esp_event esp_netif nvs_flash console esp_timer esp_hw_support
+             ${ESPDROP_USJ_COMPONENT} ${ESPDROP_USJ_LL_COMPONENT}
 )
