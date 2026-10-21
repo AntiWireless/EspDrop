@@ -191,6 +191,32 @@ Radarerkennung).
   Port selbst (ein 64-Byte-Paket je Abholung durch den PC), nicht am Treiber;
   AirDrop nutzt davon schon ~90 %.
 
+## Senden an ein iPhone (M3, PC -> iPhone)
+
+Empfangen ist damit fertig. Für die Gegenrichtung muss das iPhone seinen
+AirDrop-Dienst über AWDL annoncieren, und das tut es nur, wenn sein AWDL wach
+ist. Bei geschlossenem Teilen-Menü weckt Apple den Empfänger per Bluetooth LE.
+Dieses BLE-Signal sendet der PC selbst; der C5 macht über `awdl0` unverändert
+weiter. (Nachgewiesen im Referenzprojekt airdrop-mt7921, docs/UEBERBLICK.md.)
+
+Voraussetzungen auf dem PC: Bluetooth an (`bluetoothctl power on`) und die
+Pakete `python3-dbus` und `python3-gi` (Fedora: `python3-dbus python3-gobject`).
+
+1. Bridge wie beim Empfang starten; der C5 wählt den 5-GHz-Kanal automatisch.
+2. Senden (als normaler User), eine oder mehrere Dateien:
+   ```sh
+   tools/opendrop_send.sh foto.jpg
+   ```
+   Das Skript sendet das BLE-Wecksignal (`tools/airdrop_wake.py`), sucht den
+   Empfänger auf `awdl0` und überträgt dann.
+3. Am iPhone: AirDrop auf „Für alle für 10 Minuten“, entsperrt, **Teilen-Menü
+   geschlossen** (ein offenes Menü macht das iPhone zum Sender, der keinen
+   Empfänger annonciert). Bei der Abfrage „Annehmen“ tippen.
+
+Mehrere Apple-Geräte in Reichweite: mit `-r "Annas iPhone"` das Ziel am Namen
+wählen. Kontaktе-statt-„Jeder“: Identifikator über
+`ESPDROP_WAKE_ARGS="--appleid du@icloud.com"` an das Wecksignal geben.
+
 ## Danach
 
 Ergebnisse (auch Fehlschläge) in `docs/UEBERBLICK.md` unter „Offene Fragen"
