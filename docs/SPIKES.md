@@ -137,8 +137,10 @@ Radarerkennung).
 1. **Chip und USB.** `info` zeigt `chip: esp32c5 rev v1.0` (oder v1.2). ESP-IDF
    6.0.3 unterstützt v1.0 und v1.2; die Vorserien-Revision v0.1 startet nicht.
 2. **Spikes 1–3 auf Kanal 6** wie beim C3. Zusätzlich in `stats`:
-   `fcs_ok` steigt mit `action`, `fcs_bad` und `type_mismatch` bleiben 0.
-   Falls nicht, stimmt auf dem C5 die Länge im Promiscuous-Puffer nicht – bitte melden.
+   `rx frame end: at sig_len-4` steigt mit `action`, alle anderen „frame end“-Zähler,
+   `type_mismatch`, `ip6_short` und `ip6_long` bleiben 0. Dann stimmt die Frame-Länge.
+   (`fcs_ok` steigt nur auf dem C3: der C5 liefert an der Stelle der FCS andere
+   Bytes, dort zählt jeder Frame als `fcs_bad`. Gemessen, kein Fehler.)
 3. **Welchen 5-GHz-Kanal nutzt dein iPhone?** Geht schon auf Kanal 6: `rx on`,
    am iPhone das Teilen-Menü öffnen, `peers`. In der Kanalsequenz steht 44 oder 149.
 4. **Empfang auf 5 GHz.** `chan 44` (bzw. 149), `rx on`, Teilen-Menü offen,

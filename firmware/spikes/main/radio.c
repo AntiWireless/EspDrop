@@ -138,6 +138,10 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 		/* Is sig_len really MPDU + FCS on this chip? The 4 bytes we strip must
 		 * be the CRC-32 of the frame. If not, look for the FCS right after
 		 * sig_len and after dump_len, and keep a snapshot for `rxprobe`.
+		 * Measured on the C5: the TLV chain ends at sig_len - 4 as on the C3,
+		 * so the length is right, but the 4 bytes there are not the FCS (the
+		 * C5 does not hand it over), and dump_len is sig_len + 4. So fcs_bad
+		 * is expected on the C5; the rx_end_* counters are what matters.
 		 * Action frames only: rare and short (reading 8 bytes past sig_len
 		 * stays inside the RX buffer), so this is cheap. */
 		int sig = len + 4, dump = 0;
