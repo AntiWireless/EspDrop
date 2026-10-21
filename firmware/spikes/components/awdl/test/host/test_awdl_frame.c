@@ -349,6 +349,28 @@ static void test_reject_garbage(void) {
 	CHECK(awdl_parse_action(junk, 8, &pv) == AWDL_ERR_SHORT, "short frame not SHORT");
 }
 
+/* awdl_action_tlv_end finds the real end of a frame inside a longer buffer, as
+ * when a chip's reported length is off by the 4-byte FCS. */
+static void test_action_tlv_end(void) {
+	uint8_t self_mac[6] = {0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee};
+	awdl_self_t self;
+	awdl_self_init(&self, self_mac, "espdrop-c5", 6);
+	uint8_t buf[1600];
+	int n = awdl_build_action(buf, sizeof(buf), &self, AWDL_SUBTYPE_MIF, 0, AWDL_EAW_TU, 0);
+	CHECK(n > 0, "build failed: %d", n);
+	CHECK(awdl_action_tlv_end(buf, (size_t)n) == (size_t)n, "exact length");
+	/* stale buffer bytes after the frame, as seen on the C5 (00 00 d4 36 ...) */
+	const uint8_t tail[8] = {0x00, 0x00, 0xd4, 0x36, 0x82, 0x40, 0xd4, 0x36};
+	memcpy(buf + n, tail, sizeof(tail));
+	CHECK(awdl_action_tlv_end(buf, (size_t)n + 8) == (size_t)n, "end found despite tail");
+	/* cut 4 bytes off: the last TLV no longer fits, so the walk stops before */
+	size_t cut = awdl_action_tlv_end(buf, (size_t)n - 4);
+	CHECK(cut < (size_t)n - 4 && cut > IEEE80211_HDR_LEN + 16, "cut frame: %zu", cut);
+	uint8_t junk[64];
+	memset(junk, 0xA5, sizeof(junk));
+	CHECK(awdl_action_tlv_end(junk, sizeof(junk)) == 0, "garbage is no action frame");
+}
+
 static void test_sync_election_parse(void) {
 	uint8_t self_mac[6] = {0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee};
 	awdl_self_t self;
@@ -747,6 +769,7 @@ int main(void) {
 	test_dedup();
 	test_data_amsdu();
 	test_reject_garbage();
+	test_action_tlv_end();
 	test_sync_election_parse();
 	test_sync_math();
 	test_election_run();

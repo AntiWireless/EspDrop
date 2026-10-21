@@ -204,6 +204,8 @@ static int cmd_stats(int argc, char **argv) {
 	       s.rx_action, s.rx_data, s.rx_other_bssid, s.rx_parse_err);
 	printf("rx data: msdu=%llu amsdu=%llu dup=%llu data_perr=%llu\n",
 	       s.rx_msdu, s.rx_amsdu, s.rx_dup, s.rx_data_perr);
+	printf("rx frame end: at sig_len-4=%llu at sig_len=%llu at dump_len=%llu other=%llu\n",
+	       s.rx_end_sig4, s.rx_end_sig, s.rx_end_dump, s.rx_end_other);
 	printf("rx checks: fcs_ok=%llu fcs_bad=%llu fcs_at_sig=%llu fcs_at_dump=%llu "
 	       "type_mismatch=%llu ip6_short=%llu ip6_long=%llu\n",
 	       s.rx_fcs_ok, s.rx_fcs_bad, s.rx_fcs_at_sig, s.rx_fcs_at_dump,
@@ -223,7 +225,9 @@ static int cmd_rxprobe(int argc, char **argv) {
 	       p.sig_len, p.dump_len, p.rx_state);
 	printf("bytes [sig_len-8, sig_len+8):");
 	for (int i = 0; i < 16; i++) printf("%s%02x", i == 8 ? " | " : " ", p.tail[i]);
-	printf("\nFCS found at: sig_len-4 %s, sig_len %s, dump_len %s\n",
+	printf("\nTLVs end at %u (sig_len-4=%u, sig_len=%u, dump_len=%u)\n", p.tlv_end,
+	       (unsigned)(p.sig_len - 4), p.sig_len, p.dump_len);
+	printf("FCS found at: sig_len-4 %s, sig_len %s, dump_len %s\n",
 	       p.fcs_at_sig_minus4 ? "yes" : "no", p.fcs_at_sig ? "yes" : "no",
 	       p.fcs_at_dump ? "yes" : "no");
 	return 0;

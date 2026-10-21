@@ -381,6 +381,21 @@ static void parse_chanseq_tlv(const uint8_t *v, size_t vlen, awdl_peer_view_t *o
 	out->has_chanseq = true;
 }
 
+size_t awdl_action_tlv_end(const uint8_t *buf, size_t len) {
+	size_t a = IEEE80211_HDR_LEN;
+	if (!buf || len < a + 16) return 0;
+	if (buf[a] != AWDL_CATEGORY_VENDOR || memcmp(buf + a + 1, AWDL_OUI, 3) != 0 ||
+	    buf[a + 4] != AWDL_ACTION_TYPE)
+		return 0;
+	size_t off = a + 16;
+	while (off + 3 <= len) {
+		size_t l = (size_t)buf[off + 1] | ((size_t)buf[off + 2] << 8);
+		if (off + 3 + l > len) break;
+		off += 3 + l;
+	}
+	return off;
+}
+
 int awdl_parse_action(const uint8_t *buf, size_t len, awdl_peer_view_t *out) {
 	if (!buf || !out) return AWDL_ERR_ARG;
 	memset(out, 0, sizeof(*out));

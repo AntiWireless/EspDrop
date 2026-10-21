@@ -264,6 +264,14 @@ typedef void (*awdl_msdu_cb_t)(const uint8_t dst[6], const uint8_t src[6],
  */
 int awdl_parse_data_msdus(const uint8_t *buf, size_t len, awdl_msdu_cb_t cb, void *ctx);
 
+/*
+ * Offset just past the last complete TLV of an AWDL action frame, walking the
+ * TLV chain from the action header over at most len bytes; 0 if buf is not an
+ * AWDL action frame. With len a little larger than the frame, this shows where
+ * the frame really ends (used to find out how a chip reports frame lengths).
+ */
+size_t awdl_action_tlv_end(const uint8_t *buf, size_t len);
+
 /* Map an operating-class-encoded or legacy channel pair to a channel number. */
 uint8_t awdl_chan_number(const uint8_t enc_bytes[2], enum awdl_chan_enc enc);
 

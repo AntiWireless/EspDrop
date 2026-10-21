@@ -147,7 +147,16 @@ static void rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 		bool a = fcs_at(frame, len);
 		bool b = sig <= 1500 && fcs_at(frame, sig);
 		bool c = dump >= (int)IEEE80211_HDR_LEN && dump <= 1500 && fcs_at(frame, dump);
+		/* The TLV chain shows the true end without any FCS: walk it over the
+		 * larger of the two reported lengths. */
+		int cap = dump > sig ? dump : sig;
+		int end = cap <= 1500 ? (int)awdl_action_tlv_end(frame, (size_t)cap) : 0;
 		portENTER_CRITICAL(&s_stats_mux);
+		if (end == len)       s_stats.rx_end_sig4++;
+		else if (end == sig)  s_stats.rx_end_sig++;
+		else if (dump && end == dump) s_stats.rx_end_dump++;
+		else                  s_stats.rx_end_other++;
+		s_probe.tlv_end = (uint16_t)end;
 		if (a) s_stats.rx_fcs_ok++; else s_stats.rx_fcs_bad++;
 		if (b) s_stats.rx_fcs_at_sig++;
 		if (c) s_stats.rx_fcs_at_dump++;

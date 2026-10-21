@@ -49,6 +49,13 @@ typedef struct {
 	 * chips such as the C5 report that field). Counted for action frames. */
 	uint64_t rx_fcs_at_sig;
 	uint64_t rx_fcs_at_dump;
+	/* Where the TLV chain of an action frame really ends (needs no FCS):
+	 * at sig_len - 4 (FCS included in sig_len, as on the C3), at sig_len (no
+	 * FCS in sig_len), at dump_len, or elsewhere. */
+	uint64_t rx_end_sig4;
+	uint64_t rx_end_sig;
+	uint64_t rx_end_dump;
+	uint64_t rx_end_other;
 	/* IPv6 MSDUs shorter / longer than their IPv6 header says: a wrong frame
 	 * length cuts real bytes off (short) or keeps trailing bytes (long). */
 	uint64_t rx_ip6_short;
@@ -62,6 +69,7 @@ typedef struct {
 	uint16_t dump_len;    /* rx_ctrl.dump_len (Wi-Fi MAC v3), else 0 */
 	uint8_t  rx_state;    /* rx_ctrl.rx_state, 0 = no error */
 	uint8_t  tail[16];    /* frame bytes [sig_len - 8, sig_len + 8) */
+	uint16_t tlv_end;     /* where the TLV chain ends (awdl_action_tlv_end) */
 	bool     fcs_at_sig_minus4, fcs_at_sig, fcs_at_dump;
 } radio_rx_probe_t;
 void radio_get_rx_probe(radio_rx_probe_t *out);
