@@ -102,6 +102,25 @@ void awdl_node_on_rx_action(awdl_node_t *n, const awdl_peer_view_t *pv,
 	}
 }
 
+void awdl_node_set_channel(awdl_node_t *n, uint8_t chan) {
+	if (chan == n->self.master_chan) return;
+	n->self.master_chan = chan;
+	/* The old mirror was for the old channel; rebuild for the new one. With a
+	 * master that names the new channel this re-mirrors at once; otherwise the
+	 * static sequence on the new channel, as just after boot. */
+	n->seq_derived = false;
+	awdl_node_update_chanseq(n);
+}
+
+uint8_t awdl_node_preferred_channel(const awdl_node_t *n,
+                                    const uint8_t *allowed, int n_allowed) {
+	if (!n->have_master) return 0;
+	const awdl_peer_t *m = awdl_peers_get((awdl_peer_table_t *)&n->peers,
+	                                      n->election.sync_addr);
+	if (!m || !m->has_chanseq) return 0;
+	return awdl_chanseq_best_channel(m->chanseq, allowed, n_allowed);
+}
+
 void awdl_node_tick(awdl_node_t *n, uint64_t now_us) {
 	if (now_us > n->peers.timeout_us)
 		awdl_peers_age(&n->peers, now_us - n->peers.timeout_us);

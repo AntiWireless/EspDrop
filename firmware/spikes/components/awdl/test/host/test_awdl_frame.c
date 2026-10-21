@@ -552,6 +552,60 @@ static void iphone_announce(awdl_sync_t *iph, uint64_t t, const uint8_t ip[6],
 	pv->sync_aw_counter = awdl_sync_current_aw(t, iph);
 }
 
+static void test_best_channel(void) {
+	const uint8_t allowed[] = {6, 44, 149};
+	uint8_t idle[AWDL_CHANSEQ_LEN] = {0};
+	idle[0] = 6; idle[2] = 44; idle[8] = 6; idle[10] = 44;
+	CHECK(awdl_chanseq_best_channel(idle, allowed, 3) == 44, "idle tie -> 44");
+	uint8_t busy[AWDL_CHANSEQ_LEN] = {44,44,44,0,0,0,0,0,6,44,44,0,0,0,0,0};
+	CHECK(awdl_chanseq_best_channel(busy, allowed, 3) == 44, "busy -> 44");
+	uint8_t only6[AWDL_CHANSEQ_LEN] = {0};
+	only6[0] = 6; only6[8] = 6;
+	CHECK(awdl_chanseq_best_channel(only6, allowed, 3) == 6, "only 6");
+	const uint8_t only_c3[] = {6};  /* a C3 can only use channel 6 */
+	CHECK(awdl_chanseq_best_channel(busy, only_c3, 1) == 6, "C3 keeps 6");
+	uint8_t only149[AWDL_CHANSEQ_LEN] = {0};
+	only149[3] = 149; only149[11] = 149;
+	const uint8_t allow5[] = {44, 149};
+	CHECK(awdl_chanseq_best_channel(only149, allow5, 2) == 149, "149 only");
+	uint8_t none[AWDL_CHANSEQ_LEN] = {0};
+	none[0] = 36; none[8] = 36;
+	CHECK(awdl_chanseq_best_channel(none, allowed, 3) == 0, "none present -> 0");
+}
+
+static void test_node_set_channel(void) {
+	uint8_t me[6] = {0x02, 0, 0, 0, 0, 0x01};
+	uint8_t ip[6] = {0xca, 0x2a, 0xd6, 0x10, 0x8e, 0xae};
+	awdl_node_t n;
+	awdl_node_init(&n, me, "espdrop-c5", 6, 0);
+
+	awdl_sync_t iph;
+	awdl_sync_init(&iph, 7000);
+	awdl_peer_view_t pv;
+	iphone_announce(&iph, 100000, ip, &pv);     /* master on 6 (0,8) and 44 (2,10) */
+	memset(pv.chanseq, 0, sizeof(pv.chanseq));
+	pv.chanseq[0] = 6; pv.chanseq[2] = 44; pv.chanseq[8] = 6; pv.chanseq[10] = 44;
+	awdl_node_on_rx_action(&n, &pv, -40, 100000);
+	CHECK(n.have_master, "should have a master");
+
+	const uint8_t allowed[] = {6, 44, 149};
+	CHECK(awdl_node_preferred_channel(&n, allowed, 3) == 44, "prefer 44 (tie)");
+
+	awdl_node_set_channel(&n, 44);
+	CHECK(n.self.master_chan == 44, "master_chan updated");
+	CHECK(n.seq_derived, "re-mirrored on the new channel");
+	awdl_node_status_t st;
+	awdl_node_status(&n, &st);
+	for (int i = 0; i < (int)AWDL_CHANSEQ_LEN; i++) {
+		uint8_t expect = (i == 2 || i == 10) ? 44 : 0;
+		CHECK(st.self_chanseq[i] == expect, "seq[%d]=%u expected %u",
+		      i, st.self_chanseq[i], expect);
+	}
+	CHECK(n.sync_locked && memcmp(n.synced_master, ip, 6) == 0, "sync kept");
+	awdl_node_set_channel(&n, 44);
+	CHECK(n.self.master_chan == 44, "same channel no-op");
+}
+
 static void test_node_sync_hold(void) {
 	uint8_t me[6] = {0x02, 0, 0, 0, 0, 0x01};
 	uint8_t ip[6] = {0xca, 0x2a, 0xd6, 0x10, 0x8e, 0xae};
@@ -770,6 +824,8 @@ int main(void) {
 	test_data_amsdu();
 	test_reject_garbage();
 	test_action_tlv_end();
+	test_best_channel();
+	test_node_set_channel();
 	test_sync_election_parse();
 	test_sync_math();
 	test_election_run();

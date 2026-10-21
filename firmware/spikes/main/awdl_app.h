@@ -48,6 +48,22 @@ void awdl_app_tx(uint8_t subtype);
 void awdl_app_pause_tx(bool paused);
 
 /*
+ * Retune the radio and the AWDL node to a channel at runtime, keeping sync and
+ * the peer table (unlike awdl_app_set_self, which resets the node). keep_auto
+ * false pins the channel and turns automatic channel selection off (a manual
+ * choice); true is for the automatic logic itself. Returns an esp_err_t.
+ */
+int awdl_app_set_channel(uint8_t chan, bool keep_auto);
+
+/*
+ * Automatic channel: when on, the node follows the master onto its preferred
+ * social channel (e.g. 44 or 149 on a 5 GHz chip) and falls back to its boot
+ * channel otherwise. Off on the ESP32-C3 (only channel 6 is possible).
+ */
+void awdl_app_set_auto_channel(bool on);
+bool awdl_app_auto_channel(void);
+
+/*
  * Queue one host Ethernet frame (dst||src||ethertype||payload) for transmission
  * as an AWDL data frame. Only IPv6 (ethertype 0x86dd) is forwarded; other types
  * are ignored. The frame is sent from the AWDL task during a slot we advertise

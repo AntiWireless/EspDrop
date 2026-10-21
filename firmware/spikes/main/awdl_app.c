@@ -63,6 +63,15 @@ static bool             s_started;
 static char             s_name[AWDL_NAME_MAX + 1];  /* kept for awdl_app_set_self */
 static volatile bool    s_tx_paused;   /* awdl_app_pause_tx: no PSF/MIF/data TX */
 
+/* Automatic channel: follow the master onto its preferred social channel. Off
+ * by default (set on for 5 GHz chips at start); a manual `chan` turns it off. */
+static bool             s_auto_chan;
+static int64_t          s_auto_next_us;    /* earliest next auto switch (dwell) */
+#define AUTO_CHAN_DWELL_US 4000000          /* >= peer timeout, so no flapping */
+/* Social channels we may park on, newest Apple set; radio_channel_supported
+ * filters out what this chip cannot do (the C3 keeps only 6). */
+static const uint8_t    k_social_chans[] = {6, 44, 149};
+
 /* Peer-change notification. Shadow set is touched only by the AWDL task. */
 static awdl_peer_cb_t   s_peer_cb;
 static void            *s_peer_cb_ctx;
@@ -73,6 +82,29 @@ static int              s_peer_nshadow;
 /* Data-TX counters: written by the bridge RX task (queued/q_drop) and the AWDL
  * task (sent/fail), read by the `tx` command. Aligned 32-bit, stats only. */
 static volatile uint32_t s_tx_queued, s_tx_q_drop, s_tx_sent_uc, s_tx_sent_mc, s_tx_fail;
+
+/* Preferred park channel from the master's sequence, restricted to the social
+ * channels this chip supports. Call with s_lock held (reads s_node). 0 = keep. */
+static uint8_t pick_auto_channel(void) {
+	uint8_t allowed[sizeof(k_social_chans)];
+	int na = 0;
+	for (unsigned i = 0; i < sizeof(k_social_chans); i++)
+		if (radio_channel_supported(k_social_chans[i]))
+			allowed[na++] = k_social_chans[i];
+	return awdl_node_preferred_channel(&s_node, allowed, na);
+}
+
+/* Retune the radio and the node to a new channel together (node sync is kept).
+ * Takes s_lock. Used by the auto-channel logic and the bridge `chan` command. */
+static int retune(uint8_t chan) {
+	int err = radio_set_channel(chan);
+	if (err) return err;
+	xSemaphoreTake(s_lock, portMAX_DELAY);
+	awdl_node_set_channel(&s_node, chan);
+	xSemaphoreGive(s_lock);
+	if (s_task) xTaskNotifyGive(s_task);   /* re-derive slots, flush promptly */
+	return 0;
+}
 
 /* radio handler: Wi-Fi task context, must be quick. Copy into the queue. */
 static void on_action(const awdl_peer_view_t *pv, int8_t rssi, uint8_t channel,
@@ -173,13 +205,22 @@ static void awdl_task(void *arg) {
 		if (now >= next_tick) {
 			uint8_t cur[AWDL_MAX_PEERS][6];
 			int ncur = 0;
+			uint8_t want_chan = 0;
 			xSemaphoreTake(s_lock, portMAX_DELAY);
 			awdl_node_tick(&s_node, (uint64_t)now);
 			for (int i = 0; i < AWDL_MAX_PEERS; i++)
 				if (s_node.peers.peers[i].used)
 					memcpy(cur[ncur++], s_node.peers.peers[i].addr, 6);
+			if (s_auto_chan && now >= s_auto_next_us) {
+				uint8_t best = pick_auto_channel();   /* reads s_node, under lock */
+				if (best && best != radio_get_channel()) want_chan = best;
+			}
 			xSemaphoreGive(s_lock);
 			emit_peer_changes(cur, ncur);   /* notify host of peer add/remove */
+			if (want_chan) {
+				retune(want_chan);          /* takes s_lock itself */
+				s_auto_next_us = esp_timer_get_time() + AUTO_CHAN_DWELL_US;
+			}
 			next_tick = now + TICK_INTERVAL_US;
 		}
 
@@ -305,6 +346,21 @@ int awdl_app_format_peers(char *buf, size_t cap) {
 	xSemaphoreGive(s_lock);
 	return off;
 }
+
+int awdl_app_set_channel(uint8_t chan, bool keep_auto) {
+	if (!s_started) return -1;
+	if (!keep_auto) s_auto_chan = false;   /* a manual channel pins it */
+	int err = retune(chan);
+	if (!err) s_auto_next_us = esp_timer_get_time() + AUTO_CHAN_DWELL_US;
+	return err;
+}
+
+void awdl_app_set_auto_channel(bool on) {
+	s_auto_chan = on;
+	s_auto_next_us = 0;   /* act on the next tick */
+}
+
+bool awdl_app_auto_channel(void) { return s_auto_chan; }
 
 void awdl_app_pause_tx(bool paused) {
 	s_tx_paused = paused;

@@ -18,6 +18,7 @@
 #include "esp_err.h"   /* ESP_OK, used by both the bridge and console branches */
 #include "esp_log.h"
 #include "sdkconfig.h"
+#include "soc/soc_caps.h"
 
 #include "radio.h"
 
@@ -74,6 +75,9 @@ void app_main(void) {
 	radio_set_data_handler(bridge_rx_frame, NULL);
 	bridge_set_frame_sink(awdl_app_tx_ethernet, NULL);
 	awdl_app_set_peer_cb(on_peer_evt, NULL);   /* host builds the neighbour table */
+#if SOC_WIFI_SUPPORT_5G
+	awdl_app_set_auto_channel(true);   /* follow the iPhone onto 44/149 on its own */
+#endif
 	if (radio_promisc(true) != ESP_OK)
 		bridge_log("warning: promiscuous RX did not enable");
 	bridge_log("awdl rx/tx up on %s ch %u", CONFIG_IDF_TARGET, chan);

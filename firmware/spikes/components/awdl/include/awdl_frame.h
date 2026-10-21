@@ -272,6 +272,15 @@ int awdl_parse_data_msdus(const uint8_t *buf, size_t len, awdl_msdu_cb_t cb, voi
  */
 size_t awdl_action_tlv_end(const uint8_t *buf, size_t len);
 
+/*
+ * Pick which channel to park on from a master's channel sequence: of the
+ * `allowed` channels, the one with the most slots in `seq`. Ties go to the
+ * highest channel number (prefer 5 GHz, where a shared slot carries more).
+ * Returns 0 if none of the allowed channels appears in the sequence.
+ */
+uint8_t awdl_chanseq_best_channel(const uint8_t seq[AWDL_CHANSEQ_LEN],
+                                  const uint8_t *allowed, int n_allowed);
+
 /* Map an operating-class-encoded or legacy channel pair to a channel number. */
 uint8_t awdl_chan_number(const uint8_t enc_bytes[2], enum awdl_chan_enc enc);
 

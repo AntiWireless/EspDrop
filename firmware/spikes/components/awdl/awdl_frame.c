@@ -104,6 +104,25 @@ void awdl_self_set_chanseq_static(awdl_self_t *self, uint8_t chan_num) {
 	}
 }
 
+uint8_t awdl_chanseq_best_channel(const uint8_t seq[AWDL_CHANSEQ_LEN],
+                                  const uint8_t *allowed, int n_allowed) {
+	uint8_t best = 0;
+	int best_count = 0;
+	for (int i = 0; i < n_allowed; i++) {
+		uint8_t ch = allowed[i];
+		int count = 0;
+		for (unsigned s = 0; s < AWDL_CHANSEQ_LEN; s++)
+			if (seq[s] == ch) count++;
+		if (count == 0) continue;
+		/* more slots wins; on a tie the higher channel number (5 GHz) wins */
+		if (count > best_count || (count == best_count && ch > best)) {
+			best = ch;
+			best_count = count;
+		}
+	}
+	return best;
+}
+
 bool awdl_self_set_chanseq_intersect(awdl_self_t *self,
                                      const uint8_t master_chanseq[AWDL_CHANSEQ_LEN],
                                      uint8_t keep_chan) {

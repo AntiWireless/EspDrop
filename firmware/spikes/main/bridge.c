@@ -269,11 +269,13 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		} else {
 			int o = snprintf(nbuf, sizeof(nbuf),
 			                 "master=%02x:%02x:%02x:%02x:%02x:%02x%s peers=%d height=%u "
-			                 "sync_err=%d derived=%s seq=",
+			                 "sync_err=%d chan=%u auto=%s derived=%s seq=",
 			                 ns.master_addr[0], ns.master_addr[1], ns.master_addr[2],
 			                 ns.master_addr[3], ns.master_addr[4], ns.master_addr[5],
 			                 ns.have_master ? "" : "(self)", ns.peer_count,
 			                 (unsigned)ns.height, (int)ns.last_sync_err_tu,
+			                 (unsigned)radio_get_channel(),
+			                 awdl_app_auto_channel() ? "on" : "off",
 			                 ns.seq_derived ? "yes" : "no");
 			for (unsigned i = 0; i < AWDL_CHANSEQ_LEN && o > 0 && o < (int)sizeof(nbuf); i++)
 				o += snprintf(nbuf + o, sizeof(nbuf) - (size_t)o, "%s%u",
@@ -301,23 +303,24 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		         (unsigned)st.tx_uc_ack, (unsigned)st.tx_uc_noack);
 		cmd_reply(out);
 	} else if (strcmp(cmd, "chan") == 0 || strncmp(cmd, "chan ", 5) == 0) {
-		/* `chan` shows the AWDL channel, `chan <n>` moves the node there (it
-		 * restarts: sync and peers are learned again). On the C5 that allows
-		 * single-channel 5 GHz experiments (44/149) with the full data path. */
-		if (cmd[4] == '\0') {
-			snprintf(out, sizeof(out), "chan %u", radio_get_channel());
+		/* `chan` shows the channel and whether auto is on; `chan <n>` pins the
+		 * node to a channel (keeps sync/peers); `chan auto` follows the master
+		 * onto its preferred 5 GHz channel (44/149) on its own. */
+		const char *arg = cmd[4] == '\0' ? "" : cmd + 5;
+		if (arg[0] == '\0') {
+			snprintf(out, sizeof(out), "chan %u (auto %s)", radio_get_channel(),
+			         awdl_app_auto_channel() ? "on" : "off");
+		} else if (strcmp(arg, "auto") == 0) {
+			awdl_app_set_auto_channel(true);
+			snprintf(out, sizeof(out), "chan auto on (now %u)", radio_get_channel());
 		} else {
-			int ch = atoi(cmd + 5);
+			int ch = atoi(arg);
 			int err = (ch >= 1 && ch <= 255 && radio_channel_supported((uint8_t)ch))
-			          ? radio_set_channel((uint8_t)ch) : ESP_ERR_NOT_SUPPORTED;
-			if (err != ESP_OK) {
+			          ? awdl_app_set_channel((uint8_t)ch, false) : ESP_ERR_NOT_SUPPORTED;
+			if (err != ESP_OK)
 				snprintf(out, sizeof(out), "chan %d: %s", ch, esp_err_to_name(err));
-			} else {
-				uint8_t mac[6];
-				radio_get_self_mac(mac);
-				awdl_app_set_self(mac, (uint8_t)ch);
-				snprintf(out, sizeof(out), "chan %d (AWDL node restarted)", ch);
-			}
+			else
+				snprintf(out, sizeof(out), "chan %d (auto off)", ch);
 		}
 		cmd_reply(out);
 	} else if (strcmp(cmd, "checks") == 0) {

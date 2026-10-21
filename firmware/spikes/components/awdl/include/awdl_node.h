@@ -61,6 +61,24 @@ void awdl_node_on_rx_action(awdl_node_t *n, const awdl_peer_view_t *pv,
 /* Age out stale peers and re-run election. Call ~1 Hz. */
 void awdl_node_tick(awdl_node_t *n, uint64_t now_us);
 
+/*
+ * Park the node on a different channel (the physical radio must be retuned to
+ * match separately; this only changes what we advertise). Keeps sync, election
+ * and peers, and re-derives the channel sequence for the new channel from the
+ * current master straight away. No-op if chan is already the current channel.
+ */
+void awdl_node_set_channel(awdl_node_t *n, uint8_t chan);
+
+/*
+ * The channel the node would prefer to be on, given the tracked master's
+ * sequence, out of the `allowed` channels (e.g. the social channels the radio
+ * supports). 0 if there is no master, its sequence is unknown, or it names none
+ * of the allowed channels. The caller retunes the radio and calls
+ * awdl_node_set_channel when this differs from the current channel.
+ */
+uint8_t awdl_node_preferred_channel(const awdl_node_t *n,
+                                    const uint8_t *allowed, int n_allowed);
+
 /* Build one of our own PSF/MIF frames with timing from our AW clock. */
 int awdl_node_build_action(awdl_node_t *n, uint8_t *buf, size_t cap,
                            uint8_t subtype, uint64_t now_us);

@@ -156,10 +156,12 @@ Radarerkennung).
    2 ms ist gut, unter 5 ms brauchbar (MT7921: 8,5 ms). Alle Zeilen der Ausgabe
    aufschreiben, auch den ersten Bandwechsel und eventuelle Fehler.
 7. **USB-Durchsatz** wie Spike 5.
-8. **Optional: Bridge auf 5 GHz.** Bridge-Firmware für den C5 flashen, im
-   `awdl_bridge.py`-Terminal `chan 44` (bzw. den Kanal aus Test 3) eingeben,
-   dann wie in M2.4 pingen bzw. AirDrop testen. Der Knoten bleibt dabei auf
-   einem Kanal und übernimmt die 5-GHz-Slots des Masters, ganz ohne Kanalwechsel.
+8. **Optional: Bridge auf 5 GHz.** Bridge-Firmware für den C5 flashen und wie in
+   M2.4 pingen bzw. AirDrop testen. Der C5 wählt den 5-GHz-Kanal selbst: er folgt
+   dem Master auf dessen bevorzugten Sozialkanal (44 oder 149). Mit `node` prüfen
+   (`auto=on`, `chan=` der erwartete Kanal). `chan 44` pinnt einen festen Kanal
+   (`auto` aus), `chan auto` schaltet die Automatik wieder ein. Der Knoten bleibt
+   dabei auf einem Kanal und übernimmt dessen Slots beim Master, ohne Wechsel.
 
 ### Ergebnisse ESP32-C5 (Waveshare ESP32-C5-Zero, rev v1.0, 240 MHz, ESP-IDF 6.0.3)
 
@@ -177,7 +179,7 @@ Radarerkennung).
 - **Empfang und Senden auf Kanal 44** funktionieren: iPhone-Action- und
   Datenframes kommen an, eigene MIFs gehen ohne Fehler raus. Die Sendeleistung
   meldet der Treiber auf 44 mit 18 dBm.
-- **Bridge auf Kanal 44** (`chan 44`): Ping zum iPhone 19/20, alle 20 Unicast-Frames
+- **Bridge auf Kanal 44** (automatisch gewählt): Ping zum iPhone 19/20, alle 20 Unicast-Frames
   vom iPhone per ACK bestätigt (C3 auf Kanal 6: ~66 %), RTT 4–440 ms (wir senden
   nur in den 44er-Slots des iPhones).
 - **AirDrop-Empfang (M2.4) funktioniert:** Foto vom iPhone, 2,87 MB in 12,7 s
