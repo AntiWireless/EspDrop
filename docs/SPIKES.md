@@ -182,6 +182,12 @@ Radarerkennung).
   nur in den 44er-Slots des iPhones).
 - **AirDrop-Empfang (M2.4) funktioniert:** Foto vom iPhone, 2,87 MB in 12,7 s
   (≈ 0,23 MB/s laut OpenDrop), korrekt entpackt.
+- **Engpass ist USB:** Während der Übertragung war das iPhone in 15 von 16 Slots
+  auf 44 und wir in allen dabei; verworfen wurde nur an der Warteschlange zum PC.
+  `usbtest` (Bridge-Pfad über den Treiber) und `usbtest raw` (FIFO direkt per
+  Polling) schaffen beide ~255 kB/s. Die Grenze liegt also am USB-Serial/JTAG-
+  Port selbst (ein 64-Byte-Paket je Abholung durch den PC), nicht am Treiber;
+  AirDrop nutzt davon schon ~90 %.
 
 ## Danach
 
