@@ -177,6 +177,11 @@ Radarerkennung).
 - **Empfang und Senden auf Kanal 44** funktionieren: iPhone-Action- und
   Datenframes kommen an, eigene MIFs gehen ohne Fehler raus. Die Sendeleistung
   meldet der Treiber auf 44 mit 18 dBm.
+- **Bridge auf Kanal 44** (`chan 44`): Ping zum iPhone 19/20, alle 20 Unicast-Frames
+  vom iPhone per ACK bestätigt (C3 auf Kanal 6: ~66 %), RTT 4–440 ms (wir senden
+  nur in den 44er-Slots des iPhones).
+- **AirDrop-Empfang (M2.4) funktioniert:** Foto vom iPhone, 2,87 MB in 12,7 s
+  (≈ 0,23 MB/s laut OpenDrop), korrekt entpackt.
 
 ## Danach
 
