@@ -15,6 +15,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_system.h"   /* esp_get_free_heap_size */
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -27,15 +28,19 @@
 #define BRIDGE_MAX_PAYLOAD 1600
 #define BRIDGE_MAX_MSG     (1 + BRIDGE_MAX_PAYLOAD)   /* type + payload */
 #define USB_RX_BUF         1024
-#define USB_TX_BUF         2048
+/* Large enough for several full frames, so the driver can keep feeding the
+ * 64-byte USB FIFO while the forward task COBS-encodes the next frame. */
+#define USB_TX_BUF         8192
 
 /* Device->host RX forwarding: one Ethernet frame per queue slot. The Wi-Fi task
  * only builds+enqueues (never blocks on USB); a dedicated task drains and sends. */
 #define BRIDGE_RX_PAYLOAD_MAX 1500                 /* L3 payload cap (awdl0 MTU) */
 /* One AWDL window delivers ~15 frames in ~50 ms (airdrop-mt7921 FINDINGS), much
- * faster than USB drains them, so the queue must absorb a whole burst. Try the
- * big depth first and fall back if the heap is short. */
-static const uint8_t k_rx_q_depths[] = {32, 24, 16, 8};
+ * faster than USB drains them, so the queue must absorb a whole burst; on 5 GHz
+ * an iPhone sends in 15 of 16 slots, so bursts are longer still (C5: 299 drops
+ * at depth 32 in one transfer). Try the big depth first and fall back if the
+ * heap is short. */
+static const uint8_t k_rx_q_depths[] = {64, 48, 32, 24, 16, 8};
 /* Wi-Fi allocates its RX/TX buffers dynamically from the same heap, so never
  * take the last of it: a larger depth is used only if this much stays free. */
 #define BRIDGE_HEAP_RESERVE (64u * 1024u)
@@ -65,6 +70,7 @@ static uint32_t s_bytes_from_host;
  * 32-bit aligned loads/stores are atomic on the C3, and a stale stats read is
  * harmless, so these are volatile rather than locked. */
 static volatile uint32_t s_frames_to_host;
+static volatile uint32_t s_bytes_to_host;
 static volatile uint32_t s_rx_drops;
 
 /* Sink for host->device Ethernet frames (set by app_main to the AWDL TX path). */
@@ -118,8 +124,10 @@ static void bridge_fwd_task(void *arg) {
 	static rx_frame_t fr;
 	for (;;) {
 		if (xQueueReceive(s_rx_fwd_q, &fr, portMAX_DELAY) == pdTRUE) {
-			if (bridge_send(BRIDGE_MSG_FRAME, fr.eth, fr.len) == 0)
+			if (bridge_send(BRIDGE_MSG_FRAME, fr.eth, fr.len) == 0) {
 				s_frames_to_host++;
+				s_bytes_to_host += fr.len;
+			}
 		}
 	}
 }
@@ -171,10 +179,10 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		cmd_reply(out);
 	} else if (strcmp(cmd, "stats") == 0) {
 		snprintf(out, sizeof(out),
-		         "frames_from_host=%u bytes_from_host=%u frames_to_host=%u rx_drops=%u "
-		         "rxq=%u heap=%u heap_min=%u",
+		         "frames_from_host=%u bytes_from_host=%u frames_to_host=%u bytes_to_host=%u "
+		         "rx_drops=%u rxq=%u heap=%u heap_min=%u",
 		         (unsigned)s_frames_from_host, (unsigned)s_bytes_from_host,
-		         (unsigned)s_frames_to_host, (unsigned)s_rx_drops,
+		         (unsigned)s_frames_to_host, (unsigned)s_bytes_to_host, (unsigned)s_rx_drops,
 		         (unsigned)s_rx_q_depth, (unsigned)esp_get_free_heap_size(),
 		         (unsigned)esp_get_minimum_free_heap_size());
 		cmd_reply(out);
@@ -268,6 +276,32 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		         (unsigned)st.rx_fcs_at_sig, (unsigned)st.rx_fcs_at_dump,
 		         (unsigned)st.rx_type_mismatch, (unsigned)st.rx_ip6_short,
 		         (unsigned)st.rx_ip6_long);
+		cmd_reply(out);
+	} else if (strcmp(cmd, "usbtest") == 0 || strncmp(cmd, "usbtest ", 8) == 0) {
+		/* Device->host ceiling of the bridge path: stream full-size dummy
+		 * Ethernet frames (ethertype 0x88b5, ignored by the host stack) through
+		 * the same COBS/USB path as received AWDL data, and time it. Run it
+		 * while no transfer is going on: this task is busy meanwhile. */
+		int kib = cmd[7] ? atoi(cmd + 8) : 1024;
+		if (kib < 1) kib = 1;
+		if (kib > 8192) kib = 8192;
+		static uint8_t f[14 + 1400];
+		memset(f, 0xff, 6);
+		radio_get_self_mac(f + 6);
+		f[12] = 0x88; f[13] = 0xb5;
+		memset(f + 14, 0x5a, sizeof(f) - 14);
+		size_t total = (size_t)kib * 1024, sent = 0;
+		int fails = 0;
+		int64_t t0 = esp_timer_get_time();
+		while (sent < total && fails < 10) {
+			if (bridge_send(BRIDGE_MSG_FRAME, f, sizeof(f)) == 0) sent += sizeof(f);
+			else fails++;
+		}
+		int64_t dt = esp_timer_get_time() - t0;
+		snprintf(out, sizeof(out), "usbtest: %u bytes in %u ms = %u kB/s%s",
+		         (unsigned)sent, (unsigned)(dt / 1000),
+		         dt > 0 ? (unsigned)((uint64_t)sent * 1000u / (uint64_t)dt) : 0u,
+		         fails ? " (writes timed out)" : "");
 		cmd_reply(out);
 	} else if (strcmp(cmd, "testframe") == 0) {
 		send_test_frame();
