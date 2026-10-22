@@ -149,6 +149,22 @@ bool awdl_self_set_chanseq_intersect(awdl_self_t *self,
 	return true;
 }
 
+bool awdl_self_set_chanseq_verbatim(awdl_self_t *self,
+                                    const uint8_t master_chanseq[AWDL_CHANSEQ_LEN],
+                                    uint8_t keep_chan) {
+	unsigned present = 0;
+	for (unsigned i = 0; i < AWDL_CHANSEQ_LEN; i++)
+		if (master_chanseq[i] == keep_chan) present++;
+	if (present == 0) return false;   /* as in the intersect, never "nowhere" */
+
+	for (unsigned i = 0; i < AWDL_CHANSEQ_LEN; i++) {
+		uint8_t ch = master_chanseq[i];
+		self->seq[i][0] = ch;
+		self->seq[i][1] = ch ? opclass_for(ch) : 0;
+	}
+	return true;
+}
+
 /* ------------------------------------------------------------------------ */
 /* 802.11 header                                                            */
 /* ------------------------------------------------------------------------ */

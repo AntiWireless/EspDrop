@@ -156,6 +156,17 @@ bool awdl_self_set_chanseq_intersect(awdl_self_t *self,
                                      const uint8_t master_chanseq[AWDL_CHANSEQ_LEN],
                                      uint8_t keep_chan);
 
+/*
+ * Copy a master's channel sequence into ours unchanged, slots on other channels
+ * included (airdrop-mt7921 FINDINGS §25/§26 "verbatim", the sequence iOS 26 is
+ * known to send unicast to). On one radio we are still only on keep_chan, so
+ * the caller transmits only where the master is on keep_chan. Same guard as the
+ * intersect: false, sequence unchanged, if the master names keep_chan nowhere.
+ */
+bool awdl_self_set_chanseq_verbatim(awdl_self_t *self,
+                                    const uint8_t master_chanseq[AWDL_CHANSEQ_LEN],
+                                    uint8_t keep_chan);
+
 /* ------------------------------------------------------------------------ */
 /* Parsed peer view (what the parser extracts from a received action frame)  */
 /* ------------------------------------------------------------------------ */

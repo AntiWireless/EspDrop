@@ -815,6 +815,63 @@ static void test_tx_slot_gating(void) {
 	}
 }
 
+/* Verbatim: we advertise the master's whole sequence (its channel 6 slots too)
+ * but still transmit only in the slots on our own channel; switching modes
+ * re-derives at once and keeps sync. */
+static void test_node_seq_verbatim(void) {
+	uint8_t me[6] = {0x02, 0, 0, 0, 0, 0x01};
+	uint8_t ip[6] = {0xca, 0x2a, 0xd6, 0x10, 0x8e, 0xae};
+	awdl_node_t n;
+	awdl_node_init(&n, me, "espdrop-c5", 44, 0);
+	CHECK(n.seq_mode == AWDL_SEQ_MIRROR, "default mode is mirror");
+
+	awdl_sync_t iph;
+	awdl_sync_init(&iph, 7000);
+	awdl_peer_view_t pv;
+	iphone_announce(&iph, 100000, ip, &pv);
+	/* iPad with its share sheet open: 44 44 44 0 0 0 0 0 6 44 44 0 0 0 0 0 */
+	static const uint8_t mseq[AWDL_CHANSEQ_LEN] = {44, 44, 44, 0, 0, 0, 0, 0,
+	                                                6, 44, 44, 0, 0, 0, 0, 0};
+	memcpy(pv.chanseq, mseq, sizeof(mseq));
+	awdl_node_on_rx_action(&n, &pv, -40, 100000);
+	CHECK(n.have_master && n.seq_derived, "mirrored from the master");
+	CHECK(n.self.seq[8][0] == 0 && n.self.seq[0][0] == 44, "mirror drops the 6 slot");
+
+	awdl_node_set_seq_mode(&n, AWDL_SEQ_VERBATIM);
+	CHECK(n.seq_derived, "verbatim derived at once");
+	uint8_t buf[1500];
+	int len = awdl_node_build_action(&n, buf, sizeof(buf), AWDL_SUBTYPE_MIF, 150000);
+	awdl_peer_view_t ours;
+	CHECK(len > 0 && awdl_parse_action(buf, (size_t)len, &ours) == AWDL_OK, "parse our MIF");
+	for (int i = 0; i < (int)AWDL_CHANSEQ_LEN; i++)
+		CHECK(ours.chanseq[i] == mseq[i], "verbatim chanseq[%d]=%u expected %u",
+		      i, ours.chanseq[i], mseq[i]);
+	CHECK(n.self.seq[8][1] == 0x51 && n.self.seq[0][1] == 0x80 && n.self.seq[3][1] == 0,
+	      "opclass per slot: 6 -> 0x51, 44 -> 0x80, empty -> 0");
+
+	/* TX only where the slot is on our channel (44), never in the 6 slot. */
+	awdl_sync_init(&n.sync, 0);
+	uint64_t eaw_us = (uint64_t)AWDL_EAW_TU * AWDL_TU_US;
+	for (int s = 0; s < (int)AWDL_CHANSEQ_LEN; s++) {
+		bool ours_slot = mseq[s] == 44;
+		CHECK(awdl_node_tx_slot_ready(&n, (uint64_t)s * eaw_us + 1000) == ours_slot,
+		      "verbatim: slot %d ready expected %d", s, ours_slot);
+	}
+
+	/* A master naming our channel nowhere keeps the last verbatim sequence. */
+	memset(pv.chanseq, 0, sizeof(pv.chanseq));
+	pv.chanseq[0] = 6; pv.chanseq[8] = 6;
+	awdl_node_on_rx_action(&n, &pv, -40, 200000);
+	CHECK(n.self.seq[1][0] == 44 && n.self.seq[8][0] == 6, "kept the last verbatim");
+
+	/* Back to mirror: derived again from the master's current sequence; with
+	 * no 44 in it the derivation fails, so static on 44 (as after boot). */
+	awdl_node_set_seq_mode(&n, AWDL_SEQ_MIRROR);
+	CHECK(n.seq_mode == AWDL_SEQ_MIRROR && !n.seq_derived, "mirror re-derives");
+	CHECK(n.self.seq[8][0] == 44 && n.self.seq[3][0] == 44, "static fallback on 44");
+	CHECK(n.sync_locked && memcmp(n.synced_master, ip, 6) == 0, "sync kept");
+}
+
 int main(void) {
 	test_mif_roundtrip();
 	test_psf_roundtrip();
@@ -837,6 +894,7 @@ int main(void) {
 	test_node_chanseq_keep_on_no_ch6();
 	test_chanseq_realistic_slot0();
 	test_tx_slot_gating();
+	test_node_seq_verbatim();
 
 	if (g_fail == 0) printf("\nALL TESTS PASSED\n");
 	else printf("\n%d CHECK(S) FAILED\n", g_fail);

@@ -71,6 +71,8 @@ static int64_t          s_auto_next_us;    /* earliest next auto switch (dwell) 
 /* Social channels we may park on, newest Apple set; radio_channel_supported
  * filters out what this chip cannot do (the C3 keeps only 6). */
 static const uint8_t    k_social_chans[] = {6, 44, 149};
+/* How our sequence follows the master's (enum awdl_seq_mode); survives set_self. */
+static uint8_t          s_seq_mode = AWDL_SEQ_MIRROR;
 
 /* Peer-change notification. Shadow set is touched only by the AWDL task. */
 static awdl_peer_cb_t   s_peer_cb;
@@ -313,6 +315,7 @@ void awdl_app_set_self(const uint8_t self_mac[6], uint8_t chan) {
 	if (!s_started) return;
 	xSemaphoreTake(s_lock, portMAX_DELAY);
 	awdl_node_init(&s_node, self_mac, s_name, chan, (uint64_t)esp_timer_get_time());
+	awdl_node_set_seq_mode(&s_node, s_seq_mode);
 	xSemaphoreGive(s_lock);
 }
 
@@ -361,6 +364,17 @@ void awdl_app_set_auto_channel(bool on) {
 }
 
 bool awdl_app_auto_channel(void) { return s_auto_chan; }
+
+void awdl_app_set_seq_mode(uint8_t mode) {
+	s_seq_mode = mode;
+	if (!s_started) return;
+	xSemaphoreTake(s_lock, portMAX_DELAY);
+	awdl_node_set_seq_mode(&s_node, mode);
+	xSemaphoreGive(s_lock);
+	if (s_task) xTaskNotifyGive(s_task);   /* advertise the new sequence promptly */
+}
+
+uint8_t awdl_app_seq_mode(void) { return s_seq_mode; }
 
 void awdl_app_pause_tx(bool paused) {
 	s_tx_paused = paused;

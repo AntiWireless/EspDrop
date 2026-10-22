@@ -228,6 +228,15 @@ Fehlersuche, wenn kein Empfänger gefunden wird (Gerät bereit, Wecksignal läuf
   welchem Socket bekam und ob es es lesen konnte, die Gruppenmitgliedschaft
   von `awdl0` und alle anderen Sockets auf UDP 5353, und endet mit einem
   Befund. Die Ausgabe enthält Gerätenamen und Adressen.
+- Gefunden, aber `/Discover` hängt in SYN-SENT, und `ping -6` an das Gerät
+  bleibt ohne Antwort, obwohl `tx` im Bridge-Fenster jeden Unicast als
+  quittiert zählt (`uc_ack`): Das Gerät empfängt uns, sendet uns aber keinen
+  Unicast. Im Referenzprojekt lag das an der angekündigten Kanal-Sequenz
+  (airdrop-mt7921 FINDINGS §25/§26). Im Bridge-Fenster umschaltbar, ohne neu
+  zu flashen: `seq mirror` (Standard: unser Kanal nur in den Slots des Masters
+  auf diesem Kanal) oder `seq verbatim` (die Sequenz des Masters unverändert).
+  Gesendet wird in beiden Fällen nur in den Slots auf unserem Kanal. `node`
+  zeigt den Modus (`mode=`) und beide Sequenzen.
 
 ## Danach
 

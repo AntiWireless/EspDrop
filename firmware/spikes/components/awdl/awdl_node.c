@@ -48,14 +48,18 @@ static void peer_apply_view(awdl_peer_t *p, const awdl_peer_view_t *pv) {
 }
 
 /* Re-derive the channel sequence we advertise. When we track a master that has
- * advertised a channel sequence naming our channel, mirror its slots on our own
- * channel. Otherwise keep the last mirror we derived; only before the very
- * first mirror (just after boot) do we advertise the lone static sequence. */
+ * advertised a channel sequence naming our channel, derive ours from it (mirror
+ * or verbatim, see seq_mode). Otherwise keep the last one we derived; only
+ * before the very first (just after boot) do we advertise the static sequence. */
 static void awdl_node_update_chanseq(awdl_node_t *n) {
 	if (n->have_master) {
 		awdl_peer_t *m = awdl_peers_get(&n->peers, n->election.sync_addr);
-		if (m && m->has_chanseq &&
-		    awdl_self_set_chanseq_intersect(&n->self, m->chanseq, n->self.master_chan)) {
+		bool ok = false;
+		if (m && m->has_chanseq)
+			ok = n->seq_mode == AWDL_SEQ_VERBATIM
+			     ? awdl_self_set_chanseq_verbatim(&n->self, m->chanseq, n->self.master_chan)
+			     : awdl_self_set_chanseq_intersect(&n->self, m->chanseq, n->self.master_chan);
+		if (ok) {
 			n->seq_derived = true;
 			return;
 		}
@@ -112,6 +116,15 @@ void awdl_node_set_channel(awdl_node_t *n, uint8_t chan) {
 	awdl_node_update_chanseq(n);
 }
 
+void awdl_node_set_seq_mode(awdl_node_t *n, uint8_t mode) {
+	if (mode == n->seq_mode) return;
+	n->seq_mode = mode;
+	/* The kept sequence was derived the other way; derive afresh (as after a
+	 * channel change), falling back to static only without a usable master. */
+	n->seq_derived = false;
+	awdl_node_update_chanseq(n);
+}
+
 uint8_t awdl_node_preferred_channel(const awdl_node_t *n,
                                     const uint8_t *allowed, int n_allowed) {
 	if (!n->have_master) return 0;
@@ -139,7 +152,7 @@ int awdl_node_build_action(awdl_node_t *n, uint8_t *buf, size_t cap,
 
 bool awdl_node_tx_slot_ready(const awdl_node_t *n, uint64_t now_us) {
 	uint16_t slot = awdl_sync_current_eaw(now_us, &n->sync) % AWDL_CHANSEQ_LEN;
-	return n->self.seq[slot][0] != 0; /* non-zero channel => we advertise presence */
+	return n->self.seq[slot][0] == n->self.master_chan; /* a slot on our channel */
 }
 
 void awdl_node_status(const awdl_node_t *n, awdl_node_status_t *out) {
@@ -149,6 +162,7 @@ void awdl_node_status(const awdl_node_t *n, awdl_node_status_t *out) {
 	out->last_sync_err_tu = n->last_sync_err_tu;
 	out->peer_count = awdl_peers_count(&n->peers);
 	out->seq_derived = n->seq_derived;
+	out->seq_mode = n->seq_mode;
 	for (unsigned i = 0; i < AWDL_CHANSEQ_LEN; i++)
 		out->self_chanseq[i] = n->self.seq[i][0];
 	const awdl_peer_t *m = n->have_master

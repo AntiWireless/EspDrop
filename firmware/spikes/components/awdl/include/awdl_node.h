@@ -28,6 +28,12 @@
 extern "C" {
 #endif
 
+/* How our advertised sequence is derived from the master's (awdl_node_set_seq_mode). */
+enum awdl_seq_mode {
+	AWDL_SEQ_MIRROR   = 0,  /* our channel where the master is on it, 0 elsewhere */
+	AWDL_SEQ_VERBATIM = 1,  /* the master's sequence unchanged (all its channels) */
+};
+
 typedef struct {
 	awdl_self_t       self;     /* transmit state (addr, name, channel sequence) */
 	awdl_sync_t       sync;     /* our AW clock */
@@ -48,6 +54,7 @@ typedef struct {
 	 * ages out or names our channel nowhere, instead of falling back to the flat
 	 * all-one-channel sequence (which iOS 26 refuses to send unicast to). */
 	bool    seq_derived;
+	uint8_t seq_mode;           /* enum awdl_seq_mode, MIRROR after init */
 } awdl_node_t;
 
 /* now_us: a monotonic microsecond timestamp (esp_timer_get_time() on hardware). */
@@ -69,6 +76,10 @@ void awdl_node_tick(awdl_node_t *n, uint64_t now_us);
  */
 void awdl_node_set_channel(awdl_node_t *n, uint8_t chan);
 
+/* Switch how the advertised sequence is derived (enum awdl_seq_mode) and
+ * re-derive it at once; sync, election and peers are kept. */
+void awdl_node_set_seq_mode(awdl_node_t *n, uint8_t mode);
+
 /*
  * The channel the node would prefer to be on, given the tracked master's
  * sequence, out of the `allowed` channels (e.g. the social channels the radio
@@ -85,11 +96,12 @@ int awdl_node_build_action(awdl_node_t *n, uint8_t *buf, size_t cap,
 
 /*
  * True if, at now_us, the EAW slot we are in is one our advertised channel
- * sequence marks as present (non-zero). Transmitting only in these slots keeps
- * our behaviour consistent with what we advertise, and (since we are physically
- * on our channel every slot) lines our frames up with the slots the master is
- * also on that channel, i.e. when it can actually hear us. When we advertise a
- * flat sequence (no master), every slot is present, so this is always true.
+ * sequence puts on our own channel. Transmitting only in these slots keeps our
+ * behaviour consistent with what we advertise, and (since we are physically on
+ * our channel every slot) lines our frames up with the slots the master is also
+ * on that channel, i.e. when it can actually hear us. Verbatim slots naming
+ * another channel are not ours. When we advertise a flat sequence (no master),
+ * every slot is ours, so this is always true.
  */
 bool awdl_node_tx_slot_ready(const awdl_node_t *n, uint64_t now_us);
 
@@ -100,6 +112,7 @@ typedef struct {
 	int64_t  last_sync_err_tu;
 	int      peer_count;
 	bool     seq_derived;                         /* see awdl_node_t */
+	uint8_t  seq_mode;                            /* enum awdl_seq_mode */
 	uint8_t  self_chanseq[AWDL_CHANSEQ_LEN];      /* what we advertise (channel numbers) */
 	bool     master_has_chanseq;
 	uint8_t  master_chanseq[AWDL_CHANSEQ_LEN];    /* the tracked master's, if known */

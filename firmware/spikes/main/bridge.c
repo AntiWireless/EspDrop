@@ -269,13 +269,14 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		} else {
 			int o = snprintf(nbuf, sizeof(nbuf),
 			                 "master=%02x:%02x:%02x:%02x:%02x:%02x%s peers=%d height=%u "
-			                 "sync_err=%d chan=%u auto=%s derived=%s seq=",
+			                 "sync_err=%d chan=%u auto=%s mode=%s derived=%s seq=",
 			                 ns.master_addr[0], ns.master_addr[1], ns.master_addr[2],
 			                 ns.master_addr[3], ns.master_addr[4], ns.master_addr[5],
 			                 ns.have_master ? "" : "(self)", ns.peer_count,
 			                 (unsigned)ns.height, (int)ns.last_sync_err_tu,
 			                 (unsigned)radio_get_channel(),
 			                 awdl_app_auto_channel() ? "on" : "off",
+			                 ns.seq_mode == AWDL_SEQ_VERBATIM ? "verbatim" : "mirror",
 			                 ns.seq_derived ? "yes" : "no");
 			for (unsigned i = 0; i < AWDL_CHANSEQ_LEN && o > 0 && o < (int)sizeof(nbuf); i++)
 				o += snprintf(nbuf + o, sizeof(nbuf) - (size_t)o, "%s%u",
@@ -322,6 +323,22 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 			else
 				snprintf(out, sizeof(out), "chan %d (auto off)", ch);
 		}
+		cmd_reply(out);
+	} else if (strcmp(cmd, "seq") == 0 || strncmp(cmd, "seq ", 4) == 0) {
+		/* `seq` shows how our advertised sequence follows the master's; `seq
+		 * mirror` (default) puts our channel only where the master is on it,
+		 * `seq verbatim` copies the master's sequence unchanged. An experiment:
+		 * which one the iPhone sends unicast to (see `node`, ping6). */
+		const char *arg = cmd[3] == '\0' ? "" : cmd + 4;
+		if (strcmp(arg, "mirror") == 0)
+			awdl_app_set_seq_mode(AWDL_SEQ_MIRROR);
+		else if (strcmp(arg, "verbatim") == 0)
+			awdl_app_set_seq_mode(AWDL_SEQ_VERBATIM);
+		if (arg[0] && strcmp(arg, "mirror") && strcmp(arg, "verbatim"))
+			snprintf(out, sizeof(out), "seq: use `seq`, `seq mirror` or `seq verbatim`");
+		else
+			snprintf(out, sizeof(out), "seq %s",
+			         awdl_app_seq_mode() == AWDL_SEQ_VERBATIM ? "verbatim" : "mirror");
 		cmd_reply(out);
 	} else if (strcmp(cmd, "checks") == 0) {
 		/* Bring-up checks on a new chip: is the frame length right (FCS where

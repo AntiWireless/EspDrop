@@ -64,6 +64,14 @@ void awdl_app_set_auto_channel(bool on);
 bool awdl_app_auto_channel(void);
 
 /*
+ * How the advertised channel sequence follows the master's: AWDL_SEQ_MIRROR
+ * (our channel in the master's slots on it, 0 elsewhere; the default) or
+ * AWDL_SEQ_VERBATIM (the master's sequence unchanged). Keeps sync and peers.
+ */
+void awdl_app_set_seq_mode(uint8_t mode);
+uint8_t awdl_app_seq_mode(void);
+
+/*
  * Queue one host Ethernet frame (dst||src||ethertype||payload) for transmission
  * as an AWDL data frame. Only IPv6 (ethertype 0x86dd) is forwarded; other types
  * are ignored. The frame is sent from the AWDL task during a slot we advertise
