@@ -193,11 +193,12 @@ Radarerkennung).
 
 ## Senden an ein iPhone (M3, PC -> iPhone)
 
-Empfangen ist damit fertig. Für die Gegenrichtung muss das iPhone seinen
-AirDrop-Dienst über AWDL annoncieren, und das tut es nur, wenn sein AWDL wach
-ist. Bei geschlossenem Teilen-Menü weckt Apple den Empfänger per Bluetooth LE.
-Dieses BLE-Signal sendet der PC selbst; der C5 macht über `awdl0` unverändert
-weiter. (Nachgewiesen im Referenzprojekt airdrop-mt7921, docs/UEBERBLICK.md.)
+Empfangen ist damit fertig. Für die Gegenrichtung muss das iPhone oder iPad als
+Empfänger über AWDL antworten. Das tut es nur, wenn sein AWDL wach ist (offenes
+Teilen-Menü) **und** ein Bluetooth-LE-Signal in der Nähe meldet, dass jemand
+senden will. Dieses BLE-Signal sendet der PC selbst; der C5 macht über `awdl0`
+unverändert weiter. (Nachgewiesen im Referenzprojekt airdrop-mt7921, FINDINGS
+§27 und §37: gleiche Verbindung, gleiches offenes Menü, gefunden nur mit BLE.)
 
 Voraussetzungen auf dem PC: Bluetooth an (`bluetoothctl power on`) und die
 Pakete `python3-dbus` und `python3-gi` (Fedora: `python3-dbus python3-gobject`).
@@ -209,12 +210,13 @@ Pakete `python3-dbus` und `python3-gi` (Fedora: `python3-dbus python3-gobject`).
    ```
    Das Skript sendet das BLE-Wecksignal (`tools/airdrop_wake.py`), sucht den
    Empfänger auf `awdl0` und überträgt dann.
-3. Am iPhone: AirDrop auf „Für alle für 10 Minuten“, entsperrt, **Teilen-Menü
-   geschlossen** (ein offenes Menü macht das iPhone zum Sender, der keinen
-   Empfänger annonciert). Bei der Abfrage „Annehmen“ tippen.
+3. Am iPhone/iPad: AirDrop auf „Für alle für 10 Minuten“, entsperrt,
+   **Teilen-Menü öffnen und offen lassen** (es hält AWDL wach; bei geschlossenem
+   Menü meldet sich das Gerät nie als Empfänger). Bei der Abfrage „Annehmen“
+   tippen.
 
 Mehrere Apple-Geräte in Reichweite: mit `-r "Annas iPhone"` das Ziel am Namen
-wählen. Kontaktе-statt-„Jeder“: Identifikator über
+wählen. „Nur Kontakte“ statt „Jeder“: Identifikator über
 `ESPDROP_WAKE_ARGS="--appleid du@icloud.com"` an das Wecksignal geben.
 
 ## Danach

@@ -8,11 +8,12 @@
 #   tools/opendrop_send.sh -n MyPC file1.pdf file2.png
 #   tools/opendrop_send.sh -r "Anna's iPhone" clip.mov   # pick the receiver
 #
-# On the iPhone: AirDrop "Everyone for 10 Minutes", unlock, and LEAVE THE SHARE
-# SHEET CLOSED (an open share sheet makes the phone a sender, which never
-# advertises a receiver for us to find). This script broadcasts the BLE wake
-# (tools/airdrop_wake.py) to bring the phone's AirDrop receiver up, browses for
-# it on awdl0, and sends. The phone shows an Accept prompt; tap Accept.
+# On the iPhone/iPad: AirDrop "Everyone for 10 Minutes", unlock, open the share
+# sheet and LEAVE IT OPEN: it keeps the device's AWDL awake. With the sheet
+# closed it never advertises a receiver, BLE wake or not; airdrop-mt7921's
+# working sends (FINDINGS §27, §37) had the sheet open plus the BLE wake. This
+# script broadcasts that wake (tools/airdrop_wake.py), browses for the receiver
+# on awdl0, and sends. The device shows an Accept prompt; tap Accept.
 #
 # Options:  -n NAME    sender name shown on the iPhone (default: EspDrop)
 #           -i IFACE   interface (default: awdl0)
@@ -116,7 +117,7 @@ keylog=()
 [ -n "${ESPDROP_TLS_KEYLOG:-}" ] && { mkdir -p "$(dirname "$ESPDROP_TLS_KEYLOG")" && keylog=(SSLKEYLOGFILE="$ESPDROP_TLS_KEYLOG"); }
 
 if [ "$WAKE" -eq 1 ]; then
-  echo "broadcasting the AirDrop BLE wake (phone: AirDrop Everyone, share sheet CLOSED) ..."
+  echo "broadcasting the AirDrop BLE wake (device: AirDrop Everyone, unlocked, share sheet OPEN) ..."
   # shellcheck disable=SC2086
   "$HERE/airdrop_wake.py" ${ESPDROP_WAKE_ARGS:-} >/dev/null 2>&1 &
   wake_pid=$!
@@ -149,9 +150,9 @@ if [ -z "$recv_id" ] && [ -z "$RECV" ]; then
     | grep -v 'Save discovery results' | tail -n 15 | sed 's/^/    /' >&2
   grep -qi 'not discoverable' "$findlog" && \
     echo "  -> a device answered but is not discoverable for us: set it to AirDrop Everyone." >&2
-  echo "  - the iPhone must be on AirDrop -> Everyone with the share sheet CLOSED," >&2
-  echo "    unlocked and awake, and in range on the channel awdl0 is parked on (check" >&2
-  echo "    'node' in the bridge: auto=on and chan= the phone's 5 GHz channel)." >&2
+  echo "  - the iPhone/iPad must be on AirDrop -> Everyone, unlocked, with its share" >&2
+  echo "    sheet OPEN, and in range on the channel awdl0 is parked on (check 'node'" >&2
+  echo "    in the bridge: auto=on and chan= the device's 5 GHz channel)." >&2
   echo "  - the BLE wake needs the PC's bluetooth on; without python3-dbus/python3-gi" >&2
   echo "    it is skipped. Raise the browse time with -t if it is slow to appear." >&2
   exit 1

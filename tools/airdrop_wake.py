@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # EspDrop - wake a nearby iPhone's AirDrop receiver with a Bluetooth LE advert.
 #
-# To SEND a file to an iPhone (PC -> iPhone) the phone must be advertising its
-# AirDrop service (_airdrop._tcp) over AWDL. It only does that while its AWDL
-# interface is awake, and with the share sheet CLOSED the way Apple wakes it is
-# a Bluetooth LE "Continuity" advertisement from the sender. This tool sends
-# that advert from the PC's own Bluetooth, so the iPhone then appears to
+# To SEND a file to an iPhone (PC -> iPhone) the phone must answer for its
+# AirDrop service (_airdrop._tcp) over AWDL. It does that only while its AWDL is
+# awake (share sheet open) AND a nearby sender's Bluetooth LE "Continuity"
+# advertisement says someone wants to send (airdrop-mt7921 FINDINGS §27: same
+# link, same open sheet, found only while the advert ran). This tool sends that
+# advert from the PC's own Bluetooth, so the iPhone then appears to
 # `opendrop find` on awdl0 and accepts an upload (tools/opendrop_send.sh).
 #
 # This is the receiver's side of Apple's own bootstrap: per Stute et al.
@@ -113,8 +114,8 @@ def main() -> int:
     print("AirDrop BLE wake: manufacturer 0x%04X, data %s" % (APPLE_CID, payload.hex()))
     print("mode:", "Everyone (empty hashes)" if everyone
           else "contacts-only (hashed identifiers)")
-    print("The target iPhone must be on AirDrop -> Everyone (or have a matching")
-    print("contact) with the share sheet CLOSED. Ctrl-C to stop.")
+    print("The target iPhone/iPad must be on AirDrop -> Everyone (or have a matching")
+    print("contact), unlocked, with its share sheet OPEN. Ctrl-C to stop.")
 
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
