@@ -116,6 +116,15 @@ trap cleanup EXIT
 keylog=()
 [ -n "${ESPDROP_TLS_KEYLOG:-}" ] && { mkdir -p "$(dirname "$ESPDROP_TLS_KEYLOG")" && keylog=(SSLKEYLOGFILE="$ESPDROP_TLS_KEYLOG"); }
 
+echo "browsing for an AirDrop receiver on $IFACE (up to ${BROWSE}s) ..."
+: > "$findlog"
+# Browse FIRST, then wake: a device woken by the BLE advert announces itself
+# once, unsolicited, and that announcement is lost if nobody is listening yet.
+# -d: log every service seen and why a receiver was skipped.
+env PYTHONUNBUFFERED=1 "$VENV/bin/opendrop" -n "$NAME" -d -i "$IFACE" find > "$findlog" 2>&1 &
+find_pid=$!
+sleep 2
+
 if [ "$WAKE" -eq 1 ]; then
   echo "broadcasting the AirDrop BLE wake (device: AirDrop Everyone, unlocked, share sheet OPEN) ..."
   # shellcheck disable=SC2086
@@ -124,13 +133,6 @@ if [ "$WAKE" -eq 1 ]; then
   sleep 1
   kill -0 "$wake_pid" 2>/dev/null || { wake_pid=""; echo "warning: BLE wake did not start (python3-dbus / python3-gi installed, bluetooth on?); browsing anyway" >&2; }
 fi
-
-echo "browsing for an AirDrop receiver on $IFACE (up to ${BROWSE}s) ..."
-: > "$findlog"
-# -d: log every service seen and why a receiver was skipped (e.g. "not
-# discoverable" = the device answers but is on Contacts Only).
-env PYTHONUNBUFFERED=1 "$VENV/bin/opendrop" -n "$NAME" -d -i "$IFACE" find > "$findlog" 2>&1 &
-find_pid=$!
 
 # `opendrop find` never exits on its own; stop at the first receiver or timeout.
 recv_id=""
