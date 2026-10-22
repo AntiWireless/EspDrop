@@ -118,19 +118,28 @@ def usable_link_local(dev: str):
     return None
 
 
-def query_mac(usb_fd: int, reader: link.Reader, timeout: float = 2.0):
-    """Ask the device for its Wi-Fi MAC; print any LOG lines seen meanwhile."""
-    try:
-        link.write_all(usb_fd, link.frame(link.MSG_CMD, b"mac"))
-    except (OSError, TimeoutError) as e:
-        print(f"warning: could not query device MAC ({e})", file=sys.stderr)
-        return None
-    for t, p in link.read_frames(usb_fd, reader, timeout):
-        text = p.decode("utf-8", "replace").strip()
-        if t == link.MSG_LOG:
-            print(f"[device] {text}")
-        elif t == link.MSG_CMD_REPLY and text.startswith("mac "):
-            return text[4:].strip()
+def query_mac(usb_fd: int, reader: link.Reader, timeout: float = 2.0, tries: int = 3):
+    """Ask the device for its Wi-Fi MAC; print any LOG lines seen meanwhile.
+
+    Each try starts with a bare 0x00 delimiter: bytes left in the device's COBS
+    reader from an earlier session would otherwise corrupt the first command
+    (the device ignores the empty frame). Several tries also cover a device that
+    is still booting, e.g. right after flashing.
+    """
+    for attempt in range(1, tries + 1):
+        try:
+            link.write_all(usb_fd, b"\x00" + link.frame(link.MSG_CMD, b"mac"))
+        except (OSError, TimeoutError) as e:
+            print(f"warning: could not query device MAC ({e})", file=sys.stderr)
+            return None
+        for t, p in link.read_frames(usb_fd, reader, timeout):
+            text = p.decode("utf-8", "replace").strip()
+            if t == link.MSG_LOG:
+                print(f"[device] {text}")
+            elif t == link.MSG_CMD_REPLY and text.startswith("mac "):
+                return text[4:].strip()
+        if attempt < tries:
+            print(f"no MAC reply from the device yet (try {attempt}/{tries}), retrying ...")
     return None
 
 
@@ -164,6 +173,15 @@ def main() -> int:
         if mac and not MAC_RE.match(mac):
             print(f"warning: ignoring malformed MAC {mac!r}", file=sys.stderr)
             mac = None
+        # awdl0 must carry the device's own Wi-Fi MAC: Apple peers tie a peer's
+        # IPv6 link-local to the MAC it transmits from, and ignore traffic whose
+        # source address belongs to some other MAC (a kernel-assigned TAP MAC
+        # made an iPad never answer our AirDrop queries).
+        if not mac and not args.no_config:
+            print("error: the device did not report its MAC, so awdl0 would get a random\n"
+                  "one that Apple devices do not answer. Replug the device and retry, or\n"
+                  "pass it with --mac (console `info` shows it).", file=sys.stderr)
+            return 1
 
         tap_fd = open_tap(args.dev)
         os.set_blocking(tap_fd, False)
