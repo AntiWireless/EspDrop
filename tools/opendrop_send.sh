@@ -148,8 +148,16 @@ if [ -z "$recv_id" ] && [ -z "$RECV" ]; then
   echo "no AirDrop receiver found. What the browse saw (full log: $findlog):" >&2
   grep -iE 'discover|airdrop|receiver|service|resolv|error|exception|refused|timed out' "$findlog" \
     | grep -v 'Save discovery results' | tail -n 15 | sed 's/^/    /' >&2
-  grep -qi 'not discoverable' "$findlog" && \
-    echo "  -> a device answered but is not discoverable for us: set it to AirDrop Everyone." >&2
+  # OpenDrop: mDNS gives "AirDrop service found", then an HTTPS POST /Discover
+  # to the device; a timeout there is also logged as "not discoverable".
+  if grep -qi 'not discoverable' "$findlog"; then
+    echo "  -> a device was found but /Discover gave no name: it is on Contacts Only," >&2
+    echo "     or the HTTPS request to it timed out (see the TCP check below)." >&2
+  elif grep -q 'AirDrop service found' "$findlog"; then
+    echo "  -> a device was found via mDNS, but its /Discover (HTTPS to the device over" >&2
+    echo "     awdl0) never answered: our TCP to it is not getting through. Check with" >&2
+    echo "     sudo tcpdump -i $IFACE -n 'tcp portrange 8770-8771'  while sending." >&2
+  fi
   echo "  - the iPhone/iPad must be on AirDrop -> Everyone, unlocked, with its share" >&2
   echo "    sheet OPEN, and in range on the channel awdl0 is parked on (check 'node'" >&2
   echo "    in the bridge: auto=on and chan= the device's 5 GHz channel)." >&2
