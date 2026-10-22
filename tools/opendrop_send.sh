@@ -143,6 +143,18 @@ for _ in $(seq 1 "$((BROWSE * 2))"); do
   [ -n "$recv_id" ] && break
   sleep 0.5
 done
+# mDNS found the device but /Discover is still pending: record how far its TCP
+# got before stop_find closes the socket (OpenDrop's connect has no timeout).
+tcp_state=""
+neigh_state=""
+if [ -z "$recv_id" ] && grep -q 'AirDrop service found' "$findlog"; then
+  # "AirDrop service found: <host>, <addr>:<port>, ID ..."
+  peer=$(sed -nE 's/.*AirDrop service found: [^,]*, ([0-9a-fA-F:.]+):([0-9]+),.*/\1 \2/p' "$findlog" | tail -n 1)
+  if [ -n "$peer" ]; then
+    command -v ss >/dev/null && tcp_state=$(ss -tnoH "( dport = :${peer#* } )" 2>/dev/null)
+    neigh_state=$(ip -6 neigh show dev "$IFACE" "${peer% *}" 2>/dev/null)
+  fi
+fi
 stop_find   # SIGINT so its finally: writes the report, then bounded reap
 
 grep -E 'Found[[:space:]]+index' "$findlog" | sed 's/^/  /' || true
@@ -157,8 +169,16 @@ if [ -z "$recv_id" ] && [ -z "$RECV" ]; then
     echo "     or the HTTPS request to it timed out (see the TCP check below)." >&2
   elif grep -q 'AirDrop service found' "$findlog"; then
     echo "  -> a device was found via mDNS, but its /Discover (HTTPS to the device over" >&2
-    echo "     awdl0) never answered: our TCP to it is not getting through. Check with" >&2
-    echo "     sudo tcpdump -i $IFACE -n 'tcp portrange 8770-8771'  while sending." >&2
+    echo "     $IFACE) never answered." >&2
+    echo "     neighbour entry: ${neigh_state:-none}" >&2
+    echo "     its TCP connection when we gave up:" >&2
+    printf '%s\n' "${tcp_state:-none (refused, failed or already closed)}" | sed 's/^/       /' >&2
+    case "$tcp_state" in
+      *SYN-SENT*) echo "     SYN-SENT: the device never answered our SYN - our frames do not reach" >&2
+                  echo "     it, or its answers do not reach us (bridge 'tx': uc_noack?)." >&2 ;;
+      *ESTAB*)    echo "     ESTAB: TCP is up; the TLS handshake or the /Discover reply stalls." >&2 ;;
+    esac
+    echo "     Watch it with  sudo tcpdump -i $IFACE -n 'tcp port 8770 or icmp6'" >&2
   fi
   echo "  - the iPhone/iPad must be on AirDrop -> Everyone, unlocked, with its share" >&2
   echo "    sheet OPEN, and in range on the channel awdl0 is parked on (check 'node'" >&2
