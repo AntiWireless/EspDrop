@@ -21,7 +21,8 @@
 #           -t SECS    how long to browse for a receiver (default: 60)
 #           --no-wake  do not broadcast the BLE wake (if something else does)
 #           -h         this help
-# Environment: OPENDROP_VENV (default ~/opendrop-venv), ESPDROP_TLS_KEYLOG=FILE.
+# Environment: OPENDROP_VENV (default ~/opendrop-venv), ESPDROP_TLS_KEYLOG=FILE,
+#           ESPDROP_FIND_LOG (debug log of the browse, default ~/espdrop-find.log).
 # Contacts-only target: pass identifiers to the wake via
 #   ESPDROP_WAKE_ARGS="--appleid you@icloud.com" tools/opendrop_send.sh file
 #
@@ -85,7 +86,8 @@ usable_ll() {
 [ -n "$(usable_ll)" ] || die "$IFACE has no usable link-local; is 'sudo tools/awdl_bridge.py /dev/ttyACM0' running?"
 
 report="$HOME/.opendrop/discover.last.json"
-findlog="$(mktemp -t espdrop-find-XXXXXX.log)"
+# Kept after the run (overwritten each time) so a failed browse can be read.
+findlog="${ESPDROP_FIND_LOG:-$HOME/espdrop-find.log}"
 wake_pid=""
 find_pid=""
 # Ignore SIGPIPE so a closed stdout (| tee quit) cannot kill us mid-cleanup.
@@ -106,7 +108,6 @@ stop_find() {
 cleanup() {
   stop_find
   [ -n "$wake_pid" ] && kill "$wake_pid" 2>/dev/null
-  rm -f "$findlog"
 }
 trap 'cleanup; exit 130' INT TERM HUP
 trap cleanup EXIT
@@ -125,7 +126,9 @@ fi
 
 echo "browsing for an AirDrop receiver on $IFACE (up to ${BROWSE}s) ..."
 : > "$findlog"
-env PYTHONUNBUFFERED=1 "$VENV/bin/opendrop" -n "$NAME" -i "$IFACE" find > "$findlog" 2>&1 &
+# -d: log every service seen and why a receiver was skipped (e.g. "not
+# discoverable" = the device answers but is on Contacts Only).
+env PYTHONUNBUFFERED=1 "$VENV/bin/opendrop" -n "$NAME" -d -i "$IFACE" find > "$findlog" 2>&1 &
 find_pid=$!
 
 # `opendrop find` never exits on its own; stop at the first receiver or timeout.
@@ -141,7 +144,11 @@ stop_find   # SIGINT so its finally: writes the report, then bounded reap
 
 grep -E 'Found[[:space:]]+index' "$findlog" | sed 's/^/  /' || true
 if [ -z "$recv_id" ] && [ -z "$RECV" ]; then
-  echo "no AirDrop receiver found." >&2
+  echo "no AirDrop receiver found. What the browse saw (full log: $findlog):" >&2
+  grep -iE 'discover|airdrop|receiver|service|resolv|error|exception|refused|timed out' "$findlog" \
+    | grep -v 'Save discovery results' | tail -n 15 | sed 's/^/    /' >&2
+  grep -qi 'not discoverable' "$findlog" && \
+    echo "  -> a device answered but is not discoverable for us: set it to AirDrop Everyone." >&2
   echo "  - the iPhone must be on AirDrop -> Everyone with the share sheet CLOSED," >&2
   echo "    unlocked and awake, and in range on the channel awdl0 is parked on (check" >&2
   echo "    'node' in the bridge: auto=on and chan= the phone's 5 GHz channel)." >&2
