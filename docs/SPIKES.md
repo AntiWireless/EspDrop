@@ -219,6 +219,15 @@ Mehrere Apple-Geräte in Reichweite: mit `-r "Annas iPhone"` das Ziel am Namen
 wählen. „Nur Kontakte“ statt „Jeder“: Identifikator über
 `ESPDROP_WAKE_ARGS="--appleid du@icloud.com"` an das Wecksignal geben.
 
+Fehlersuche, wenn kein Empfänger gefunden wird (Gerät bereit, Wecksignal läuft):
+- `tools/mdns_probe.py`: Kommen mDNS-Antworten des Geräts überhaupt bei einem
+  Programm an? (Standardbibliothek, ohne venv.)
+- `~/opendrop-venv/bin/python tools/zeroconf_probe.py`: dieselbe Suche wie
+  `opendrop find` mit OpenDrops zeroconf. Zeigt pro Paket, was zeroconf auf
+  welchem Socket bekam und ob es es lesen konnte, die Gruppenmitgliedschaft
+  von `awdl0` und alle anderen Sockets auf UDP 5353, und endet mit einem
+  Befund. Die Ausgabe enthält Gerätenamen und Adressen.
+
 ## Danach
 
 Ergebnisse (auch Fehlschläge) in `docs/UEBERBLICK.md` unter „Offene Fragen"
