@@ -210,7 +210,8 @@ Pakete `python3-dbus` und `python3-gi` (Fedora: `python3-dbus python3-gobject`).
    ```
    Das Skript sendet das BLE-Wecksignal (`tools/airdrop_wake.py`), sucht den
    Empfänger auf `awdl0` und überträgt dann.
-3. Am iPhone/iPad: AirDrop auf „Für alle für 10 Minuten“, entsperrt,
+3. Am iPhone/iPad: AirDrop auf „Für alle für 10 Minuten“ (fällt nach 10 Minuten
+   auf „Nur Kontakte“ zurück, also kurz vor dem Senden neu wählen), entsperrt,
    **Teilen-Menü öffnen und offen lassen** (es hält AWDL wach; bei geschlossenem
    Menü meldet sich das Gerät nie als Empfänger). Bei der Abfrage „Annehmen“
    tippen.

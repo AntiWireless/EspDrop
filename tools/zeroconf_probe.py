@@ -343,9 +343,16 @@ def main() -> int:
         print("the witness got AirDrop answers that zeroconf never saw: its sockets miss\n"
               "  what the kernel delivers (see the socket list: another mDNS stack of the same user?).")
     else:
-        print("no AirDrop answer reached any socket. If tcpdump on the interface showed\n"
-              "  answers from the device during this run, the group membership is missing\n"
-              "  (see the member line above); if not, the device did not answer.")
+        heard = sorted({src for src, _sock in st.by_src} - {v6[0][0]})
+        if "NOT a member" in group_members(args.iface):
+            print("no AirDrop answer reached any socket, and the interface is not in the\n"
+                  "  mDNS group, so group answers are dropped before any socket.")
+        else:
+            print("no AirDrop answer arrived: the device did not answer this run.\n"
+                  f"  zeroconf did receive from {len(heard)} other host(s), so reception works.\n"
+                  "  Check the device: AirDrop 'Everyone for 10 Minutes' falls back to\n"
+                  "  Contacts Only after 10 minutes (select it again), unlocked, share sheet\n"
+                  "  open, and the BLE wake running.")
 
     # zeroconf.close() can hang on this link (see opendrop find); do not wait for it.
     threading.Thread(target=lambda: (browser.cancel(), zc.close()), daemon=True).start()

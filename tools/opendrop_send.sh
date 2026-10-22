@@ -163,6 +163,8 @@ if [ -z "$recv_id" ] && [ -z "$RECV" ]; then
   echo "  - the iPhone/iPad must be on AirDrop -> Everyone, unlocked, with its share" >&2
   echo "    sheet OPEN, and in range on the channel awdl0 is parked on (check 'node'" >&2
   echo "    in the bridge: auto=on and chan= the device's 5 GHz channel)." >&2
+  echo "  - 'Everyone for 10 Minutes' falls back to Contacts Only after 10 minutes;" >&2
+  echo "    select it again right before sending." >&2
   echo "  - the BLE wake needs the PC's bluetooth on; without python3-dbus/python3-gi" >&2
   echo "    it is skipped. Raise the browse time with -t if it is slow to appear." >&2
   exit 1
