@@ -374,6 +374,11 @@ Verbindungsschicht.
 Verbindung auf und überträgt; am iPad „Annehmen“ tippen. Bedingungen wie
 immer: AirDrop „Für alle“, entsperrt, Teilen-Menü offen.
 
+Ergebnis (2026-10-23, C5): Senden an ein iPad erfolgreich über `espdrop send`,
+ohne `awdl0`/root/Firewall. `ip` danach: `tcp: opened=1 to_host=1137
+from_host=146499 err=0` (eine Verbindung, ~146 KB Datei hin, ~1,1 KB HTTP
+zurück), `learned=126`, `heap=74240` in der IP-Betriebsart.
+
 Tests ohne Hardware: Zum simulierten ESP kommt ein TCP-überbrückender
 (`TcpBridgeDevice`), der Verbindungen an einen echten, auf `127.0.0.1`
 laufenden OpenDrop-Empfänger (`loopback_receiver.py`) weiterreicht. Der Test
