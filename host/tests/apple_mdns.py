@@ -79,7 +79,7 @@ def _nsec(owner, types):
     return f
 
 
-def response(kind="small", pad_id=PAD_ID, flags="111611", ttl_ptr=4500):
+def response(kind="small", pad_id=PAD_ID, flags="111611", ttl_ptr=4500, port=8770):
     """kind: 'small' (PTR answer + TXT/SRV/AAAA/NSEC additionals), 'full' (the big
     announcement), 'goodbye' (PTR with TTL 0), 'other' (no AirDrop at all)."""
     ad = f"{pad_id}._airdrop._tcp.local."
@@ -88,7 +88,7 @@ def response(kind="small", pad_id=PAD_ID, flags="111611", ttl_ptr=4500):
     if kind == "small":
         ans = [("_airdrop._tcp.local.", 12, False, ttl_ptr, _name(ad))]
         add = [(ad, 16, True, 4500, _txt(f"flags={flags}")),
-               (ad, 33, True, 120, _srv(8770)),
+               (ad, 33, True, 120, _srv(port)),
                (HOST, 28, True, 120, _aaaa),
                (ad, 47, True, 4500, _nsec(ad, [16, 33])),
                (HOST, 47, True, 120, _nsec(HOST, [28]))]
@@ -101,7 +101,7 @@ def response(kind="small", pad_id=PAD_ID, flags="111611", ttl_ptr=4500):
                 _name("_applicationServicePairing._tcp.local.")),
                ("_applicationServicePairing._tcp.local.", 12, False, 4500, _name(asp)),
                (HOST, 28, True, 120, _aaaa),
-               (ad, 33, True, 120, _srv(8770)),
+               (ad, 33, True, 120, _srv(port)),
                (asp, 33, True, 120, _srv(49842))]
         add = [(ad, 47, True, 4500, _nsec(ad, [16, 33])),
                (asp, 47, True, 4500, _nsec(asp, [16, 33])),

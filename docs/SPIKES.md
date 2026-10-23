@@ -358,6 +358,32 @@ Tests ohne Hardware (simulierter ESP mit iPad-Antworten):
 ~/opendrop-venv/bin/python -m unittest discover -s host/tests
 ```
 
+## M4.3: senden über den ESP (`espdrop send`)
+
+Senden läuft jetzt auch über den eigenen IP-Stack des ESP, ohne `awdl0`.
+Die Host-App baut über den ESP eine TCP-Verbindung zum iPhone/iPad auf
+(Socket-Proxy mit Kreditsteuerung) und fährt darauf das gepatchte OpenDrop
+(TLS, `/Discover`, `/Ask`, `/Upload`) unverändert, nur mit ausgetauschter
+Verbindungsschicht.
+
+```sh
+~/opendrop-venv/bin/python tools/espdrop.py send foto.jpg
+~/opendrop-venv/bin/python tools/espdrop.py send -r "Annas iPhone" -n MeinPC a.pdf b.png
+```
+`send` startet das BLE-Wecksignal des ESP, sucht den Empfänger, baut die
+Verbindung auf und überträgt; am iPad „Annehmen“ tippen. Bedingungen wie
+immer: AirDrop „Für alle“, entsperrt, Teilen-Menü offen.
+
+Tests ohne Hardware: Zum simulierten ESP kommt ein TCP-überbrückender
+(`TcpBridgeDevice`), der Verbindungen an einen echten, auf `127.0.0.1`
+laufenden OpenDrop-Empfänger (`loopback_receiver.py`) weiterreicht. Der Test
+`EndToEndTest.test_send_arrives` sendet so eine Datei komplett durch Proxy,
+Kredite, TLS, `/Discover`, `/Ask` und `/Upload` und prüft, dass sie ankommt
+(läuft im Container, wo IPv6 fehlt, weil der Proxy intern IPv4-Loopback nutzt).
+```sh
+~/opendrop-venv/bin/python -m unittest discover -s host/tests
+```
+
 ## Danach
 
 Ergebnisse (auch Fehlschläge) in `docs/UEBERBLICK.md` unter „Offene Fragen"

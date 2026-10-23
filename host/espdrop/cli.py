@@ -11,6 +11,7 @@
 # Copyright (C) 2026  EspDrop contributors
 
 import argparse
+import os
 import sys
 import time
 
@@ -94,6 +95,49 @@ def cmd_find(args, transport=None):
         dev.close()
 
 
+def cmd_send(args, transport=None):
+    from .airdrop import find_receiver, send_files
+    for f in args.file:
+        if not os.path.isfile(f):
+            print(f"error: no such file: {f}", file=sys.stderr)
+            return 1
+    dev = _open(args, transport)
+    woke = False
+    try:
+        h = _hello(dev)
+        if not args.no_wake and h["caps"] & link.CAP_BLE:
+            secs = min(600, int(args.time) + 120)   # also covers Accept and the upload
+            reply = dev.cmd(f"wake {secs}")
+            woke = reply.startswith("wake on")
+            print(f"BLE wake from the ESP: {reply}", flush=True)
+        elif not args.no_wake:
+            print("no Bluetooth wake in this firmware: wake the target otherwise", flush=True)
+
+        def packet(src, mcast, what):
+            print(f"  mdns   {src or '-'}: {what}", flush=True)
+
+        print(f"looking for {args.receiver or 'a receiver'} "
+              f"(target: AirDrop Everyone, unlocked, share sheet OPEN) ...", flush=True)
+        r = find_receiver(dev, timeout=args.time, want=args.receiver,
+                          on_packet=packet if args.verbose else None)
+        if r is None:
+            print("no AirDrop receiver found; `espdrop find -v` shows what the browse saw",
+                  file=sys.stderr)
+            return 1
+        print(f"sending {len(args.file)} file(s) to {r.id} [{r.parsed_addresses()[0]}]:{r.port} "
+              f"... (tap Accept on the device)", flush=True)
+        rc = send_files(dev, r, args.file, name=args.name)
+        print("sent." if rc == 0 else "send failed.", flush=True)
+        return rc
+    finally:
+        if woke:
+            try:
+                dev.cmd("wake off")
+            except DeviceError:
+                pass
+        dev.close()
+
+
 def cmd_status(args, transport=None):
     dev = _open(args, transport)
     try:
@@ -126,6 +170,15 @@ def main(argv=None, transport=None):
     f.add_argument("-t", "--time", type=float, default=30.0, help="seconds to browse")
     f.add_argument("--no-wake", action="store_true", help="do not send the BLE wake")
     f.add_argument("-v", "--verbose", action="store_true", help="show every AirDrop mDNS message")
+    f.set_defaults(name="EspDrop")
+    s = sub.add_parser("send", help="send files to an AirDrop receiver")
+    s.add_argument("file", nargs="+")
+    s.add_argument("-r", "--receiver", help="receiver id or host name (default: the first found)")
+    s.add_argument("-n", "--name", default="EspDrop", help="sender name shown on the device")
+    s.add_argument("-t", "--time", type=float, default=30.0, help="seconds to look for the receiver")
+    s.add_argument("--no-wake", action="store_true", help="do not send the BLE wake")
+    s.add_argument("-v", "--verbose", action="store_true")
+
     sub.add_parser("status", help="device, interface and counters")
     c = sub.add_parser("cmd", help="send one device command")
     c.add_argument("text", nargs="+")
@@ -133,7 +186,7 @@ def main(argv=None, transport=None):
     c.add_argument("--wait", type=float, default=12.0, help="ping6: seconds to show replies")
     c.set_defaults(verbose=True)
     args = ap.parse_args(argv)
-    handlers = {"find": cmd_find, "status": cmd_status, "cmd": cmd_cmd}
+    handlers = {"find": cmd_find, "send": cmd_send, "status": cmd_status, "cmd": cmd_cmd}
     try:
         return handlers[args.action](args, transport)
     except (DeviceError, OSError) as e:

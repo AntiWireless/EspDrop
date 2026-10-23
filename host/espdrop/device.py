@@ -10,6 +10,7 @@
 import threading
 
 from . import link
+from .proxy import Manager
 
 
 class DeviceError(Exception):
@@ -30,6 +31,7 @@ class Device:
         self._results = {}                  # (request type, id) -> err, for waiters
         self._result_cond = threading.Condition()
         self._udp = {}                      # port -> handler(src16, sport, multicast, data)
+        self.tcp = Manager(self)            # proxied TCP connections
         self._stop = threading.Event()
         self.error = None                   # set if the reader thread died
         self._reader = threading.Thread(target=self._read_loop, name="espdrop-link",
@@ -74,6 +76,9 @@ class Device:
                 handler = self._udp.get(u[0])
                 if handler:
                     handler(*u[1:])
+        elif t in (link.MSG_TCP_OPENED, link.MSG_TCP_DATA, link.MSG_TCP_CREDIT,
+                   link.MSG_TCP_CLOSE):
+            self.tcp.dispatch(t, p)
         elif t == link.MSG_RESULT:
             r = link.parse_result(p)
             if r:
@@ -145,7 +150,17 @@ class Device:
         self._udp.pop(port, None)
         self._write(link.udp_close(port))
 
+    # ---- used by proxy.py --------------------------------------------------
+
+    def _send(self, framed: bytes):
+        """Write one already-framed message (proxy TCP_* traffic)."""
+        self._write(framed)
+
+    def _conn_gone(self, cid):
+        self.tcp.forget(cid)
+
     def close(self):
+        self.tcp.close_all()
         self._stop.set()
         self._reader.join(timeout=1.0)
         self.port.close()

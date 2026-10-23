@@ -198,3 +198,40 @@ class CliTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EndToEndTest(unittest.TestCase):
+    """espdrop send all the way to a real patched-OpenDrop receiver on loopback,
+    bridged by the fake device. Exercises the proxy, credits, TLS, /Discover,
+    /Ask and /Upload. Needs OpenDrop (the venv built by opendrop_install.sh)."""
+
+    def test_send_arrives(self):
+        import tempfile
+        from loopback_receiver import LoopbackReceiver
+        from fake_device import TcpBridgeDevice
+
+        payload = b"EspDrop end-to-end test payload \x00\x01\x02" * 400   # ~13 KB
+        with tempfile.TemporaryDirectory() as src_dir, tempfile.TemporaryDirectory() as dl_dir:
+            src = os.path.join(src_dir, "hello.bin")
+            with open(src, "wb") as f:
+                f.write(payload)
+            rx = LoopbackReceiver()
+            port = rx.start()
+            cwd = os.getcwd()
+            os.chdir(dl_dir)   # the receiver extracts into cwd
+            try:
+                fake = TcpBridgeDevice(target=("127.0.0.1", port), mdns_port=port,
+                                       answers={1: ["small"]})
+                rc = cli.main(["send", "-t", "3", "--no-wake", src], transport=fake)
+            finally:
+                os.chdir(cwd)
+                rx.stop()
+            self.assertEqual(rc, 0, "send should report success")
+            # The receiver wrote the file (name or content) somewhere under dl_dir.
+            got = None
+            for root, _dirs, files in os.walk(dl_dir):
+                for fn in files:
+                    with open(os.path.join(root, fn), "rb") as f:
+                        if f.read() == payload:
+                            got = fn
+            self.assertIsNotNone(got, f"the payload did not arrive in {dl_dir}")
