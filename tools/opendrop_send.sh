@@ -12,19 +12,26 @@
 # sheet and LEAVE IT OPEN: it keeps the device's AWDL awake. With the sheet
 # closed it never advertises a receiver, BLE wake or not; airdrop-mt7921's
 # working sends (FINDINGS §27, §37) had the sheet open plus the BLE wake. This
-# script broadcasts that wake (tools/airdrop_wake.py), browses for the receiver
-# on awdl0, and sends. The device shows an Accept prompt; tap Accept.
+# script broadcasts that wake, browses for the receiver on awdl0, and sends.
+# The device shows an Accept prompt; tap Accept.
+#
+# The wake comes from the ESP's own Bluetooth when its firmware has it (bridge
+# `wake`, reached through the bridge's control socket), else from the PC's
+# Bluetooth (tools/airdrop_wake.py). --wake picks one explicitly.
 #
 # Options:  -n NAME    sender name shown on the iPhone (default: EspDrop)
 #           -i IFACE   interface (default: awdl0)
 #           -r RECV    receiver: its name, 12-hex id, or index (default: the
 #                      first one found this run)
 #           -t SECS    how long to browse for a receiver (default: 60)
-#           --no-wake  do not broadcast the BLE wake (if something else does)
+#           --wake=M   BLE wake from: auto (default: esp if it can, else pc),
+#                      esp, pc, or none (if something else broadcasts it)
+#           --no-wake  the same as --wake=none
 #           -h         this help
 # Environment: OPENDROP_VENV (default ~/opendrop-venv), ESPDROP_TLS_KEYLOG=FILE,
-#           ESPDROP_FIND_LOG (debug log of the browse, default ~/espdrop-find.log).
-# Contacts-only target: pass identifiers to the wake via
+#           ESPDROP_FIND_LOG (debug log of the browse, default ~/espdrop-find.log),
+#           ESPDROP_WAKE (default for --wake).
+# Contacts-only target: pass identifiers to the wake (either source) via
 #   ESPDROP_WAKE_ARGS="--appleid you@icloud.com" tools/opendrop_send.sh file
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -36,17 +43,18 @@ NAME=EspDrop
 IFACE=awdl0
 RECV=""
 BROWSE=60
-WAKE=1
+WAKE_MODE="${ESPDROP_WAKE:-auto}"
 VENV="${OPENDROP_VENV:-$HOME/opendrop-venv}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 usage() { awk 'NR > 1 { if (/^# SPDX/) exit; sub(/^# ?/, ""); print }' "$0"; }
 
-# getopts does not do long options; pull --no-wake out first.
+# getopts does not do long options; pull --wake/--no-wake out first.
 ARGS=()
 for a in "$@"; do
   case "$a" in
-    --no-wake) WAKE=0 ;;
+    --no-wake) WAKE_MODE=none ;;
+    --wake=*) WAKE_MODE="${a#--wake=}" ;;
     --help) usage; exit 0 ;;
     *) ARGS+=("$a") ;;
   esac
@@ -72,6 +80,7 @@ die() { echo "error: $*" >&2; exit 1; }
 [ -x "$VENV/bin/opendrop" ] || die "no OpenDrop in $VENV - run tools/opendrop_install.sh first"
 case "$NAME" in *"'"*|*'"'*) die "the name must not contain quotes (it goes into the TLS certificate)" ;; esac
 command -v ip >/dev/null || die "the 'ip' command (iproute2) is required"
+case "$BROWSE" in ''|*[!0-9]*) die "-t needs a number of seconds" ;; esac
 
 files=()
 for f in "$@"; do
@@ -86,10 +95,21 @@ usable_ll() {
 }
 [ -n "$(usable_ll)" ] || die "$IFACE has no usable link-local; is 'sudo tools/awdl_bridge.py /dev/ttyACM0' running?"
 
+# The ESP's wake goes through the bridge's control socket (tools/espdrop_cmd.py).
+esp_cmd() { "$HERE/espdrop_cmd.py" -i "$IFACE" "$@"; }
+# shellcheck disable=SC2086
+esp_wake() { esp_cmd ${ESPDROP_WAKE_ARGS:-} wake "$1" >/dev/null 2>&1; }
+case "$WAKE_MODE" in
+  auto) if esp_cmd wake >/dev/null 2>&1; then WAKE_MODE=esp; else WAKE_MODE=pc; fi ;;
+  esp|pc|none) ;;
+  *) die "--wake must be auto, esp, pc or none" ;;
+esac
+
 report="$HOME/.opendrop/discover.last.json"
 # Kept after the run (overwritten each time) so a failed browse can be read.
 findlog="${ESPDROP_FIND_LOG:-$HOME/espdrop-find.log}"
 wake_pid=""
+wake_esp=0
 find_pid=""
 # Ignore SIGPIPE so a closed stdout (| tee quit) cannot kill us mid-cleanup.
 trap '' PIPE
@@ -109,6 +129,8 @@ stop_find() {
 cleanup() {
   stop_find
   [ -n "$wake_pid" ] && kill "$wake_pid" 2>/dev/null
+  # The ESP's wake also stops by itself when its time is up.
+  [ "$wake_esp" -eq 1 ] && { esp_cmd wake off >/dev/null 2>&1; wake_esp=0; }
 }
 trap 'cleanup; exit 130' INT TERM HUP
 trap cleanup EXIT
@@ -125,14 +147,25 @@ env PYTHONUNBUFFERED=1 "$VENV/bin/opendrop" -n "$NAME" -d -i "$IFACE" find > "$f
 find_pid=$!
 sleep 2
 
-if [ "$WAKE" -eq 1 ]; then
-  echo "broadcasting the AirDrop BLE wake (device: AirDrop Everyone, unlocked, share sheet OPEN) ..."
-  # shellcheck disable=SC2086
-  "$HERE/airdrop_wake.py" ${ESPDROP_WAKE_ARGS:-} >/dev/null 2>&1 &
-  wake_pid=$!
-  sleep 1
-  kill -0 "$wake_pid" 2>/dev/null || { wake_pid=""; echo "warning: BLE wake did not start (python3-dbus / python3-gi installed, bluetooth on?); browsing anyway" >&2; }
-fi
+# Long enough for the browse; re-armed below for Accept and the upload.
+wake_secs=$((BROWSE + 60))
+[ "$wake_secs" -gt 600 ] && wake_secs=600
+case "$WAKE_MODE" in
+  esp)
+    echo "broadcasting the AirDrop BLE wake from the ESP (device: AirDrop Everyone, unlocked, share sheet OPEN) ..."
+    if esp_wake "$wake_secs"; then
+      wake_esp=1
+    else
+      echo "warning: the ESP did not start the BLE wake ($(esp_cmd wake 2>&1)); browsing anyway" >&2
+    fi ;;
+  pc)
+    echo "broadcasting the AirDrop BLE wake from the PC (device: AirDrop Everyone, unlocked, share sheet OPEN) ..."
+    # shellcheck disable=SC2086
+    "$HERE/airdrop_wake.py" ${ESPDROP_WAKE_ARGS:-} >/dev/null 2>&1 &
+    wake_pid=$!
+    sleep 1
+    kill -0 "$wake_pid" 2>/dev/null || { wake_pid=""; echo "warning: BLE wake did not start (python3-dbus / python3-gi installed, bluetooth on?); browsing anyway" >&2; } ;;
+esac
 
 # `opendrop find` never exits on its own; stop at the first receiver or timeout.
 recv_id=""
@@ -185,8 +218,9 @@ if [ -z "$recv_id" ] && [ -z "$RECV" ]; then
   echo "    in the bridge: auto=on and chan= the device's 5 GHz channel)." >&2
   echo "  - 'Everyone for 10 Minutes' falls back to Contacts Only after 10 minutes;" >&2
   echo "    select it again right before sending." >&2
-  echo "  - the BLE wake needs the PC's bluetooth on; without python3-dbus/python3-gi" >&2
-  echo "    it is skipped. Raise the browse time with -t if it is slow to appear." >&2
+  echo "  - the BLE wake (this run: $WAKE_MODE) comes from the ESP's Bluetooth (bridge" >&2
+  echo "    'wake') or the PC's (bluetooth on, python3-dbus/python3-gi); try the other" >&2
+  echo "    with --wake=pc / --wake=esp. Raise the browse time with -t if it is slow." >&2
   exit 1
 fi
 
@@ -194,6 +228,8 @@ target="${RECV:-$recv_id}"
 echo "sending to '${target}' ..."
 # send reads the receiver's address/port from $report, which find just wrote.
 [ -s "$report" ] || die "no discovery report at $report (find wrote nothing)"
+# Keep the ESP's wake up through the Accept prompt and the upload.
+[ "$wake_esp" -eq 1 ] && esp_wake 300
 env PYTHONUNBUFFERED=1 ${keylog[@]+"${keylog[@]}"} \
     "$VENV/bin/opendrop" -n "$NAME" -i "$IFACE" send -r "$target" "${files[@]}"
 rc=$?

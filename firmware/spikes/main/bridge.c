@@ -24,6 +24,7 @@
 
 #include "awdl_cobs.h"
 #include "awdl_app.h" /* awdl_app_resync_peers, for the `resync` command */
+#include "ble_wake.h" /* `wake`: the AirDrop wake over our own Bluetooth */
 #include "radio.h"    /* radio_get_stats, for the `radio` diagnostic command */
 
 #define BRIDGE_MAX_PAYLOAD 1600
@@ -339,6 +340,48 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		else
 			snprintf(out, sizeof(out), "seq %s",
 			         awdl_app_seq_mode() == AWDL_SEQ_VERBATIM ? "verbatim" : "mirror");
+		cmd_reply(out);
+	} else if (strcmp(cmd, "wake") == 0 || strncmp(cmd, "wake ", 5) == 0) {
+		/* AirDrop wake over our own Bluetooth (ble_wake.h): `wake` shows it,
+		 * `wake <secs> [16 hex digits]` advertises for secs seconds (restarts a
+		 * running one) with the four 2-byte contact hashes, `wake off` stops. */
+		const char *arg = cmd[4] == '\0' ? "" : cmd + 5;
+		if (!ble_wake_ready()) {
+			snprintf(out, sizeof(out), "wake unavailable (no Bluetooth in this "
+			         "firmware, or it is still starting)");
+		} else if (arg[0] == '\0') {
+			unsigned left = ble_wake_remaining();
+			if (left) snprintf(out, sizeof(out), "wake on %u s left", left);
+			else snprintf(out, sizeof(out), "wake off");
+		} else if (strcmp(arg, "off") == 0) {
+			int rc = ble_wake_stop();
+			if (rc) snprintf(out, sizeof(out), "wake error %d", rc);
+			else snprintf(out, sizeof(out), "wake off");
+		} else {
+			char *end;
+			long secs = strtol(arg, &end, 10);
+			while (*end == ' ') end++;
+			uint8_t h[8];
+			bool have_h = false, bad = end == arg || secs < 1 || secs > BLE_WAKE_MAX_SECS;
+			if (!bad && *end) {
+				bad = strlen(end) != 16;
+				for (int i = 0; !bad && i < 8; i++) {
+					char hx[3] = {end[2 * i], end[2 * i + 1], 0};
+					char *e2;
+					h[i] = (uint8_t)strtoul(hx, &e2, 16);
+					bad = *e2 != '\0' || !hx[0] || !hx[1];
+				}
+				have_h = !bad;
+			}
+			if (bad) {
+				snprintf(out, sizeof(out), "wake: use `wake`, `wake off` or "
+				         "`wake <1..%d> [16 hex digits]`", BLE_WAKE_MAX_SECS);
+			} else {
+				int rc = ble_wake_start((unsigned)secs, have_h ? h : NULL);
+				if (rc) snprintf(out, sizeof(out), "wake error %d", rc);
+				else snprintf(out, sizeof(out), "wake on %u s left", ble_wake_remaining());
+			}
+		}
 		cmd_reply(out);
 	} else if (strcmp(cmd, "checks") == 0) {
 		/* Bring-up checks on a new chip: is the frame length right (FCS where

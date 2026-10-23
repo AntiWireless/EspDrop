@@ -25,8 +25,8 @@ endif()
 message(STATUS "EspDrop: target '${IDF_TARGET}', USB-Serial/JTAG via '${ESPDROP_USJ_COMPONENT}' (IDF ${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR})")
 
 idf_component_register(
-    SRCS "app_main.c" "radio.c" "console.c" "awdl_app.c" "bridge.c"
+    SRCS "app_main.c" "radio.c" "console.c" "awdl_app.c" "bridge.c" "ble_wake.c"
     INCLUDE_DIRS "."
     REQUIRES awdl esp_wifi esp_event esp_netif nvs_flash console esp_timer esp_hw_support
-             ${ESPDROP_USJ_COMPONENT} ${ESPDROP_USJ_LL_COMPONENT}
+             bt ${ESPDROP_USJ_COMPONENT} ${ESPDROP_USJ_LL_COMPONENT}
 )

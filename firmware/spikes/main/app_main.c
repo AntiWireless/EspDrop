@@ -37,6 +37,7 @@ static uint8_t boot_channel(void) {
 
 #include "bridge.h"
 #include "awdl_app.h"
+#include "ble_wake.h"
 
 /* AWDL peer appeared/left -> tell the host so it can manage the awdl0 neighbour
  * table. Runs on the AWDL timing task, so it only enqueues (bridge_notify_peer
@@ -64,6 +65,13 @@ void app_main(void) {
 		ESP_LOGE("espdrop", "awdl_app_start failed");
 		return;
 	}
+
+	/* Bluetooth for the AirDrop wake (bridge `wake`): after Wi-Fi so the two
+	 * share the radio through coexistence, before bridge_start because the
+	 * controller logs at init. Without it the bridge works on, minus `wake`. */
+	err = ble_wake_init();
+	if (err != ESP_OK)
+		ESP_LOGW("espdrop", "no Bluetooth wake: 0x%x", err);
 
 	if (bridge_start() != 0) {
 		ESP_LOGE("espdrop", "bridge_start failed");

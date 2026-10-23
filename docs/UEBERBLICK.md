@@ -199,8 +199,9 @@ danach mit dem gepatchten OpenDrop eine Datei **empfangen**.
 
 **M3 – BLE-Wake auf dem ESP:** Datei an das iPhone **senden**. Stand 2026-10-23:
 Senden funktioniert mit dem BLE-Wecksignal vom Bluetooth des PCs
-(`tools/opendrop_send.sh`, siehe `docs/SPIKES.md`); das Wecksignal vom ESP selbst
-ist noch offen.
+(`tools/opendrop_send.sh`, siehe `docs/SPIKES.md`). Das Wecksignal vom ESP selbst
+(Bridge `wake`, NimBLE) ist gebaut und auf dem Host getestet, aber noch nicht
+auf der Hardware.
 
 **M4 – Windows (Option C):** lwIP + mDNS auf dem ESP, Socket-Proxy-Protokoll, Host-App
 (z. B. Python oder Rust) mit OpenDrop-Logik inkl. iOS-26-Patches.

@@ -196,20 +196,45 @@ Radarerkennung).
 Empfangen ist damit fertig. Für die Gegenrichtung muss das iPhone oder iPad als
 Empfänger über AWDL antworten. Das tut es nur, wenn sein AWDL wach ist (offenes
 Teilen-Menü) **und** ein Bluetooth-LE-Signal in der Nähe meldet, dass jemand
-senden will. Dieses BLE-Signal sendet der PC selbst; der C5 macht über `awdl0`
-unverändert weiter. (Nachgewiesen im Referenzprojekt airdrop-mt7921, FINDINGS
-§27 und §37: gleiche Verbindung, gleiches offenes Menü, gefunden nur mit BLE.)
+senden will. (Nachgewiesen im Referenzprojekt airdrop-mt7921, FINDINGS §27
+und §37: gleiche Verbindung, gleiches offenes Menü, gefunden nur mit BLE.)
 
-Voraussetzungen auf dem PC: Bluetooth an (`bluetoothctl power on`) und die
-Pakete `python3-dbus` und `python3-gi` (Fedora: `python3-dbus python3-gobject`).
+Das Wecksignal kommt vom Bluetooth des ESP selbst (Bridge-Firmware, Befehl
+`wake`) oder vom Bluetooth des PCs (`tools/airdrop_wake.py`, braucht
+`python3-dbus` und `python3-gi`, Fedora: `python3-dbus python3-gobject`).
+`opendrop_send.sh` nimmt den ESP, wenn dessen Firmware Bluetooth hat, sonst den
+PC; `--wake=esp`, `--wake=pc` oder `--wake=none` wählt fest. Der ESP sendet
+genau dieselben Bytes wie das PC-Werkzeug, mit einer neuen zufälligen
+BLE-Adresse je Wecken und immer mit Ablaufzeit (höchstens 600 s), damit ein
+abgestürztes Skript keine Geräte in der Nähe dauerhaft weckt.
 
-1. Bridge wie beim Empfang starten; der C5 wählt den 5-GHz-Kanal automatisch.
+Bluetooth in der Bridge-Firmware: seit `sdkconfig.bridge.defaults` mit NimBLE
+(nur Broadcaster) und der großen App-Partition (1,5 MB, das Image hat auf dem
+C5 etwa 1,2 MB). ESP-IDF übernimmt neue Defaults nicht in ein schon
+vorhandenes `sdkconfig`, also den Build-Ordner einmal löschen:
+```sh
+rm -rf build_c5_bridge
+idf.py -B build_c5_bridge -DSDKCONFIG=build_c5_bridge/sdkconfig -DIDF_TARGET=esp32c5 \
+  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.bridge.defaults" -p /dev/ttyACM0 build flash
+```
+Im Bridge-Fenster zeigt `wake` dann `wake off` (ohne Bluetooth: `wake
+unavailable`). Bluetooth teilt sich das Funkteil mit Wi-Fi und braucht Heap:
+`stats` zeigt `rxq=` (Tiefe der Empfangs-Warteschlange, bisher 48) und `heap=`.
+
+Die Bridge stellt für Werkzeuge den Steuer-Socket `/run/espdrop/awdl0.sock`
+bereit (gehört dem Benutzer, der sie mit `sudo` gestartet hat).
+`tools/espdrop_cmd.py wake 60` / `tools/espdrop_cmd.py wake off` /
+`tools/espdrop_cmd.py node` schicken einen Befehl und zeigen die Antwort.
+
+1. Bridge wie beim Empfang starten (`sudo tools/awdl_bridge.py /dev/ttyACM0`
+   aus der eigenen Sitzung); der C5 wählt den 5-GHz-Kanal automatisch.
 2. Senden (als normaler User), eine oder mehrere Dateien:
    ```sh
    tools/opendrop_send.sh foto.jpg
    ```
-   Das Skript sendet das BLE-Wecksignal (`tools/airdrop_wake.py`), sucht den
-   Empfänger auf `awdl0` und überträgt dann.
+   Das Skript startet das BLE-Wecksignal, sucht den Empfänger auf `awdl0`,
+   hält das Signal für Annehmen und Übertragung aufrecht und schaltet es am
+   Ende ab.
 3. Am iPhone/iPad: AirDrop auf „Für alle für 10 Minuten“ (fällt nach 10 Minuten
    auf „Nur Kontakte“ zurück, also kurz vor dem Senden neu wählen), entsperrt,
    **Teilen-Menü öffnen und offen lassen** (es hält AWDL wach; bei geschlossenem
@@ -218,7 +243,8 @@ Pakete `python3-dbus` und `python3-gi` (Fedora: `python3-dbus python3-gobject`).
 
 Mehrere Apple-Geräte in Reichweite: mit `-r "Annas iPhone"` das Ziel am Namen
 wählen. „Nur Kontakte“ statt „Jeder“: Identifikator über
-`ESPDROP_WAKE_ARGS="--appleid du@icloud.com"` an das Wecksignal geben.
+`ESPDROP_WAKE_ARGS="--appleid du@icloud.com"` an das Wecksignal geben (gilt
+für beide Quellen; `--phone`, `--email`, `--email2` ebenso).
 
 Ergebnis (2026-10-23, C5-Bridge auf Kanal 44, BLE-Wecksignal vom PC): Senden an
 ein iPad funktioniert, die Datei wird übertragen. Ping vom PC zum iPad bekommt

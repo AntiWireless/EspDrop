@@ -26,7 +26,12 @@
 # are only logged. Suppressed with --no-config.
 #
 # Interactive stdin commands (forwarded to the device):
-#   mac | stats | radio | tx | node | chan [n|auto] | seq [mirror|verbatim] | checks | usbtest [kib] | ping | testframe | resync
+#   mac | stats | radio | tx | node | chan [n|auto] | seq [mirror|verbatim] | wake [secs|off] | checks | usbtest [kib] | ping | testframe | resync
+#
+# Control socket: other tools (tools/espdrop_cmd.py, opendrop_send.sh for the
+# Bluetooth wake) send device commands through /run/espdrop/<dev>.sock, one
+# command per connection, and get the reply line back. It belongs to the user
+# who ran sudo (mode 0600), so that user's scripts can use it and nobody else.
 #
 # Needs root: creating a TAP and running `ip link` both require CAP_NET_ADMIN.
 # The interface is not persistent - it disappears when this process exits.
@@ -39,6 +44,7 @@ import fcntl
 import os
 import re
 import select
+import signal
 import socket
 import struct
 import subprocess
@@ -56,6 +62,35 @@ IFF_NO_PI = 0x1000
 
 MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 MAX_LEARNED = 64     # neighbour entries kept; the oldest is dropped beyond that
+
+CTL_DIR = "/run/espdrop"
+# Device commands the control socket passes on (no usbtest: it floods the link).
+CTL_COMMANDS = {"wake", "mac", "stats", "radio", "tx", "node", "chan", "seq", "checks", "ping"}
+CTL_TIMEOUT = 3.0    # seconds to wait for the device's reply to a socket command
+
+
+def open_ctl(dev: str):
+    """Listening control socket /run/espdrop/<dev>.sock, or (None, None)."""
+    path = os.path.join(CTL_DIR, f"{dev}.sock")
+    try:
+        os.makedirs(CTL_DIR, mode=0o755, exist_ok=True)
+        try:
+            os.unlink(path)          # left over from a bridge that did not exit cleanly
+        except FileNotFoundError:
+            pass
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.bind(path)
+        os.chmod(path, 0o600)
+        uid, gid = os.environ.get("SUDO_UID"), os.environ.get("SUDO_GID")
+        if uid and uid.isdigit():
+            os.chown(path, int(uid), int(gid) if gid and gid.isdigit() else -1)
+        s.listen(4)
+        s.setblocking(False)
+        return s, path
+    except OSError as e:
+        print(f"warning: no control socket ({e}); tools cannot reach the device",
+              file=sys.stderr)
+        return None, None
 
 
 def open_tap(name: str) -> int:
@@ -161,11 +196,18 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
+    # kill / a closed terminal: leave like Ctrl-C, so the control socket goes too.
+    def _stop(*_):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGHUP, _stop)
+
     from_tap = 0  # host -> device frames read from awdl0
     to_tap = 0    # device -> host frames written to awdl0
     usb_fd = link.open_serial_raw(args.port)
     reader = link.Reader()
     tap_fd = None
+    ctl = ctl_path = None
 
     try:
         # Learn the device MAC (and drain boot chatter) before bringing the link up.
@@ -214,8 +256,12 @@ def main() -> int:
 
         print(f"{args.dev} up (mtu {args.mtu}, mac {mac or 'kernel-assigned'}); "
               f"bridging {args.port}")
-        print("commands: mac | stats | radio | tx | node | chan [n|auto] | seq [mirror|verbatim] | checks | usbtest [kib] | ping | testframe | resync"
+        print("commands: mac | stats | radio | tx | node | chan [n|auto] | seq [mirror|verbatim] | wake [secs|off] | checks | usbtest [kib] | ping | testframe | resync"
               "   (Ctrl-C to quit)")
+        ctl, ctl_path = open_ctl(args.dev)
+        # The one socket client whose command is with the device: its conn,
+        # partial input, whether the command went out, and when to give up.
+        ctl_client = None
 
         # The C3 keeps running across host sessions (its USB port does not reset
         # the chip), so peers it learned earlier would never be re-announced. Ask
@@ -242,11 +288,27 @@ def main() -> int:
         # Single-threaded select pump. Writes use a bounded 1s timeout so one
         # direction stalling on USB backpressure cannot block the other for long
         # (M2.1 traffic is light; a queued non-blocking design is for M2.3+).
+        def ctl_finish(text: str) -> None:
+            nonlocal ctl_client
+            try:
+                ctl_client["conn"].sendall(text.encode("utf-8", "replace") + b"\n")
+            except OSError:
+                pass
+            ctl_client["conn"].close()
+            ctl_client = None
+
         while True:
             watch = [usb_fd, tap_fd]
             if stdin_open:
                 watch.append(stdin_fd)
-            r, _, _ = select.select(watch, [], [], 0.25 if probe_ll else None)
+            if ctl is not None:
+                watch.append(ctl)
+            if ctl_client is not None and not ctl_client["sent"]:
+                watch.append(ctl_client["conn"])   # until its command line is in
+            r, _, _ = select.select(watch, [], [],
+                                    0.25 if probe_ll or ctl_client is not None else None)
+            if ctl_client is not None and time.monotonic() > ctl_client["deadline"]:
+                ctl_finish("error: no reply from the device")
             if probe_ll and time.monotonic() >= next_probe:
                 next_probe = time.monotonic() + (1.0 if hinted else 0.25)
                 ready_ll = usable_link_local(args.dev)
@@ -308,7 +370,12 @@ def main() -> int:
                         elif t == link.MSG_LOG:
                             print(f"[device] {p.decode('utf-8', 'replace')}")
                         elif t == link.MSG_CMD_REPLY:
-                            print(f"[reply] {p.decode('utf-8', 'replace')}")
+                            reply = p.decode('utf-8', 'replace')
+                            print(f"[reply] {reply}")
+                            # Unnumbered: the next reply after a socket command
+                            # is its answer (a command typed meanwhile can race).
+                            if ctl_client is not None and ctl_client["sent"]:
+                                ctl_finish(reply)
                         elif t == link.MSG_PEER_ADD and len(p) == 6:
                             print(f"[peer+] {mac_str(p)}")
                         elif t == link.MSG_PEER_REMOVE and len(p) == 6:
@@ -328,6 +395,44 @@ def main() -> int:
                         from_tap += 1
                     except (OSError, TimeoutError) as e:
                         print(f"usb write failed: {e}", file=sys.stderr)
+
+            if ctl is not None and ctl in r:
+                try:
+                    conn, _ = ctl.accept()
+                except OSError:
+                    conn = None
+                if conn is not None and ctl_client is not None:
+                    conn.sendall(b"error: busy, retry\n")
+                    conn.close()
+                elif conn is not None:
+                    conn.setblocking(False)
+                    ctl_client = {"conn": conn, "buf": b"", "sent": False,
+                                  "deadline": time.monotonic() + CTL_TIMEOUT}
+
+            if ctl_client is not None and not ctl_client["sent"] and ctl_client["conn"] in r:
+                try:
+                    chunk = ctl_client["conn"].recv(256)
+                except (BlockingIOError, InterruptedError):
+                    chunk = None
+                except OSError:
+                    chunk = b""
+                if chunk == b"":
+                    ctl_client["conn"].close()     # client gave up before sending
+                    ctl_client = None
+                elif chunk:
+                    ctl_client["buf"] += chunk
+                    if b"\n" in ctl_client["buf"] or len(ctl_client["buf"]) > 200:
+                        cmd = ctl_client["buf"].split(b"\n", 1)[0].strip()
+                        word = cmd.split(b" ", 1)[0].decode("ascii", "replace")
+                        if word not in CTL_COMMANDS:
+                            ctl_finish(f"error: {word!r} is not a socket command")
+                        else:
+                            print(f"[ctl] {cmd.decode('ascii', 'replace')}")
+                            try:
+                                link.write_all(usb_fd, link.frame(link.MSG_CMD, cmd))
+                                ctl_client["sent"] = True
+                            except (OSError, TimeoutError) as e:
+                                ctl_finish(f"error: command send failed: {e}")
 
             if stdin_open and stdin_fd in r:
                 try:
@@ -350,6 +455,12 @@ def main() -> int:
     except KeyboardInterrupt:
         print()
     finally:
+        if ctl is not None:
+            ctl.close()
+            try:
+                os.unlink(ctl_path)
+            except OSError:
+                pass
         if tap_fd is not None:
             os.close(tap_fd)  # removes the non-persistent interface
         os.close(usb_fd)

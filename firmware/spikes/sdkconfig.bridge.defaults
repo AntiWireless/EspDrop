@@ -15,3 +15,19 @@ CONFIG_IDF_TARGET="esp32c3"
 
 CONFIG_ESPDROP_BRIDGE_MODE=y
 CONFIG_ESP_CONSOLE_NONE=y
+
+# AirDrop wake over the chip's own Bluetooth LE (main/ble_wake.c, bridge
+# `wake`): NimBLE with only the broadcaster role it needs. Legacy advertising
+# (ble_gap_adv_start) is only built without the BLE 5 extended-advertising API.
+# Stack and controller push the image past the default 1 MB app partition,
+# hence the large single-app table (1.5 MB, fits the 2 MB flash setting).
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_SECURITY_ENABLE=n
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y

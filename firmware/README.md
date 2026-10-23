@@ -33,6 +33,11 @@ idf.py -B build_c5_bridge -DSDKCONFIG=build_c5_bridge/sdkconfig -DIDF_TARGET=esp
 
 `sdkconfig.defaults.esp32c5` is picked up automatically for the C5.
 
+The bridge firmware includes Bluetooth LE (NimBLE, for the AirDrop wake) and
+uses the large single-app partition table. ESP-IDF does not apply changed
+defaults to an existing `sdkconfig`, so after pulling such a change delete the
+build directory (e.g. `rm -rf build_c5_bridge`) before building again.
+
 ## Host unit test
 
 ```sh
