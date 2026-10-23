@@ -14,6 +14,7 @@ import ipaddress
 import logging
 import os
 import sys
+import time
 
 from . import env
 
@@ -36,7 +37,6 @@ def find_receiver(dev, timeout=30.0, want=None, on_packet=None):
 
     Returns the first complete receiver (or the one whose id/name matches
     `want`), or None. The caller sends the BLE wake."""
-    import time
     hit = {}
     done = __import__("threading").Event()
 
@@ -82,6 +82,13 @@ def _bind_client(client, dev, peer16, name=""):
     def init(self, *a, **kw):
         base_init(self, *a, **kw)
         self._create_connection = factory
+        connect = self.connect
+
+        def timed_connect():
+            t = time.monotonic()
+            connect()
+            logger.info("connected (TCP + TLS) in %.1f s", time.monotonic() - t)
+        self.connect = timed_connect          # http.client calls self.connect()
 
     odc.HTTPSConnectionAWDL.__init__ = init
     client._restore_conn_init = lambda: setattr(odc.HTTPSConnectionAWDL, "__init__", base_init)
@@ -94,16 +101,21 @@ def send_files(dev, receiver, files, name="EspDrop", timeout=60.0):
     config = AirDropConfig(computer_name=name, interface="awdl0")
     client = AirDropClient(config, (str(ipaddress.IPv6Address(peer16)), int(receiver.port)))
     _bind_client(client, dev, peer16, name=name)
+    size = sum(os.path.getsize(f) for f in files)
     try:
-        logger.info("Asking the receiver to accept ...")
+        t = time.monotonic()
+        logger.info("asking the receiver (tap Accept on the device) ...")
         if not client.send_ask(files):
             logger.warning("the receiver declined")
             return 1
-        logger.info("accepted; uploading ...")
+        logger.info("accepted after %.1f s; uploading %.2f MB ...", time.monotonic() - t, size / 1e6)
+        t = time.monotonic()
         if not client.send_upload(files, reask=lambda: client.send_ask(files)):
             logger.warning("the upload failed")
             return 1
-        logger.info("sent")
+        secs = time.monotonic() - t
+        logger.info("uploaded %.2f MB in %.1f s (%.2f MB/s)", size / 1e6, secs,
+                    size / 1e6 / max(secs, 1e-3))
         return 0
     finally:
         restore = getattr(client, "_restore_conn_init", None)

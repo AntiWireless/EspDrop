@@ -12,9 +12,10 @@
 #     Windows installer adds it) we make the same certificate with it before
 #     OpenDrop looks; otherwise OpenDrop calls openssl as before, so Linux is
 #     unchanged.
-# One OpenDrop habit also breaks on Windows: archive members are named
-# os.path.join(".", name), i.e. ".\name", and their files are read back
-# through libarchive's narrow-char paths (fix_archive_writer).
+# One OpenDrop habit also breaks on Windows: it builds the archive member names
+# and the /Ask FileBomPath with os.path.join(".", name), i.e. ".\name", and
+# reads the files back through libarchive's narrow-char paths
+# (fix_archive_writer, fix_ask_paths).
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026  EspDrop contributors
@@ -134,6 +135,7 @@ def load_opendrop():
                           f"{LIBARCHIVE_HINT}") from e
     if os.name == "nt":
         fix_archive_writer(opendrop.util.AbsArchiveWrite)
+        fix_ask_paths(opendrop.client.AirDropClient)
 
 
 def fix_archive_writer(cls):
@@ -142,27 +144,75 @@ def fix_archive_writer(cls):
     The original names the member os.path.join(".", name), which on Windows is
     ".\\name", and takes the file's data and metadata from libarchive's
     read_disk, whose narrow-char paths are in the ANSI code page there (a user
-    folder like C:\\Users\\Jörg breaks it). This one opens the file in Python and
-    writes the member itself: a regular file with its size and mtime, under the
-    name with "/". Idempotent."""
+    folder like C:\\Users\\Jörg breaks it). This one opens the file in Python
+    and writes the member itself, as read_disk would describe it: a regular file
+    with size, mtime, one link and an inode number (the cpio writer numbers
+    members 1, 2, ...), under the name with "/". Idempotent."""
     if getattr(cls.add_abs_file, "espdrop", False):
         return
+    from libarchive import ffi
+    from libarchive.entry import ArchiveEntry, FileType
+    lib = ffi.libarchive
+    lib.archive_entry_set_nlink.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    lib.archive_entry_set_nlink.restype = None
+    lib.archive_entry_set_ino64.argtypes = [ctypes.c_void_p, ctypes.c_int64]
+    lib.archive_entry_set_ino64.restype = None
 
     def add_abs_file(self, path, store_path):
         st = os.stat(path)
-
-        def chunks():
-            with open(path, "rb") as f:
-                while True:
-                    data = f.read(1 << 16)
-                    if not data:
-                        return
-                    yield data
-        self.add_file_from_memory(store_path.replace("\\", "/"), st.st_size, chunks(),
-                                  permission=0o644, mtime=int(st.st_mtime))
+        entry = ArchiveEntry(header_codec=self.header_codec,
+                             pathname=store_path.replace("\\", "/"), size=st.st_size,
+                             filetype=FileType.REGULAR_FILE, perm=0o644,
+                             mtime=int(st.st_mtime))
+        lib.archive_entry_set_nlink(entry._entry_p, 1)
+        lib.archive_entry_set_ino64(entry._entry_p, st.st_ino or 1)
+        ffi.write_header(self._pointer, entry._entry_p)
+        with open(path, "rb") as f:
+            while True:
+                data = f.read(1 << 16)
+                if not data:
+                    break
+                ffi.write_data(self._pointer, data, len(data))
+        ffi.write_finish_entry(self._pointer)
 
     add_abs_file.espdrop = True
     cls.add_abs_file = add_abs_file
+
+
+def fix_ask_paths(cls):
+    """Announce files as "./name" in /Ask (Windows).
+
+    send_ask sets FileBomPath to os.path.join(".", name), i.e. ".\\name" on
+    Windows, while the archive holds "./name" (fix_archive_writer), and the
+    receiver checks the upload against what /Ask announced (the likely reason an
+    iPad accepted such an /Ask and then reset the connection on the /Upload).
+    This rewrites the paths in the /Ask plist on its way out; everything else in
+    it stays as OpenDrop made it. Idempotent."""
+    if getattr(cls.send_POST, "espdrop", False):
+        return
+    base = cls.send_POST
+
+    def send_POST(self, url, body, *args, **kwargs):
+        if url == "/Ask" and isinstance(body, (bytes, bytearray)):
+            body = posix_bom_paths(body)
+        return base(self, url, body, *args, **kwargs)
+
+    send_POST.espdrop = True
+    cls.send_POST = send_POST
+
+
+def posix_bom_paths(ask_plist: bytes) -> bytes:
+    """An /Ask body with "\\" in its FileBomPath values made "/" (unchanged
+    bytes when there is none)."""
+    import plistlib
+    body = plistlib.loads(ask_plist)
+    changed = False
+    for f in body.get("Files") or []:
+        bom = f.get("FileBomPath") if isinstance(f, dict) else None
+        if isinstance(bom, str) and "\\" in bom:
+            f["FileBomPath"] = bom.replace("\\", "/")
+            changed = True
+    return plistlib.dumps(body, fmt=plistlib.FMT_BINARY) if changed else ask_plist
 
 
 # ---- TLS identity ----------------------------------------------------------

@@ -426,10 +426,12 @@ was Linux mitbringt; beides erledigt jetzt die Host-App (`host/espdrop/env.py`):
   ist offen; `espdrop check` probiert es aus. Sonst die DLL aus MSYS2
   (`host/README.md`).
 
-Dazu eine Windows-Eigenheit beim Senden: OpenDrop benennt Archiv-Einträge mit
-`os.path.join(".", name)`, unter Windows also `.\name`. Unter Windows schreibt
-die Host-App die Einträge deshalb selbst, mit `/` und den Dateidaten aus
-Python (gleicher Eintrag: normale Datei, Größe, Änderungszeit).
+Dazu eine Windows-Eigenheit beim Senden: OpenDrop baut den Namen der Datei im
+Archiv und `FileBomPath` in `/Ask` mit `os.path.join(".", name)`, unter Windows
+also `.\name`. Unter Windows schreibt die Host-App die Archiv-Einträge deshalb
+selbst (Name mit `/`, Dateidaten aus Python, Kopf wie bei OpenDrop unter Linux:
+normale Datei, Größe, Änderungszeit, ein Link, Inode 1) und setzt in `/Ask`
+ebenfalls `./name`.
 
 Installation ohne bash, git und openssl: `tools/opendrop_install.py` macht
 dasselbe wie `opendrop_install.sh` (OpenDrop 0.13.0 + 17 Patches aus
@@ -466,6 +468,13 @@ und mit pyserials Vorgabe (beide an) kommt DTR unter Windows nicht zuverlässig
 an. Die Host-App öffnet den Port unter Windows jetzt mit DTR und RTS aus (unter
 Linux unverändert). Danach den ESP einmal ab- und wieder anstecken.
 
+Zweiter Lauf: `find` fand das iPad, nach „Annehmen“ endete der Upload mit
+`[WinError 10054]` (Verbindung vom iPad zurückgesetzt). Ursache sehr
+wahrscheinlich: `/Ask` kündigte die Datei als `.\test.jpg` an, das Archiv
+enthielt `./test.jpg`. Beide heißen unter Windows jetzt `./name`. `send` zeigt
+jetzt die Zeiten der einzelnen Schritte (gefunden nach, verbunden in, angenommen
+nach, Upload-Rate); `-v` gibt ein Protokoll mit Millisekunden aus.
+
 Abgenommen, wenn `find`, `send` und `receive` unter Windows dasselbe tun wie
 unter Linux. Hilfreich bei Fehlern: die vollständige Ausgabe von
 `espdrop check` und des fehlgeschlagenen Befehls (ohne Gerätenamen und
@@ -475,10 +484,11 @@ Tests ohne Hardware (Linux, Container): `test_env.py` prüft Zertifikat
 (OpenDrop nimmt es an, ruft kein openssl auf), den Windows-Archivschreiber
 (Einträge `./name`, Inhalt; ein voller Sendevorgang damit bis in einen echten
 OpenDrop-Empfänger), die libarchive-Suche, `espdrop check`, pyserial-Timeouts
-den Port-Aufbau unter Windows (DTR/RTS aus) und den Patch-Anwender des Installers. Der Installer selbst lief im Container
+den Port-Aufbau unter Windows (DTR/RTS aus), die Pfade in `/Ask`, die
+Archiv-Köpfe und den Patch-Anwender des Installers. Der Installer selbst lief im Container
 komplett durch (frische venv, 17 Patches, alle Prüfsummen gleich,
 `check` ok); erneutes Ausführen erkennt die fertige Installation,
-eine mit `opendrop_install.sh` gebaute auch. Zusammen 32 Host-Tests.
+eine mit `opendrop_install.sh` gebaute auch. Zusammen 34 Host-Tests.
 
 ## Danach
 

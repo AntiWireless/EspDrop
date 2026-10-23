@@ -14,6 +14,7 @@
 # Copyright (C) 2026  EspDrop contributors
 
 import argparse
+import logging
 import os
 import sys
 import time
@@ -119,6 +120,7 @@ def cmd_send(args, transport=None):
         def packet(src, mcast, what):
             print(f"  mdns   {src or '-'}: {what}", flush=True)
 
+        t0 = time.monotonic()
         print(f"looking for {args.receiver or 'a receiver'} "
               f"(target: AirDrop Everyone, unlocked, share sheet OPEN) ...", flush=True)
         r = find_receiver(dev, timeout=args.time, want=args.receiver,
@@ -127,8 +129,8 @@ def cmd_send(args, transport=None):
             print("no AirDrop receiver found; `espdrop find -v` shows what the browse saw",
                   file=sys.stderr)
             return 1
-        print(f"sending {len(args.file)} file(s) to {r.id} [{r.parsed_addresses()[0]}]:{r.port} "
-              f"... (tap Accept on the device)", flush=True)
+        print(f"found {r.id} [{r.parsed_addresses()[0]}]:{r.port} after "
+              f"{time.monotonic() - t0:.1f} s; sending {len(args.file)} file(s)", flush=True)
         rc = send_files(dev, r, args.file, name=args.name)
         print("sent." if rc == 0 else "send failed.", flush=True)
         return rc
@@ -218,6 +220,7 @@ def main(argv=None, transport=None):
 
     rv = sub.add_parser("receive", help="receive files from an Apple device")
     rv.add_argument("-n", "--name", default="EspDrop", help="name shown on the sender")
+    rv.add_argument("-v", "--verbose", action="store_true", help="debug log with times")
 
     sub.add_parser("status", help="device, interface and counters")
     c = sub.add_parser("cmd", help="send one device command")
@@ -227,6 +230,14 @@ def main(argv=None, transport=None):
     c.set_defaults(verbose=True)
     sub.add_parser("check", help="is this PC ready: Python, pyserial, OpenDrop, libarchive, TLS")
     args = ap.parse_args(argv)
+    # Our steps (connect, accept, upload rate) at INFO; OpenDrop's own only from
+    # WARNING on, unless -v asks for everything, with milliseconds since start.
+    verbose = getattr(args, "verbose", False) and args.action != "cmd"
+    logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO, force=True,
+                        format="%(relativeCreated)8.0f ms %(name)s: %(message)s" if verbose
+                        else "%(message)s")
+    if not verbose:
+        logging.getLogger("opendrop").setLevel(logging.WARNING)
     handlers = {"find": cmd_find, "send": cmd_send, "receive": cmd_receive,
                 "status": cmd_status, "cmd": cmd_cmd, "check": cmd_check}
     try:

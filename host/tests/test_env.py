@@ -90,6 +90,77 @@ class ArchiveWriterTest(unittest.TestCase):
         self.assertEqual(got, [("./Bild 1.jpg", len(data), True, data)])
 
 
+def cpio_odc_header(blob):
+    """The first member's odc header fields and name."""
+    names = ("magic", "dev", "ino", "mode", "uid", "gid", "nlink", "rdev", "mtime",
+             "namesize", "filesize")
+    widths = (6, 6, 6, 6, 6, 6, 6, 6, 11, 6, 11)
+    h, off = {}, 0
+    for n, w in zip(names, widths):
+        h[n] = blob[off:off + w].decode()
+        off += w
+    h["name"] = blob[off:off + int(h["namesize"], 8) - 1].decode()
+    return h
+
+
+class ArchiveHeaderTest(unittest.TestCase):
+    """The Windows writer's member looks like the one OpenDrop's read_disk path
+    makes on Linux (the one iPads have accepted): same name, type and mode,
+    one link, inode numbered 1 - not 0/0 as a bare in-memory entry would be."""
+
+    def test_same_as_opendrop_on_linux(self):
+        env.load_opendrop()
+        import libarchive
+        from opendrop.util import AbsArchiveWrite
+
+        class Writer(AbsArchiveWrite):
+            pass
+        env.fix_archive_writer(Writer)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "test.jpg")
+            with open(path, "wb") as f:
+                f.write(os.urandom(5000))
+            heads = []
+            for cls, member in ((AbsArchiveWrite, "./test.jpg"), (Writer, ".\\test.jpg")):
+                out = io.BytesIO()
+                with libarchive.custom_writer(out.write, "cpio", archive_write_class=cls) as a:
+                    a.add_abs_file(path, member)
+                heads.append(cpio_odc_header(out.getvalue()))
+        ours, theirs = heads[1], heads[0]
+        for field in ("magic", "ino", "mode", "nlink", "rdev", "mtime", "filesize", "name"):
+            self.assertEqual(ours[field], theirs[field], field)
+        self.assertEqual((ours["name"], ours["nlink"], ours["ino"]), ("./test.jpg", "000001", "000001"))
+
+
+class AskPathTest(unittest.TestCase):
+    """fix_ask_paths (used on Windows): FileBomPath ".\\name" -> "./name" in /Ask."""
+
+    def ask(self, bom):
+        import plistlib
+        return plistlib.dumps({
+            "SenderComputerName": "EspDrop", "TransferID": {"id": "0000"},
+            "Files": [{"FileName": "a b.jpg", "FileBomPath": bom, "FileIsDirectory": False,
+                       "ConvertMediaFormats": 0}],
+            "FileIcon": b"\xff\xd8icon"}, fmt=plistlib.FMT_BINARY)
+
+    def test_rewrites_only_the_ask_paths(self):
+        class Client:
+            def __init__(self):
+                self.sent = []
+
+            def send_POST(self, url, body, headers=None):
+                self.sent.append((url, body))
+                return True, b""
+        env.fix_ask_paths(Client)
+        env.fix_ask_paths(Client)                         # idempotent
+        c = Client()
+        c.send_POST("/Ask", self.ask(".\\a b.jpg"))
+        c.send_POST("/Upload", b".\\raw", {"TotalBytes": "5"})
+        self.assertEqual(c.sent, [("/Ask", self.ask("./a b.jpg")), ("/Upload", b".\\raw")])
+        same = self.ask("./a b.jpg")
+        self.assertIs(env.posix_bom_paths(same), same)    # nothing to do: untouched bytes
+
+
 class FixedWriterEndToEndTest(test_host.EndToEndTest):
     """espdrop send with the Windows archive writer, received by real OpenDrop."""
 
