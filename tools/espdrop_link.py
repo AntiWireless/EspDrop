@@ -10,7 +10,7 @@
 # delimiter. COBS guarantees the body carries no 0x00, so the delimiter is
 # unambiguous and the stream resynchronises after any stray bytes.
 #
-# Stdlib only; no external dependencies.
+# Stdlib only; no external dependencies. POSIX only (termios).
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026  EspDrop contributors
@@ -23,115 +23,16 @@ import termios
 import time
 import tty
 
-# Message types - must match enum bridge_msg_type in firmware/spikes/main/bridge.h.
-MSG_ECHO        = 1   # host -> device: payload echoed back
-MSG_ECHO_REPLY  = 2   # device -> host: the echoed payload
-MSG_LOG         = 3   # device -> host: UTF-8 log text
-MSG_FRAME       = 4   # both: one Ethernet frame for awdl0
-MSG_PEER_ADD    = 5   # device -> host: 6-byte peer MAC appeared
-MSG_PEER_REMOVE = 6   # device -> host: 6-byte peer MAC gone
-MSG_CMD         = 7   # host -> device: command text
-MSG_CMD_REPLY   = 8   # device -> host: command output text
-MSG_HELLO       = 9   # host -> device: u8 version, u8 mode (0 L2, 1 IP), u32 credit
-MSG_HELLO_REPLY = 10  # device -> host: version, mode, mac[6], max_conns, max_chunk, caps
-
-PROTO_VERSION = 1     # BRIDGE_PROTO_VERSION
-MODE_L2 = 0           # frames to/from the host's awdl0 (this bridge)
-MODE_IP = 1           # the device's own IPv6 stack (M4 host app)
-
-
-def hello(mode: int, credit: int = 0) -> bytes:
-    """A HELLO message (docs/M4_ENTWURF.md, section 4)."""
-    return frame(MSG_HELLO, struct.pack("<BBI", PROTO_VERSION, mode, credit))
-
-
-def parse_hello_reply(p: bytes):
-    """dict from a HELLO_REPLY payload, or None if it is too short."""
-    if len(p) < 12:
-        return None
-    ver, mode = p[0], p[1]
-    max_conns, max_chunk, caps = struct.unpack_from("<BHB", p, 8)
-    return {"version": ver, "mode": mode, "mac": ":".join(f"{b:02x}" for b in p[2:8]),
-            "max_conns": max_conns, "max_chunk": max_chunk, "caps": caps}
-
-
-def cobs_encode(data: bytes) -> bytes:
-    out = bytearray()
-    code_i = len(out)
-    out.append(0)  # placeholder for the first code byte
-    code = 1
-    for b in data:
-        if b == 0:
-            out[code_i] = code
-            code_i = len(out)
-            out.append(0)
-            code = 1
-        else:
-            out.append(b)
-            code += 1
-            if code == 0xFF:
-                out[code_i] = code
-                code_i = len(out)
-                out.append(0)
-                code = 1
-    out[code_i] = code
-    return bytes(out)
-
-
-def cobs_decode(data: bytes) -> bytes:
-    out = bytearray()
-    i = 0
-    n = len(data)
-    while i < n:
-        code = data[i]
-        i += 1
-        if code == 0:
-            raise ValueError("zero byte inside frame")
-        for _ in range(code - 1):
-            if i >= n:
-                raise ValueError("truncated")
-            out.append(data[i])
-            i += 1
-        if code != 0xFF and i < n:
-            out.append(0)
-    return bytes(out)
-
-
-def frame(msg_type: int, payload: bytes = b"") -> bytes:
-    """Encode one message to its on-the-wire bytes (COBS body + 0x00 delimiter)."""
-    return cobs_encode(bytes([msg_type]) + payload) + b"\x00"
-
-
-class Reader:
-    """Accumulates bytes; feed() returns completed (type, payload) frames.
-
-    feed() consumes the whole chunk and returns a list (it must NOT be a
-    generator): callers break out of their read loop as soon as they see the
-    frame they want, and a suspended generator would (a) never run a buffer
-    reset placed after a yield, so every later frame would decode merged onto
-    the previous ones, and (b) drop any bytes after the delimiter in the
-    current chunk. Returning a list keeps self.buf correct no matter when the
-    caller stops reading.
-    """
-    def __init__(self):
-        self.buf = bytearray()
-
-    def feed(self, data: bytes):
-        frames = []
-        for b in data:
-            if b == 0:
-                if self.buf:
-                    frame_bytes = bytes(self.buf)
-                    self.buf = bytearray()  # reset BEFORE handing the frame out
-                    try:
-                        dec = cobs_decode(frame_bytes)
-                        if dec:
-                            frames.append((dec[0], dec[1:]))
-                    except ValueError:
-                        pass
-            else:
-                self.buf.append(b)
-        return frames
+# Framing and message formats live in host/espdrop/link.py (shared with the M4
+# host app, which must also run on Windows); this module adds the POSIX serial
+# helpers the Linux tools use.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "host"))
+from espdrop.link import (  # noqa: E402  (path set up just above)
+    CAP_BLE, CAP_IP, MODE_IP, MODE_L2, MSG_CMD, MSG_CMD_REPLY, MSG_ECHO,
+    MSG_ECHO_REPLY, MSG_FRAME, MSG_HELLO, MSG_HELLO_REPLY, MSG_LOG, MSG_PEER_ADD,
+    MSG_PEER_REMOVE, PROTO_VERSION, Reader, cobs_decode, cobs_encode, frame, hello,
+    parse_hello_reply,
+)
 
 
 def open_serial_raw(port: str) -> int:

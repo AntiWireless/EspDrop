@@ -209,6 +209,8 @@ int awdl_netif_set_up(const uint8_t mac[6], bool up) {
 
 bool awdl_netif_is_up(void) { return s_up; }
 
+struct netif *awdl_netif_get(void) { return s_created ? &s_nif : NULL; }
+
 /* ---- receive (Wi-Fi task) ---------------------------------------------- */
 
 void awdl_netif_input(const uint8_t dst[6], const uint8_t src[6], uint16_t ethertype,

@@ -26,6 +26,7 @@
 #include "awdl_app.h" /* awdl_app_resync_peers, for the `resync` command */
 #include "ble_wake.h" /* `wake`: the AirDrop wake over our own Bluetooth */
 #include "awdl_netif.h" /* IP mode: the AWDL link as an lwIP interface */
+#include "sockproxy.h"  /* IP mode: host sockets on that interface */
 #include "radio.h"    /* radio_get_stats, for the `radio` diagnostic command */
 
 #define BRIDGE_MAX_PAYLOAD 1600
@@ -63,7 +64,14 @@ typedef struct {
 } peer_evt_t;
 
 static SemaphoreHandle_t s_tx_lock;
-static QueueHandle_t     s_rx_fwd_q;   /* rx_frame_t: Wi-Fi task -> fwd task */
+/* rx_frame_t: Wi-Fi task -> fwd task. Exists only in L2 mode: in IP mode its
+ * ~60 KB go back to the heap for lwIP. The fwd task alone deletes it (it may be
+ * waiting on it); s_l2q_lock keeps the Wi-Fi task out of a queue being freed. */
+static QueueHandle_t     s_rx_fwd_q;
+static SemaphoreHandle_t s_l2q_lock;
+static SemaphoreHandle_t s_l2q_freed;   /* given by the fwd task after a release */
+static volatile bool     s_l2q_release; /* asks the fwd task to free the queue */
+static TaskHandle_t      s_fwd_task;
 static QueueHandle_t     s_peer_q;     /* peer_evt_t: AWDL task -> peer task */
 static uint8_t           s_rx_q_depth; /* depth actually allocated */
 static bool s_started;
@@ -109,6 +117,9 @@ static void send_test_frame(void) {
 /* Current mode (enum bridge_mode). Read by the Wi-Fi task for every frame. */
 static volatile uint8_t s_mode = BRIDGE_MODE_L2;
 
+static bool l2q_alloc(void);
+static void l2q_release(void);
+
 /* Switch L2 <-> IP. Into IP: bring the interface up first, then route frames to
  * it. Out of IP: route frames to the host first, then take it down. */
 static int set_mode(uint8_t mode) {
@@ -118,8 +129,11 @@ static int set_mode(uint8_t mode) {
 	if (mode == BRIDGE_MODE_IP) {
 		if (awdl_netif_set_up(mac, true) != 0) return -1;
 		s_mode = BRIDGE_MODE_IP;
+		l2q_release();   /* its memory is lwIP's now */
 	} else {
+		if (!l2q_alloc()) return -1;   /* the host's awdl0 needs it */
 		s_mode = BRIDGE_MODE_L2;
+		sockproxy_reset();
 		if (awdl_netif_is_up()) awdl_netif_set_up(mac, false);
 	}
 	return 0;
@@ -154,8 +168,44 @@ void bridge_rx_frame(const uint8_t dst[6], const uint8_t src[6], uint16_t ethert
 	scratch.eth[13] = (uint8_t)(ethertype & 0xff);
 	if (plen) memcpy(scratch.eth + 14, payload, plen);
 	scratch.len = (uint16_t)(14 + plen);
-	if (xQueueSend(s_rx_fwd_q, &scratch, 0) != pdTRUE)
+	/* Never wait: the lock is only held around a mode switch. */
+	if (xSemaphoreTake(s_l2q_lock, 0) != pdTRUE) { s_rx_drops++; return; }
+	if (s_rx_fwd_q && xQueueSend(s_rx_fwd_q, &scratch, 0) != pdTRUE)
 		s_rx_drops++; /* host not keeping up: drop rather than stall Wi-Fi */
+	xSemaphoreGive(s_l2q_lock);
+}
+
+/* Create the L2 RX queue, as deep as the heap allows with BRIDGE_HEAP_RESERVE
+ * left over (the smallest depth is always tried). No-op if it exists. */
+static bool l2q_alloc(void) {
+	if (s_rx_fwd_q) return true;
+	QueueHandle_t q = NULL;
+	uint8_t depth = 0;
+	for (size_t i = 0; i < sizeof(k_rx_q_depths) && !q; i++) {
+		size_t need = (size_t)k_rx_q_depths[i] * sizeof(rx_frame_t);
+		bool last = (i + 1 == sizeof(k_rx_q_depths));
+		if (!last && esp_get_free_heap_size() < need + BRIDGE_HEAP_RESERVE)
+			continue;   /* keep headroom for Wi-Fi */
+		q = xQueueCreate(k_rx_q_depths[i], sizeof(rx_frame_t));
+		if (q) depth = k_rx_q_depths[i];
+	}
+	if (!q) return false;
+	xSemaphoreTake(s_l2q_lock, portMAX_DELAY);
+	s_rx_fwd_q = q;
+	s_rx_q_depth = depth;
+	xSemaphoreGive(s_l2q_lock);
+	if (s_fwd_task) xTaskNotifyGive(s_fwd_task);
+	return true;
+}
+
+/* Hand the L2 RX queue's memory back (IP mode). The fwd task frees it within
+ * one receive timeout; returns once it has, or after 1 s. */
+static void l2q_release(void) {
+	if (!s_rx_fwd_q) return;
+	xSemaphoreTake(s_l2q_freed, 0);   /* drop a give left over from a timeout */
+	s_l2q_release = true;
+	if (s_fwd_task) xTaskNotifyGive(s_fwd_task);
+	xSemaphoreTake(s_l2q_freed, pdMS_TO_TICKS(1000));
 }
 
 /* Drain the RX-forward queue to the host. A dedicated task so the (bounded but
@@ -164,7 +214,22 @@ static void bridge_fwd_task(void *arg) {
 	(void)arg;
 	static rx_frame_t fr;
 	for (;;) {
-		if (xQueueReceive(s_rx_fwd_q, &fr, portMAX_DELAY) == pdTRUE) {
+		if (s_l2q_release) {
+			xSemaphoreTake(s_l2q_lock, portMAX_DELAY);
+			if (s_rx_fwd_q) vQueueDelete(s_rx_fwd_q);   /* frames still in it are dropped */
+			s_rx_fwd_q = NULL;
+			s_rx_q_depth = 0;
+			xSemaphoreGive(s_l2q_lock);
+			s_l2q_release = false;
+			xSemaphoreGive(s_l2q_freed);
+		}
+		QueueHandle_t q = s_rx_fwd_q;   /* only this task deletes it */
+		if (!q) {
+			ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));   /* IP mode: nothing to do */
+			continue;
+		}
+		/* A timeout, not forever, so a release request is seen promptly. */
+		if (xQueueReceive(q, &fr, pdMS_TO_TICKS(50)) == pdTRUE) {
 			if (bridge_send(BRIDGE_MSG_FRAME, fr.eth, fr.len) == 0) {
 				s_frames_to_host++;
 				s_bytes_to_host += fr.len;
@@ -440,7 +505,12 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 		int o = snprintf(ibuf, sizeof(ibuf), "ip mode=%s ",
 		                 s_mode == BRIDGE_MODE_IP ? "ip" : "l2");
 		if (o > 0 && (size_t)o < sizeof(ibuf))
-			awdl_netif_format_status(ibuf + o, sizeof(ibuf) - (size_t)o);
+			o += awdl_netif_format_status(ibuf + o, sizeof(ibuf) - (size_t)o);
+		if (o > 0 && (size_t)o + 2 < sizeof(ibuf)) {
+			ibuf[o++] = ' ';
+			ibuf[o] = '\0';
+			sockproxy_format_status(ibuf + o, sizeof(ibuf) - (size_t)o);
+		}
 		cmd_reply(ibuf);
 	} else if (strncmp(cmd, "ping6 ", 6) == 0) {
 		/* `ping6 <addr> [count]`: ICMPv6 echo from the device's own stack (IP
@@ -546,7 +616,13 @@ static void handle_msg(const uint8_t *msg, size_t len) {
 			set_mode(payload[1]);
 		else
 			set_mode(BRIDGE_MODE_L2);
+		sockproxy_reset();   /* a new host session starts with no sockets */
 		send_hello_reply();
+		break;
+	case BRIDGE_MSG_UDP_OPEN:
+	case BRIDGE_MSG_UDP_SEND:
+	case BRIDGE_MSG_UDP_CLOSE:
+		sockproxy_handle(type, payload, plen);
 		break;
 	/* PEER_* are device->host only (see bridge_notify_peer). */
 	default:
@@ -590,14 +666,9 @@ int bridge_start(void) {
 		return e;
 	}
 
-	for (size_t i = 0; i < sizeof(k_rx_q_depths) && !s_rx_fwd_q; i++) {
-		size_t need = (size_t)k_rx_q_depths[i] * sizeof(rx_frame_t);
-		bool last = (i + 1 == sizeof(k_rx_q_depths));
-		if (!last && esp_get_free_heap_size() < need + BRIDGE_HEAP_RESERVE)
-			continue;   /* keep headroom for Wi-Fi; the smallest depth is always tried */
-		s_rx_fwd_q = xQueueCreate(k_rx_q_depths[i], sizeof(rx_frame_t));
-		if (s_rx_fwd_q) s_rx_q_depth = k_rx_q_depths[i];
-	}
+	s_l2q_lock = xSemaphoreCreateMutex();
+	s_l2q_freed = xSemaphoreCreateBinary();
+	if (s_l2q_lock && s_l2q_freed) l2q_alloc();   /* L2 after boot */
 	s_peer_q   = xQueueCreate(BRIDGE_PEER_Q_LEN, sizeof(peer_evt_t));
 	if (!s_rx_fwd_q || !s_peer_q) {
 		if (s_rx_fwd_q) vQueueDelete(s_rx_fwd_q);
@@ -635,7 +706,7 @@ int bridge_start(void) {
 	}
 	/* The forwarding task is best-effort: if it fails to start, RX frames are
 	 * dropped (queue fills) but the control link stays up, so do not fail. */
-	if (xTaskCreate(bridge_fwd_task, "bridge_fwd", 3072, NULL, 5, NULL) != pdPASS)
+	if (xTaskCreate(bridge_fwd_task, "bridge_fwd", 3072, NULL, 5, &s_fwd_task) != pdPASS)
 		bridge_log("warning: rx-forward task did not start");
 	if (xTaskCreate(bridge_peer_task, "bridge_peer", 2560, NULL, 4, NULL) != pdPASS)
 		bridge_log("warning: peer-notify task did not start");

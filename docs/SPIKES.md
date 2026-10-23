@@ -319,6 +319,40 @@ auch in `ip` belegt bleibt; für TCP (M4.3) muss sie in `ip` frei werden.
 gesendet, `fail` (AWDL-Sendewarteschlange voll), `learned` (Ziel aus der
 gelernten Tabelle), `nd` (Ziel unbekannt, lwIPs Nachbarsuche), `mcast`.
 
+## M4.2: Host-App, UDP über den ESP, `espdrop find`
+
+Die Host-App liegt in `host/espdrop/` (Python, Linux und Windows). Sie übernimmt
+die serielle Schnittstelle selbst; `tools/awdl_bridge.py` darf dabei **nicht**
+laufen. Sie schaltet den ESP in die IP-Betriebsart (`HELLO`), öffnet über ihn
+UDP-Port 5353 und sucht per mDNS nach AirDrop-Empfängern. Unter Linux braucht
+sie kein root, nur Zugriff auf die Schnittstelle (Gruppe `dialout`, unter Arch
+`uucp`), und kein Zusatzpaket; unter Windows `pip install pyserial`. Die
+OpenDrop-venv wird für python-zeroconf (Lesen/Schreiben der mDNS-Nachrichten)
+gebraucht.
+
+In der IP-Betriebsart gibt die Firmware die L2-Warteschlange frei (`stats`:
+`rxq=0`, `heap=` entsprechend höher); `awdl_bridge.py` legt sie beim Start
+wieder an.
+
+Test (Bridge beenden, Teilen-Menü am iPhone/iPad offen):
+```sh
+~/opendrop-venv/bin/python tools/espdrop.py status
+~/opendrop-venv/bin/python tools/espdrop.py find -t 30
+~/opendrop-venv/bin/python tools/espdrop.py find -t 30 -v   # jede AirDrop-mDNS-Nachricht
+~/opendrop-venv/bin/python tools/espdrop.py cmd ip
+```
+`find` startet das BLE-Wecksignal des ESP für die Suchdauer, fragt alle 1,5 s
+nach `_airdrop._tcp.local.` und meldet jeden Empfänger mit Kennung, Adresse,
+Port und TXT-`flags`; am Ende schaltet es das Wecksignal ab. Der Port wird
+automatisch gefunden (USB-Kennung von Espressif), sonst `-p /dev/ttyACM0`
+bzw. `-p COM5`. Danach geht `awdl_bridge.py` wie gewohnt (es schaltet zurück
+auf L2).
+
+Tests ohne Hardware (simulierter ESP mit iPad-Antworten):
+```sh
+~/opendrop-venv/bin/python -m unittest discover -s host/tests
+```
+
 ## Danach
 
 Ergebnisse (auch Fehlschläge) in `docs/UEBERBLICK.md` unter „Offene Fragen"

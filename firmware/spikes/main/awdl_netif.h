@@ -33,6 +33,11 @@ int awdl_netif_set_up(const uint8_t mac[6], bool up);
 /* True while the interface is up (IP mode). */
 bool awdl_netif_is_up(void);
 
+/* The lwIP interface, NULL before the first awdl_netif_set_up. For code on the
+ * tcpip thread (sockets bind to it). */
+struct netif;
+struct netif *awdl_netif_get(void);
+
 /* Feed one received AWDL MSDU (radio data handler signature, Wi-Fi task
  * context; copies). Frames to other stations are dropped, non-IPv6 too. */
 void awdl_netif_input(const uint8_t dst[6], const uint8_t src[6], uint16_t ethertype,

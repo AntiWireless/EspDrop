@@ -40,6 +40,12 @@ enum bridge_msg_type {
 	BRIDGE_MSG_CMD_REPLY   = 8, /* device -> host: command output text */
 	BRIDGE_MSG_HELLO       = 9, /* host -> device: u8 version, u8 mode (M4) */
 	BRIDGE_MSG_HELLO_REPLY = 10,/* device -> host: version, mode, mac, limits, caps */
+	/* Socket proxy, IP mode (docs/M4_ENTWURF.md section 4, main/sockproxy.c) */
+	BRIDGE_MSG_UDP_OPEN    = 24, /* host -> device: u16 port, u8 flags */
+	BRIDGE_MSG_UDP_RECV    = 25, /* device -> host: u16 port, src[16], u16 sport, u8 flags, data */
+	BRIDGE_MSG_UDP_SEND    = 26, /* host -> device: u16 port, dst[16], u16 dport, data */
+	BRIDGE_MSG_UDP_CLOSE   = 27, /* host -> device: u16 port */
+	BRIDGE_MSG_RESULT      = 28, /* device -> host: u8 request type, u16 id, i8 err */
 };
 
 /* docs/M4_ENTWURF.md: L2 bridges Ethernet frames to the host's awdl0 (as up to
