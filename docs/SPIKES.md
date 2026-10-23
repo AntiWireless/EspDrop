@@ -475,6 +475,10 @@ enthielt `./test.jpg`. Beide heißen unter Windows jetzt `./name`. `send` zeigt
 jetzt die Zeiten der einzelnen Schritte (gefunden nach, verbunden in, angenommen
 nach, Upload-Rate); `-v` gibt ein Protokoll mit Millisekunden aus.
 
+Ergebnis (2026-10-23, Windows, C5, iPad): `find` und `send` funktionieren, die
+Datei kam an. Die lange Wartezeit vor dem Senden lag an den Befehlen davor,
+nicht an `send`. Noch offen: `receive` unter Windows, Dateinamen mit Umlaut.
+
 Abgenommen, wenn `find`, `send` und `receive` unter Windows dasselbe tun wie
 unter Linux. Hilfreich bei Fehlern: die vollständige Ausgabe von
 `espdrop check` und des fehlgeschlagenen Befehls (ohne Gerätenamen und
