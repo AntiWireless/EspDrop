@@ -348,6 +348,11 @@ automatisch gefunden (USB-Kennung von Espressif), sonst `-p /dev/ttyACM0`
 bzw. `-p COM5`. Danach geht `awdl_bridge.py` wie gewohnt (es schaltet zurück
 auf L2).
 
+Ergebnis (2026-10-23, C5, iPad mit offenem Teilen-Menü, Wecksignal vom ESP):
+`find` fand das iPad sofort (`found <id> [fe80::…]:8770 flags 111611`); in 30 s
+21 Anfragen, 38 AirDrop-Antworten, keine unlesbar. Freier Heap in `ip`:
+~89,5 KB (`rxq=0`), vorher ~30 KB mit belegter L2-Warteschlange.
+
 Tests ohne Hardware (simulierter ESP mit iPad-Antworten):
 ```sh
 ~/opendrop-venv/bin/python -m unittest discover -s host/tests
