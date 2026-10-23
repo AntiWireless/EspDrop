@@ -141,30 +141,45 @@ class CheckTest(unittest.TestCase):
 
 
 class PySerialPortTest(unittest.TestCase):
-    def test_timeouts_only_set_when_they_change(self):
+    def setUp(self):
         try:
             import serial  # noqa: F401
         except ImportError:
             self.skipTest("pyserial not installed")
+
+    class FakeSerial:
+        def __init__(self, timeout, write_timeout):
+            self.sets, self.in_waiting, self.at_open = [], 0, None
+            self.dtr = self.rts = True                 # pyserial's defaults
+
+        def __setattr__(self, k, v):
+            if k in ("timeout", "write_timeout"):
+                self.sets.append((k, v))
+            object.__setattr__(self, k, v)
+
+        def open(self):
+            self.at_open = (self.port, self.dtr, self.rts)
+
+        def read(self, n):
+            return b""
+
+        def write(self, data):
+            return len(data)
+
+    def open(self, osname):
         from espdrop.transport import PySerialPort
+        with mock.patch("serial.Serial", self.FakeSerial), \
+                mock.patch("espdrop.transport.os.name", osname):
+            return PySerialPort("COM9")
 
-        class FakeSerial:
-            def __init__(self, name, timeout, write_timeout):
-                self.sets, self.in_waiting = [], 0
+    def test_windows_opens_with_dtr_and_rts_off(self):
+        # Both on can leave the USB-Serial/JTAG chip held in reset on Windows.
+        self.assertEqual(self.open("nt").ser.at_open, ("COM9", False, False))
+        self.assertEqual(self.open("posix").ser.at_open, ("COM9", True, True))
 
-            def __setattr__(self, k, v):
-                if k in ("timeout", "write_timeout"):
-                    self.sets.append((k, v))
-                object.__setattr__(self, k, v)
-
-            def read(self, n):
-                return b""
-
-            def write(self, data):
-                return len(data)
-
-        with mock.patch("serial.Serial", FakeSerial):
-            port = PySerialPort("COM9")
+    def test_timeouts_only_set_when_they_change(self):
+        port = self.open("nt")
+        port.ser.sets.clear()                          # the constructor's own
         for _ in range(3):
             port.read(0.2)
             port.write(b"x")

@@ -459,6 +459,13 @@ Checkout oder ZIP):
    (z. B. `Prüfung.txt`): ob libarchive unter Windows Nicht-ASCII-Namen richtig
    umsetzt, ist noch offen.
 
+Erster Lauf unter Windows: Jeder Befehl endete mit `error: Write timeout`. Der
+ESP nahm über USB nichts an, wahrscheinlich weil der Chip im Reset festgehalten
+wurde. Der USB-Serial/JTAG hält ihn im Reset, solange RTS an und DTR aus ist,
+und mit pyserials Vorgabe (beide an) kommt DTR unter Windows nicht zuverlässig
+an. Die Host-App öffnet den Port unter Windows jetzt mit DTR und RTS aus (unter
+Linux unverändert). Danach den ESP einmal ab- und wieder anstecken.
+
 Abgenommen, wenn `find`, `send` und `receive` unter Windows dasselbe tun wie
 unter Linux. Hilfreich bei Fehlern: die vollständige Ausgabe von
 `espdrop check` und des fehlgeschlagenen Befehls (ohne Gerätenamen und
@@ -468,10 +475,10 @@ Tests ohne Hardware (Linux, Container): `test_env.py` prüft Zertifikat
 (OpenDrop nimmt es an, ruft kein openssl auf), den Windows-Archivschreiber
 (Einträge `./name`, Inhalt; ein voller Sendevorgang damit bis in einen echten
 OpenDrop-Empfänger), die libarchive-Suche, `espdrop check`, pyserial-Timeouts
-und den Patch-Anwender des Installers. Der Installer selbst lief im Container
+den Port-Aufbau unter Windows (DTR/RTS aus) und den Patch-Anwender des Installers. Der Installer selbst lief im Container
 komplett durch (frische venv, 17 Patches, alle Prüfsummen gleich,
 `check` ok); erneutes Ausführen erkennt die fertige Installation,
-eine mit `opendrop_install.sh` gebaute auch. Zusammen 31 Host-Tests.
+eine mit `opendrop_install.sh` gebaute auch. Zusammen 32 Host-Tests.
 
 ## Danach
 

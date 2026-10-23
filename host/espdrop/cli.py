@@ -242,4 +242,8 @@ def main(argv=None, transport=None):
         elif os.name == "nt" and "denied" in str(e).lower():
             print("  (Windows: another program has the COM port open - a serial monitor, "
                   "idf.py monitor or a second espdrop; close it)", file=sys.stderr)
+        elif isinstance(e, TimeoutError) or "Timeout" in type(e).__name__:
+            print("  (the ESP takes no data over USB: it is not running the bridge "
+                  "firmware, or it hangs or is held in reset; unplug it and plug it "
+                  "back in)", file=sys.stderr)
         return 1
