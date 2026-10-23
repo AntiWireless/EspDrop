@@ -25,6 +25,7 @@
 #include "awdl_cobs.h"
 #include "awdl_app.h" /* awdl_app_resync_peers, for the `resync` command */
 #include "ble_wake.h" /* `wake`: the AirDrop wake over our own Bluetooth */
+#include "awdl_netif.h" /* IP mode: the AWDL link as an lwIP interface */
 #include "radio.h"    /* radio_get_stats, for the `radio` diagnostic command */
 
 #define BRIDGE_MAX_PAYLOAD 1600
@@ -105,9 +106,45 @@ static void send_test_frame(void) {
 /* Wi-Fi task context: build the Ethernet frame into a scratch slot and enqueue
  * it for the forwarding task. rx_cb is serialized (one Wi-Fi task), so a single
  * static scratch buffer is safe and keeps this off the Wi-Fi task's stack. */
+/* Current mode (enum bridge_mode). Read by the Wi-Fi task for every frame. */
+static volatile uint8_t s_mode = BRIDGE_MODE_L2;
+
+/* Switch L2 <-> IP. Into IP: bring the interface up first, then route frames to
+ * it. Out of IP: route frames to the host first, then take it down. */
+static int set_mode(uint8_t mode) {
+	if (mode == s_mode) return 0;
+	uint8_t mac[6];
+	radio_get_self_mac(mac);
+	if (mode == BRIDGE_MODE_IP) {
+		if (awdl_netif_set_up(mac, true) != 0) return -1;
+		s_mode = BRIDGE_MODE_IP;
+	} else {
+		s_mode = BRIDGE_MODE_L2;
+		if (awdl_netif_is_up()) awdl_netif_set_up(mac, false);
+	}
+	return 0;
+}
+
+static void send_hello_reply(void) {
+	uint8_t r[12];
+	r[0] = BRIDGE_PROTO_VERSION;
+	r[1] = s_mode;
+	radio_get_self_mac(r + 2);
+	r[8] = 0;                              /* proxy connections: none yet (M4.3) */
+	r[9] = 1400 & 0xff;                    /* max TCP_DATA chunk, little endian */
+	r[10] = 1400 >> 8;
+	r[11] = (ble_wake_ready() ? 0x01 : 0)  /* caps: BLE wake */
+	      | 0x02;                          /*       IP mode */
+	bridge_send(BRIDGE_MSG_HELLO_REPLY, r, sizeof(r));
+}
+
 void bridge_rx_frame(const uint8_t dst[6], const uint8_t src[6], uint16_t ethertype,
                      const uint8_t *payload, size_t plen, void *ctx) {
 	(void)ctx;
+	if (s_mode == BRIDGE_MODE_IP) {   /* the device's own IP stack takes it */
+		awdl_netif_input(dst, src, ethertype, payload, plen);
+		return;
+	}
 	static rx_frame_t scratch;
 	if (!s_rx_fwd_q) return;
 	if (plen > BRIDGE_RX_PAYLOAD_MAX) { s_rx_drops++; return; }
@@ -385,6 +422,39 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 			}
 		}
 		cmd_reply(out);
+	} else if (strcmp(cmd, "mode") == 0 || strncmp(cmd, "mode ", 5) == 0) {
+		/* `mode` shows L2 (frames to the host's awdl0) or IP (the device's own
+		 * IPv6 stack); `mode l2` / `mode ip` switch, as HELLO does. */
+		const char *arg = cmd[4] == '\0' ? "" : cmd + 5;
+		int err = 0;
+		if (strcmp(arg, "ip") == 0) err = set_mode(BRIDGE_MODE_IP);
+		else if (strcmp(arg, "l2") == 0) err = set_mode(BRIDGE_MODE_L2);
+		else if (arg[0]) err = 1;
+		if (err == 1) snprintf(out, sizeof(out), "mode: use `mode`, `mode l2` or `mode ip`");
+		else if (err) snprintf(out, sizeof(out), "mode ip: the interface did not come up");
+		else snprintf(out, sizeof(out), "mode %s", s_mode == BRIDGE_MODE_IP ? "ip" : "l2");
+		cmd_reply(out);
+	} else if (strcmp(cmd, "ip") == 0) {
+		/* IP mode: our link-local, RX/TX counters, peers learned from traffic. */
+		static char ibuf[480];   /* bridge RX task only */
+		int o = snprintf(ibuf, sizeof(ibuf), "ip mode=%s ",
+		                 s_mode == BRIDGE_MODE_IP ? "ip" : "l2");
+		if (o > 0 && (size_t)o < sizeof(ibuf))
+			awdl_netif_format_status(ibuf + o, sizeof(ibuf) - (size_t)o);
+		cmd_reply(ibuf);
+	} else if (strncmp(cmd, "ping6 ", 6) == 0) {
+		/* `ping6 <addr> [count]`: ICMPv6 echo from the device's own stack (IP
+		 * mode). Replies come back as log lines, one per second. */
+		char addr[48] = "";
+		int count = 5;
+		sscanf(cmd + 6, "%47s %d", addr, &count);
+		char err[64];
+		if (awdl_netif_ping6(addr, count, err, sizeof(err)) == 0)
+			snprintf(out, sizeof(out), "ping6 %s: %d requests, replies follow as log lines",
+			         addr, count < 1 ? 1 : count > 100 ? 100 : count);
+		else
+			snprintf(out, sizeof(out), "ping6: %s", err);
+		cmd_reply(out);
 	} else if (strcmp(cmd, "checks") == 0) {
 		/* Bring-up checks on a new chip: is the frame length right (FCS where
 		 * we expect it, IPv6 packets neither cut short nor padded)? */
@@ -460,11 +530,23 @@ static void handle_msg(const uint8_t *msg, size_t len) {
 		 * TX sink (the AWDL data-TX path) if one is registered. */
 		s_frames_from_host++;
 		s_bytes_from_host += (uint32_t)plen;
-		if (s_frame_sink)
+		/* In IP mode the device owns the address; the host's awdl0 must not
+		 * send on it too (ND, MLD, mDNS of a second stack). */
+		if (s_frame_sink && s_mode == BRIDGE_MODE_L2)
 			s_frame_sink(payload, plen, s_frame_sink_ctx);
 		break;
 	case BRIDGE_MSG_CMD:
 		handle_cmd(payload, plen);
+		break;
+	case BRIDGE_MSG_HELLO:
+		/* Unknown version: answer with ours and stay in L2 (docs/M4_ENTWURF.md
+		 * 4.4); the host reports the mismatch. */
+		if (plen >= 2 && payload[0] == BRIDGE_PROTO_VERSION &&
+		    payload[1] <= BRIDGE_MODE_IP)
+			set_mode(payload[1]);
+		else
+			set_mode(BRIDGE_MODE_L2);
+		send_hello_reply();
 		break;
 	/* PEER_* are device->host only (see bridge_notify_peer). */
 	default:

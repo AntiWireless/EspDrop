@@ -17,6 +17,7 @@
 
 import os
 import select
+import struct
 import sys
 import termios
 import time
@@ -31,6 +32,27 @@ MSG_PEER_ADD    = 5   # device -> host: 6-byte peer MAC appeared
 MSG_PEER_REMOVE = 6   # device -> host: 6-byte peer MAC gone
 MSG_CMD         = 7   # host -> device: command text
 MSG_CMD_REPLY   = 8   # device -> host: command output text
+MSG_HELLO       = 9   # host -> device: u8 version, u8 mode (0 L2, 1 IP), u32 credit
+MSG_HELLO_REPLY = 10  # device -> host: version, mode, mac[6], max_conns, max_chunk, caps
+
+PROTO_VERSION = 1     # BRIDGE_PROTO_VERSION
+MODE_L2 = 0           # frames to/from the host's awdl0 (this bridge)
+MODE_IP = 1           # the device's own IPv6 stack (M4 host app)
+
+
+def hello(mode: int, credit: int = 0) -> bytes:
+    """A HELLO message (docs/M4_ENTWURF.md, section 4)."""
+    return frame(MSG_HELLO, struct.pack("<BBI", PROTO_VERSION, mode, credit))
+
+
+def parse_hello_reply(p: bytes):
+    """dict from a HELLO_REPLY payload, or None if it is too short."""
+    if len(p) < 12:
+        return None
+    ver, mode = p[0], p[1]
+    max_conns, max_chunk, caps = struct.unpack_from("<BHB", p, 8)
+    return {"version": ver, "mode": mode, "mac": ":".join(f"{b:02x}" for b in p[2:8]),
+            "max_conns": max_conns, "max_chunk": max_chunk, "caps": caps}
 
 
 def cobs_encode(data: bytes) -> bytes:

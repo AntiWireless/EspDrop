@@ -57,7 +57,8 @@ typedef struct {
 static awdl_node_t      s_node;
 static SemaphoreHandle_t s_lock;     /* guards s_node */
 static QueueHandle_t    s_rx_q;
-static QueueHandle_t    s_tx_q;      /* tx_data_t: bridge RX task -> awdl task */
+static QueueHandle_t    s_tx_q;      /* tx_data_t: bridge RX task / lwIP -> awdl task */
+static SemaphoreHandle_t s_tx_stage_lock;   /* guards the staging buffer in tx_ethernet */
 static TaskHandle_t     s_task;
 static bool             s_started;
 static char             s_name[AWDL_NAME_MAX + 1];  /* kept for awdl_app_set_self */
@@ -254,18 +255,22 @@ static void awdl_task(void *arg) {
 
 int awdl_app_tx_ethernet(const uint8_t *eth, size_t len, void *ctx) {
 	(void)ctx;
-	/* Called only from the single bridge RX task, so a static staging buffer is
-	 * safe and keeps this large struct off that task's stack. */
+	/* Called from the bridge RX task (L2 mode) and the lwIP thread (IP mode);
+	 * a static staging buffer keeps this large struct off both stacks, the
+	 * mutex keeps the two from writing it at once around a mode switch. */
 	static tx_data_t td;
-	if (!s_started || !s_tx_q || len < 14) return -1;
+	if (!s_started || !s_tx_q || !s_tx_stage_lock || len < 14) return -1;
 	uint16_t et = (uint16_t)(((uint16_t)eth[12] << 8) | eth[13]);
 	if (et != ETHERTYPE_IPV6) return 0;   /* awdl0 is IPv6-only; ignore the rest */
 	size_t plen = len - 14;
 	if (plen > TX_PAYLOAD_MAX) return -1;
+	xSemaphoreTake(s_tx_stage_lock, portMAX_DELAY);
 	memcpy(td.dst, eth, 6);
 	td.len = (uint16_t)plen;
 	if (plen) memcpy(td.ip, eth + 14, plen);
-	if (xQueueSend(s_tx_q, &td, 0) != pdTRUE) { s_tx_q_drop++; return -1; } /* full */
+	BaseType_t ok = xQueueSend(s_tx_q, &td, 0);
+	xSemaphoreGive(s_tx_stage_lock);
+	if (ok != pdTRUE) { s_tx_q_drop++; return -1; } /* full */
 	s_tx_queued++;
 	xTaskNotifyGive(s_task);   /* flush now if we are inside a present slot */
 	return 0;
@@ -295,6 +300,7 @@ int awdl_app_start(const uint8_t self_mac[6], const char *name, uint8_t chan) {
 	s_lock = xSemaphoreCreateMutex();
 	s_rx_q = xQueueCreate(RX_Q_LEN, sizeof(rx_event_t));
 	s_tx_q = xQueueCreate(TX_Q_LEN, sizeof(tx_data_t));
+	s_tx_stage_lock = xSemaphoreCreateMutex();
 	if (!s_lock || !s_rx_q || !s_tx_q) return -1;
 
 	if (name) strncpy(s_name, name, sizeof(s_name) - 1);

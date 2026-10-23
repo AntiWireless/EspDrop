@@ -57,7 +57,10 @@ def main() -> int:
     s.settimeout(args.timeout)
     try:
         s.connect(path)
-        s.sendall(cmd.encode() + b"\n")
+        try:
+            s.sendall(cmd.encode() + b"\n")
+        except (BrokenPipeError, ConnectionResetError):
+            pass   # a busy bridge answers and closes at once; its reply is still readable
         reply = b""
         while not reply.endswith(b"\n"):
             chunk = s.recv(512)

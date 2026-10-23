@@ -38,7 +38,18 @@ enum bridge_msg_type {
 	BRIDGE_MSG_PEER_REMOVE = 6, /* device -> host: 6-byte peer MAC gone */
 	BRIDGE_MSG_CMD         = 7, /* host -> device: console-style command text */
 	BRIDGE_MSG_CMD_REPLY   = 8, /* device -> host: command output text */
+	BRIDGE_MSG_HELLO       = 9, /* host -> device: u8 version, u8 mode (M4) */
+	BRIDGE_MSG_HELLO_REPLY = 10,/* device -> host: version, mode, mac, limits, caps */
 };
+
+/* docs/M4_ENTWURF.md: L2 bridges Ethernet frames to the host's awdl0 (as up to
+ * M3); IP terminates IPv6 on the device (awdl_netif). Selected by HELLO or the
+ * `mode` command; L2 after boot, so older host tools keep working. */
+enum bridge_mode {
+	BRIDGE_MODE_L2 = 0,
+	BRIDGE_MODE_IP = 1,
+};
+#define BRIDGE_PROTO_VERSION 1
 
 /* Start the bridge: install the USB driver, silence ESP_LOG (to reduce
  * corruption of the binary stream; the host resynchronises at the next frame

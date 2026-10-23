@@ -26,7 +26,7 @@
 # are only logged. Suppressed with --no-config.
 #
 # Interactive stdin commands (forwarded to the device):
-#   mac | stats | radio | tx | node | chan [n|auto] | seq [mirror|verbatim] | wake [secs|off] | checks | usbtest [kib] | ping | testframe | resync
+#   mac | stats | radio | tx | node | chan [n|auto] | seq [mirror|verbatim] | wake [secs|off] | mode [l2|ip] | ip | ping6 <addr> [n] | checks | usbtest [kib] | ping | testframe | resync
 #
 # Control socket: other tools (tools/espdrop_cmd.py, opendrop_send.sh for the
 # Bluetooth wake) send device commands through /run/espdrop/<dev>.sock, one
@@ -65,7 +65,8 @@ MAX_LEARNED = 64     # neighbour entries kept; the oldest is dropped beyond that
 
 CTL_DIR = "/run/espdrop"
 # Device commands the control socket passes on (no usbtest: it floods the link).
-CTL_COMMANDS = {"wake", "mac", "stats", "radio", "tx", "node", "chan", "seq", "checks", "ping"}
+CTL_COMMANDS = {"wake", "mac", "stats", "radio", "tx", "node", "chan", "seq", "checks", "ping",
+                "mode", "ip", "ping6"}
 CTL_TIMEOUT = 3.0    # seconds to wait for the device's reply to a socket command
 
 
@@ -256,17 +257,20 @@ def main() -> int:
 
         print(f"{args.dev} up (mtu {args.mtu}, mac {mac or 'kernel-assigned'}); "
               f"bridging {args.port}")
-        print("commands: mac | stats | radio | tx | node | chan [n|auto] | seq [mirror|verbatim] | wake [secs|off] | checks | usbtest [kib] | ping | testframe | resync"
+        print("commands: mac | stats | radio | tx | node | chan [n|auto] | seq [mirror|verbatim] | wake [secs|off] | mode [l2|ip] | ip | ping6 <addr> [n] | checks | usbtest [kib] | ping | testframe | resync"
               "   (Ctrl-C to quit)")
         ctl, ctl_path = open_ctl(args.dev)
         # The one socket client whose command is with the device: its conn,
         # partial input, whether the command went out, and when to give up.
         ctl_client = None
 
-        # The C3 keeps running across host sessions (its USB port does not reset
-        # the chip), so peers it learned earlier would never be re-announced. Ask
-        # it to re-emit its current peer set so the [peer+] log is complete.
+        # The device keeps running across host sessions (its USB port does not
+        # reset the chip): put it back into L2 in case an M4 host app (or `mode
+        # ip`) left it in IP mode, where no frames would reach awdl0. Firmware
+        # without HELLO ignores it. Then ask it to re-emit its current peer set
+        # so the [peer+] log is complete.
         try:
+            link.write_all(usb_fd, link.hello(link.MODE_L2))
             link.write_all(usb_fd, link.frame(link.MSG_CMD, b"resync"))
         except (OSError, TimeoutError) as e:
             print(f"warning: could not request peer resync ({e})", file=sys.stderr)
@@ -369,6 +373,12 @@ def main() -> int:
                                 print(f"tap write failed: {e}", file=sys.stderr)
                         elif t == link.MSG_LOG:
                             print(f"[device] {p.decode('utf-8', 'replace')}")
+                        elif t == link.MSG_HELLO_REPLY:
+                            h = link.parse_hello_reply(p)
+                            if h:
+                                print(f"[hello] protocol {h['version']}, mode "
+                                      f"{'ip' if h['mode'] == link.MODE_IP else 'l2'}, caps "
+                                      f"{h['caps']:#04x}")
                         elif t == link.MSG_CMD_REPLY:
                             reply = p.decode('utf-8', 'replace')
                             print(f"[reply] {reply}")

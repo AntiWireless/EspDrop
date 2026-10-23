@@ -287,6 +287,31 @@ Fehlersuche, wenn kein Empfänger gefunden wird (Gerät bereit, Wecksignal läuf
   Gesendet wird in beiden Fällen nur in den Slots auf unserem Kanal. `node`
   zeigt den Modus (`mode=`) und beide Sequenzen.
 
+## M4.1: eigener IP-Stack auf dem ESP (IP-Betriebsart)
+
+Entwurf: `docs/M4_ENTWURF.md`. Die Bridge-Firmware kennt zwei Betriebsarten:
+`l2` (wie bisher: Frames an `awdl0` auf dem PC) und `ip` (der ESP beendet IPv6
+selbst, lwIP auf der AWDL-Verbindung). Nach dem Start ist sie in `l2`;
+`awdl_bridge.py` schaltet beim Start ausdrücklich auf `l2` (Meldung
+`[hello] protocol 1, mode l2, caps 0x03`).
+
+Test im Bridge-Fenster (`awdl0` bleibt dabei bestehen, bekommt in `ip` aber
+nichts; Frames vom PC werden in `ip` verworfen, damit nicht zwei Stacks mit
+derselben Adresse senden):
+1. `mode ip`: Antwort `mode ip`.
+2. `ip`: `up fe80::…` (unsere Link-Local, wie bisher auf `awdl0`), Zähler und
+   die aus dem Verkehr gelernten Peers (`peers: fe80::…=mac(Alter)`).
+   iPhone/iPad dafür wach halten (Teilen-Menü offen, gegebenenfalls `wake 60`).
+3. `ping6 <adresse des iPads> 10`: zehn Echo-Requests vom ESP selbst; die
+   Antworten erscheinen als `[device] ping6: reply …`, am Ende die Bilanz.
+4. `ip` und `stats` noch einmal: Zähler, `heap=`.
+5. `mode l2`: zurück; `awdl0` funktioniert wieder wie zuvor.
+
+`ip`-Zähler: `rx` an lwIP übergeben, `not_ours` (an andere Stationen),
+`nomem`/`full` (verworfen: kein Speicher / lwIP-Warteschlange voll), `tx`
+gesendet, `fail` (AWDL-Sendewarteschlange voll), `learned` (Ziel aus der
+gelernten Tabelle), `nd` (Ziel unbekannt, lwIPs Nachbarsuche), `mcast`.
+
 ## Danach
 
 Ergebnisse (auch Fehlschläge) in `docs/UEBERBLICK.md` unter „Offene Fragen"
