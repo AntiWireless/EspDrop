@@ -205,6 +205,7 @@ ausgeschaltetem PC-Bluetooth erfolgreich (2026-10-23). M3 ist damit erledigt.
 
 **M4 – Windows (Option C):** lwIP + mDNS auf dem ESP, Socket-Proxy-Protokoll, Host-App
 (z. B. Python oder Rust) mit OpenDrop-Logik inkl. iOS-26-Patches.
+Entwurf (auch für Linux, mit derselben Firmware): `docs/M4_ENTWURF.md`.
 
 **M5 – C5 / 5 GHz und Durchsatz:** Kanäle 44/149, Strategie für die Kanalsequenz
 (verbatim/widen), höhere TX-Rate (HT-MCS statt 12 Mbit/s OFDM).
