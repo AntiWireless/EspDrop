@@ -220,6 +220,15 @@ Mehrere Apple-Geräte in Reichweite: mit `-r "Annas iPhone"` das Ziel am Namen
 wählen. „Nur Kontakte“ statt „Jeder“: Identifikator über
 `ESPDROP_WAKE_ARGS="--appleid du@icloud.com"` an das Wecksignal geben.
 
+Ergebnis (2026-10-23, C5-Bridge auf Kanal 44, BLE-Wecksignal vom PC): Senden an
+ein iPad funktioniert, die Datei wird übertragen. Ping vom PC zum iPad bekommt
+Antworten mit Teilen-Menü zu und offen, in beiden Sequenz-Modi (`seq mirror`
+und `seq verbatim`); der Standard bleibt `mirror`. Am Vortag war dasselbe
+iPad zwar per mDNS gefunden worden, hatte aber keinen einzigen Unicast an uns
+geschickt (SYN-SENT, 100 % Ping-Verlust, obwohl `tx` jeden Frame als
+quittiert zählte). Am nächsten Tag, nach neuem Flashen und Neustart von
+Bridge und iPad-Sitzung, war das weg; die Ursache ist nicht geklärt.
+
 Fehlersuche, wenn kein Empfänger gefunden wird (Gerät bereit, Wecksignal läuft):
 - `tools/mdns_probe.py`: Kommen mDNS-Antworten des Geräts überhaupt bei einem
   Programm an? (Standardbibliothek, ohne venv.)
@@ -231,7 +240,10 @@ Fehlersuche, wenn kein Empfänger gefunden wird (Gerät bereit, Wecksignal läuf
 - Gefunden, aber `/Discover` hängt in SYN-SENT, und `ping -6` an das Gerät
   bleibt ohne Antwort, obwohl `tx` im Bridge-Fenster jeden Unicast als
   quittiert zählt (`uc_ack`): Das Gerät empfängt uns, sendet uns aber keinen
-  Unicast. Im Referenzprojekt lag das an der angekündigten Kanal-Sequenz
+  Unicast. Zuerst alles neu starten: C5 abziehen und wieder anstecken, Bridge
+  neu starten, am iPhone/iPad AirDrop einmal aus- und wieder einschalten (so
+  verschwand es beim ersten Auftreten, siehe Ergebnis oben). Hält es an, die
+  Sequenz prüfen: Im Referenzprojekt lag das an der angekündigten Kanal-Sequenz
   (airdrop-mt7921 FINDINGS §25/§26). Im Bridge-Fenster umschaltbar, ohne neu
   zu flashen: `seq mirror` (Standard: unser Kanal nur in den Slots des Masters
   auf diesem Kanal) oder `seq verbatim` (die Sequenz des Masters unverändert).
