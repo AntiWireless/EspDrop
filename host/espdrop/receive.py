@@ -19,14 +19,13 @@ import socket
 import threading
 from http.server import ThreadingHTTPServer
 
-try:
-    from opendrop.config import AirDropConfig
-    from opendrop.server import AirDropServerHandler
-except ImportError as e:   # pragma: no cover
-    raise ImportError("OpenDrop is missing; run espdrop with the venv built by "
-                      "tools/opendrop_install.sh") from e
+from . import env
 
-from . import mdns
+env.load_opendrop()        # libarchive and the Windows fixes first; ImportError with advice
+from opendrop.config import AirDropConfig  # noqa: E402
+from opendrop.server import AirDropServerHandler  # noqa: E402
+
+from . import mdns  # noqa: E402
 
 logger = logging.getLogger(__name__)
 AIRDROP_PORT = 8771
@@ -48,6 +47,7 @@ def eui64_linklocal(mac6: bytes) -> bytes:
 class Receiver:
     def __init__(self, dev, name="EspDrop", flags=0x3fb):
         self.dev = dev
+        env.ensure_identity(name)      # before OpenDrop would call openssl
         self.config = AirDropConfig(computer_name=name)
         self.config.flags = flags
         self.httpd = None

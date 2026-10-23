@@ -15,14 +15,13 @@ import logging
 import os
 import sys
 
-try:
-    from opendrop.client import AirDropClient
-    from opendrop.config import AirDropConfig
-except ImportError as e:   # pragma: no cover - depends on the environment
-    raise ImportError("OpenDrop is missing; run espdrop with the venv built by "
-                      "tools/opendrop_install.sh (~/opendrop-venv/bin/python)") from e
+from . import env
 
-from .mdns import Browser
+env.load_opendrop()        # libarchive and the Windows fixes first; ImportError with advice
+from opendrop.client import AirDropClient  # noqa: E402
+from opendrop.config import AirDropConfig  # noqa: E402
+
+from .mdns import Browser  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +49,10 @@ def find_receiver(dev, timeout=30.0, want=None, on_packet=None):
     b = Browser(dev, on_found=found, on_packet=on_packet)
     b.start()
     try:
-        done.wait(timeout)
+        end = time.monotonic() + timeout
+        # Short waits: a long one cannot be interrupted with Ctrl+C on Windows.
+        while not done.wait(0.25) and time.monotonic() < end:
+            pass
     finally:
         b.stop()
     return hit.get("r") or (b.receivers()[0] if b.receivers() and not want else None)
@@ -88,6 +90,7 @@ def _bind_client(client, dev, peer16, name=""):
 def send_files(dev, receiver, files, name="EspDrop", timeout=60.0):
     """Send files to a Receiver through the device. Returns 0 on success."""
     peer16 = _addr16(receiver.parsed_addresses()[0])
+    env.ensure_identity(name)          # before OpenDrop would call openssl
     config = AirDropConfig(computer_name=name, interface="awdl0")
     client = AirDropClient(config, (str(ipaddress.IPv6Address(peer16)), int(receiver.port)))
     _bind_client(client, dev, peer16, name=name)

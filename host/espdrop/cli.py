@@ -1,8 +1,11 @@
 # EspDrop - command line of the M4 host app (docs/M4_ENTWURF.md, section 5).
 #
 #   espdrop find [-t SECS] [--no-wake] [-v]   AirDrop receivers on the AWDL link
+#   espdrop send FILE... [-r ID] [-n NAME]    send files to a receiver
+#   espdrop receive [-n NAME]                 receive files (into the current folder)
 #   espdrop status                            device, interface, counters
 #   espdrop cmd TEXT...                       one device command (as in the bridge)
+#   espdrop check                             is this PC ready (no device needed)
 #
 # The device is switched into IP mode (HELLO); it stays there until the next
 # session (tools/awdl_bridge.py switches it back to L2 itself).
@@ -182,7 +185,20 @@ def cmd_cmd(args, transport=None):
         dev.close()
 
 
+def cmd_check(args, transport=None):
+    from . import env
+    print("EspDrop host app: checking this PC (no device needed)", flush=True)
+    n = env.check(lambda text: print(text, flush=True))
+    print("ready." if n == 0 else f"{n} problem(s).", flush=True)
+    return 0 if n == 0 else 1
+
+
 def main(argv=None, transport=None):
+    # Device and file names can be anything; a Windows console or a redirect in
+    # its code page must not end the run over one character.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     ap = argparse.ArgumentParser(prog="espdrop", description="EspDrop host app (M4)")
     ap.add_argument("-p", "--port", help="serial port (default: the only ESP found; "
                                          "Linux /dev/ttyACM0, Windows COM5)")
@@ -209,14 +225,21 @@ def main(argv=None, transport=None):
     c.add_argument("--timeout", type=float, default=3.0)
     c.add_argument("--wait", type=float, default=12.0, help="ping6: seconds to show replies")
     c.set_defaults(verbose=True)
+    sub.add_parser("check", help="is this PC ready: Python, pyserial, OpenDrop, libarchive, TLS")
     args = ap.parse_args(argv)
     handlers = {"find": cmd_find, "send": cmd_send, "receive": cmd_receive,
-                "status": cmd_status, "cmd": cmd_cmd}
+                "status": cmd_status, "cmd": cmd_cmd, "check": cmd_check}
     try:
         return handlers[args.action](args, transport)
+    except ImportError as e:            # OpenDrop or libarchive (env.py says what to do)
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     except (DeviceError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         if isinstance(e, PermissionError):
             print("  (Linux: add yourself to the 'dialout' group - 'uucp' on Arch - and "
                   "log in again)", file=sys.stderr)
+        elif os.name == "nt" and "denied" in str(e).lower():
+            print("  (Windows: another program has the COM port open - a serial monitor, "
+                  "idf.py monitor or a second espdrop; close it)", file=sys.stderr)
         return 1

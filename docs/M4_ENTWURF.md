@@ -253,9 +253,11 @@ Was die letzten Wochen gezeigt haben, wird hier eingebaut statt nachgebessert:
 - **Linux:** kein root, kein TAP, keine Firewall-Regel. Nur Zugriff auf
   `/dev/ttyACM0` (Gruppe `dialout` bzw. `uucp`).
 - **Windows 10/11:** Der USB-Serial/JTAG-Port des ESP meldet sich als
-  CDC-Gerät, Windows bringt den Treiber mit (COM-Port). Python 3.12+,
+  CDC-Gerät, Windows bringt den Treiber mit (COM-Port). Python 3.9+,
   pyserial und OpenDrops Abhängigkeiten; heikel ist `libarchive` (braucht eine
-  DLL). Ein fertiges Paket (z. B. PyInstaller) kommt erst, wenn alles läuft.
+  DLL). Ein fertiges Paket (z. B. PyInstaller) kommt erst mit einer
+  Oberfläche. Umsetzung (M4.5): `tools/opendrop_install.py`,
+  `host/espdrop/env.py`, Anleitung in `host/README.md`.
 
 ## 6. Testen ohne Hardware
 

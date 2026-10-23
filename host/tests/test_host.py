@@ -196,10 +196,6 @@ class CliTest(unittest.TestCase):
         self.assertIn("does not answer HELLO", err)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class EndToEndTest(unittest.TestCase):
     """espdrop send all the way to a real patched-OpenDrop receiver on loopback,
     bridged by the fake device. Exercises the proxy, credits, TLS, /Discover,
@@ -308,3 +304,7 @@ def eui64_text():
     import ipaddress
     from espdrop.receive import eui64_linklocal
     return ipaddress.IPv6Address(eui64_linklocal(bytes.fromhex("020000000001")))
+
+
+if __name__ == "__main__":
+    unittest.main()

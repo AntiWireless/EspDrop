@@ -409,6 +409,70 @@ simuliert ein verbindendes Apple-Gerät; ein echter OpenDrop-Sender fährt
 Server. `ReceiveEndToEndTest` prüft, dass die Datei ankommt. Zusammen 20
 Host-Tests.
 
+Ergebnis (2026-10-23, C5, Linux): Senden und Empfangen funktionieren beide über
+den eigenen IP-Stack des ESP.
+
+## M4.5: Windows
+
+Dieselbe Firmware, dieselbe Host-App. Unter Windows fehlt OpenDrop zweierlei,
+was Linux mitbringt; beides erledigt jetzt die Host-App (`host/espdrop/env.py`):
+- **TLS-Zertifikat:** OpenDrop erzeugt es beim ersten Start mit dem Programm
+  `openssl`. Die Host-App legt es vorher mit python-cryptography an (gleiche
+  Dateien in `~/.opendrop/keys`, RSA 2048, selbstsigniert, CN = Name). Ohne
+  cryptography bleibt alles wie bisher (Linux).
+- **libarchive:** Es gibt keine offizielle Windows-Version. Gesucht wird
+  `LIBARCHIVE`, dann die beim Installieren angegebene DLL, dann `archive.dll`
+  im `PATH`, dann Windows' eigene `System32\archiveint.dll`. Ob die genügt,
+  ist offen; `espdrop check` probiert es aus. Sonst die DLL aus MSYS2
+  (`host/README.md`).
+
+Dazu eine Windows-Eigenheit beim Senden: OpenDrop benennt Archiv-Einträge mit
+`os.path.join(".", name)`, unter Windows also `.\name`. Unter Windows schreibt
+die Host-App die Einträge deshalb selbst, mit `/` und den Dateidaten aus
+Python (gleicher Eintrag: normale Datei, Größe, Änderungszeit).
+
+Installation ohne bash, git und openssl: `tools/opendrop_install.py` macht
+dasselbe wie `opendrop_install.sh` (OpenDrop 0.13.0 + 17 Patches aus
+airdrop-mt7921, Stand 27edf28) und legt pyserial und cryptography dazu. Die
+Patches wendet es selbst an; jeder Patch und jede fertige Datei wird gegen
+feste Prüfsummen der Linux-Installation geprüft, unter Windows läuft also
+byte-genau derselbe OpenDrop-Code. Am Ende ruft es `espdrop check` auf.
+
+Test unter Windows 10/11 (Python 3.9+ von python.org, 64 Bit; dieses Repo als
+Checkout oder ZIP):
+1. In cmd oder PowerShell im Repo-Ordner: `py tools\opendrop_install.py`.
+   Es endet mit der Ausgabe von `espdrop check`, am besten mit `ready.`.
+   Interessant ist die Zeile `libarchive` (welche DLL) und `archive`.
+2. ESP mit der Bridge-Firmware anstecken (dieselbe wie unter Linux). Im
+   Geräte-Manager erscheint ein COM-Port („USB Serial Device“, ohne eigenen
+   Treiber). Dann:
+   ```bat
+   .\tools\espdrop.cmd check
+   .\tools\espdrop.cmd status
+   .\tools\espdrop.cmd find -t 30
+   .\tools\espdrop.cmd send C:\Pfad\foto.jpg
+   .\tools\espdrop.cmd receive -n MeinPC
+   ```
+   Bedingungen am iPad wie gewohnt (AirDrop „Für alle“, entsperrt,
+   Teilen-Menü offen). Empfangene Dateien landen im aktuellen Ordner.
+3. Zusätzlich einmal eine Datei mit Umlaut im Namen senden und empfangen
+   (z. B. `Prüfung.txt`): ob libarchive unter Windows Nicht-ASCII-Namen richtig
+   umsetzt, ist noch offen.
+
+Abgenommen, wenn `find`, `send` und `receive` unter Windows dasselbe tun wie
+unter Linux. Hilfreich bei Fehlern: die vollständige Ausgabe von
+`espdrop check` und des fehlgeschlagenen Befehls (ohne Gerätenamen und
+Adressen, das Repo ist öffentlich).
+
+Tests ohne Hardware (Linux, Container): `test_env.py` prüft Zertifikat
+(OpenDrop nimmt es an, ruft kein openssl auf), den Windows-Archivschreiber
+(Einträge `./name`, Inhalt; ein voller Sendevorgang damit bis in einen echten
+OpenDrop-Empfänger), die libarchive-Suche, `espdrop check`, pyserial-Timeouts
+und den Patch-Anwender des Installers. Der Installer selbst lief im Container
+komplett durch (frische venv, 17 Patches, alle Prüfsummen gleich,
+`check` ok); erneutes Ausführen erkennt die fertige Installation,
+eine mit `opendrop_install.sh` gebaute auch. Zusammen 31 Host-Tests.
+
 ## Danach
 
 Ergebnisse (auch Fehlschläge) in `docs/UEBERBLICK.md` unter „Offene Fragen"

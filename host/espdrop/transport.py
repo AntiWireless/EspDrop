@@ -65,15 +65,22 @@ class PySerialPort:
     def __init__(self, name: str):
         import serial
         self.name = name
-        self.ser = serial.Serial(name, timeout=0, write_timeout=5)
+        # DTR and RTS stay asserted (pyserial's default, as a Linux open does):
+        # on the USB-Serial/JTAG, RTS without DTR resets the chip.
+        self.ser = serial.Serial(name, timeout=0.2, write_timeout=5.0)
+        # Setting a timeout reconfigures the port on Windows (SetCommState,
+        # SetCommTimeouts), so only when it changes, not on every call.
+        self._rt, self._wt = 0.2, 5.0
 
     def read(self, timeout: float) -> bytes:
-        self.ser.timeout = timeout
+        if timeout != self._rt:
+            self.ser.timeout = self._rt = timeout
         n = max(1, self.ser.in_waiting)
         return self.ser.read(n)
 
     def write(self, data: bytes, timeout: float = 5.0) -> None:
-        self.ser.write_timeout = timeout
+        if timeout != self._wt:
+            self.ser.write_timeout = self._wt = timeout
         self.ser.write(data)
 
     def close(self) -> None:
