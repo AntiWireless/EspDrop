@@ -50,7 +50,12 @@ static const uint8_t k_rx_q_depths[] = {64, 48, 40, 32, 24, 16, 8};
  * Measured on the C5 with Bluetooth: over a 38 MB receive the free heap fell
  * only ~7 KB below its idle value (stats heap vs heap_min). */
 #define BRIDGE_HEAP_RESERVE (24u * 1024u)
+/* In IP mode the same queue carries the socket proxy's messages to the host,
+ * shallower: one ordered path, so a connection's FIN can never overtake its
+ * last data, and the lwIP thread never waits on USB. */
+#define BRIDGE_IPQ_DEPTH 8
 typedef struct {
+	uint8_t  type;   /* BRIDGE_MSG_FRAME (L2), or a proxy message (IP mode) */
 	uint16_t len;
 	uint8_t  eth[14 + BRIDGE_RX_PAYLOAD_MAX];
 } rx_frame_t;
@@ -72,6 +77,8 @@ static SemaphoreHandle_t s_l2q_lock;
 static SemaphoreHandle_t s_l2q_freed;   /* given by the fwd task after a release */
 static volatile bool     s_l2q_release; /* asks the fwd task to free the queue */
 static TaskHandle_t      s_fwd_task;
+static volatile bool     s_post_wanted;           /* a bridge_post found it full */
+static void            (*s_post_space_cb)(void);  /* called when room appears */
 static QueueHandle_t     s_peer_q;     /* peer_evt_t: AWDL task -> peer task */
 static uint8_t           s_rx_q_depth; /* depth actually allocated */
 static bool s_started;
@@ -117,7 +124,7 @@ static void send_test_frame(void) {
 /* Current mode (enum bridge_mode). Read by the Wi-Fi task for every frame. */
 static volatile uint8_t s_mode = BRIDGE_MODE_L2;
 
-static bool l2q_alloc(void);
+static bool l2q_alloc(uint8_t max_depth);
 static void l2q_release(void);
 
 /* Switch L2 <-> IP. Into IP: bring the interface up first, then route frames to
@@ -129,11 +136,14 @@ static int set_mode(uint8_t mode) {
 	if (mode == BRIDGE_MODE_IP) {
 		if (awdl_netif_set_up(mac, true) != 0) return -1;
 		s_mode = BRIDGE_MODE_IP;
-		l2q_release();   /* its memory is lwIP's now */
+		l2q_release();                   /* its memory is lwIP's now ... */
+		l2q_alloc(BRIDGE_IPQ_DEPTH);     /* ... but for a small ordered queue */
+		sockproxy_reset(0);
 	} else {
-		if (!l2q_alloc()) return -1;   /* the host's awdl0 needs it */
+		l2q_release();                   /* the small IP-mode queue, if any */
+		if (!l2q_alloc(255)) return -1;  /* the host's awdl0 needs a deep one */
 		s_mode = BRIDGE_MODE_L2;
-		sockproxy_reset();
+		sockproxy_reset(0);
 		if (awdl_netif_is_up()) awdl_netif_set_up(mac, false);
 	}
 	return 0;
@@ -144,7 +154,7 @@ static void send_hello_reply(void) {
 	r[0] = BRIDGE_PROTO_VERSION;
 	r[1] = s_mode;
 	radio_get_self_mac(r + 2);
-	r[8] = 0;                              /* proxy connections: none yet (M4.3) */
+	r[8] = SOCKPROXY_TCP_SLOTS;            /* TCP connections at once */
 	r[9] = 1400 & 0xff;                    /* max TCP_DATA chunk, little endian */
 	r[10] = 1400 >> 8;
 	r[11] = (ble_wake_ready() ? 0x01 : 0)  /* caps: BLE wake */
@@ -168,6 +178,7 @@ void bridge_rx_frame(const uint8_t dst[6], const uint8_t src[6], uint16_t ethert
 	scratch.eth[13] = (uint8_t)(ethertype & 0xff);
 	if (plen) memcpy(scratch.eth + 14, payload, plen);
 	scratch.len = (uint16_t)(14 + plen);
+	scratch.type = BRIDGE_MSG_FRAME;
 	/* Never wait: the lock is only held around a mode switch. */
 	if (xSemaphoreTake(s_l2q_lock, 0) != pdTRUE) { s_rx_drops++; return; }
 	if (s_rx_fwd_q && xQueueSend(s_rx_fwd_q, &scratch, 0) != pdTRUE)
@@ -175,13 +186,15 @@ void bridge_rx_frame(const uint8_t dst[6], const uint8_t src[6], uint16_t ethert
 	xSemaphoreGive(s_l2q_lock);
 }
 
-/* Create the L2 RX queue, as deep as the heap allows with BRIDGE_HEAP_RESERVE
- * left over (the smallest depth is always tried). No-op if it exists. */
-static bool l2q_alloc(void) {
+/* Create the queue to the host, at most max_depth deep and as deep as the heap
+ * allows with BRIDGE_HEAP_RESERVE left over (the smallest depth that fits
+ * max_depth is always tried). No-op if it exists. */
+static bool l2q_alloc(uint8_t max_depth) {
 	if (s_rx_fwd_q) return true;
 	QueueHandle_t q = NULL;
 	uint8_t depth = 0;
 	for (size_t i = 0; i < sizeof(k_rx_q_depths) && !q; i++) {
+		if (k_rx_q_depths[i] > max_depth && i + 1 < sizeof(k_rx_q_depths)) continue;
 		size_t need = (size_t)k_rx_q_depths[i] * sizeof(rx_frame_t);
 		bool last = (i + 1 == sizeof(k_rx_q_depths));
 		if (!last && esp_get_free_heap_size() < need + BRIDGE_HEAP_RESERVE)
@@ -197,6 +210,25 @@ static bool l2q_alloc(void) {
 	if (s_fwd_task) xTaskNotifyGive(s_fwd_task);
 	return true;
 }
+
+bool bridge_post(uint8_t type, const void *a, size_t alen, const void *b, size_t blen) {
+	static rx_frame_t item;   /* guarded by s_l2q_lock */
+	if (alen + blen > sizeof(item.eth)) return false;
+	if (!s_l2q_lock || xSemaphoreTake(s_l2q_lock, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+	bool ok = false;
+	if (s_rx_fwd_q) {
+		item.type = type;
+		item.len = (uint16_t)(alen + blen);
+		if (alen) memcpy(item.eth, a, alen);
+		if (blen) memcpy(item.eth + alen, b, blen);
+		ok = xQueueSend(s_rx_fwd_q, &item, 0) == pdTRUE;
+	}
+	xSemaphoreGive(s_l2q_lock);
+	if (!ok) s_post_wanted = true;
+	return ok;
+}
+
+void bridge_set_post_space_cb(void (*cb)(void)) { s_post_space_cb = cb; }
 
 /* Hand the L2 RX queue's memory back (IP mode). The fwd task frees it within
  * one receive timeout; returns once it has, or after 1 s. */
@@ -230,9 +262,13 @@ static void bridge_fwd_task(void *arg) {
 		}
 		/* A timeout, not forever, so a release request is seen promptly. */
 		if (xQueueReceive(q, &fr, pdMS_TO_TICKS(50)) == pdTRUE) {
-			if (bridge_send(BRIDGE_MSG_FRAME, fr.eth, fr.len) == 0) {
+			if (bridge_send(fr.type, fr.eth, fr.len) == 0 && fr.type == BRIDGE_MSG_FRAME) {
 				s_frames_to_host++;
 				s_bytes_to_host += fr.len;
+			}
+			if (s_post_wanted) {   /* room again for a waiting producer */
+				s_post_wanted = false;
+				if (s_post_space_cb) s_post_space_cb();
 			}
 		}
 	}
@@ -616,12 +652,20 @@ static void handle_msg(const uint8_t *msg, size_t len) {
 			set_mode(payload[1]);
 		else
 			set_mode(BRIDGE_MODE_L2);
-		sockproxy_reset();   /* a new host session starts with no sockets */
+		/* A new host session starts with no sockets, and says how much each
+		 * connection may send it before it grants more. */
+		sockproxy_reset(plen >= 6 ? (uint32_t)(payload[2] | (payload[3] << 8) |
+		                                      (payload[4] << 16) | ((uint32_t)payload[5] << 24))
+		                          : 0);
 		send_hello_reply();
 		break;
 	case BRIDGE_MSG_UDP_OPEN:
 	case BRIDGE_MSG_UDP_SEND:
 	case BRIDGE_MSG_UDP_CLOSE:
+	case BRIDGE_MSG_TCP_CONNECT:
+	case BRIDGE_MSG_TCP_DATA:
+	case BRIDGE_MSG_TCP_CREDIT:
+	case BRIDGE_MSG_TCP_CLOSE:
 		sockproxy_handle(type, payload, plen);
 		break;
 	/* PEER_* are device->host only (see bridge_notify_peer). */
@@ -668,7 +712,7 @@ int bridge_start(void) {
 
 	s_l2q_lock = xSemaphoreCreateMutex();
 	s_l2q_freed = xSemaphoreCreateBinary();
-	if (s_l2q_lock && s_l2q_freed) l2q_alloc();   /* L2 after boot */
+	if (s_l2q_lock && s_l2q_freed) l2q_alloc(255);   /* L2 after boot */
 	s_peer_q   = xQueueCreate(BRIDGE_PEER_Q_LEN, sizeof(peer_evt_t));
 	if (!s_rx_fwd_q || !s_peer_q) {
 		if (s_rx_fwd_q) vQueueDelete(s_rx_fwd_q);

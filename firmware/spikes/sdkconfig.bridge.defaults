@@ -40,3 +40,9 @@ CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=4
 CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=16
 CONFIG_BT_LE_CONN_RESERVED_MEMORY_COUNT=0
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# M4 IP mode: TCP buffers for AirDrop over AWDL, where a round trip waits for a
+# shared slot (up to ~0.5 s): 8 x MSS each way instead of 4 x. The socket proxy
+# holds at most 4 connections; the heap in IP mode is ~89 KB (docs/SPIKES.md).
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=11520
+CONFIG_LWIP_TCP_WND_DEFAULT=11520

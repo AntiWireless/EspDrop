@@ -29,6 +29,13 @@ MSG_CMD         = 7   # host -> device: command text
 MSG_CMD_REPLY   = 8   # device -> host: command output text
 MSG_HELLO       = 9   # host -> device: u8 version, u8 mode (0 L2, 1 IP), u32 credit
 MSG_HELLO_REPLY = 10  # device -> host: version, mode, mac[6], max_conns, max_chunk, caps
+MSG_TCP_LISTEN  = 16  # host -> device: u16 port (M4.4)
+MSG_TCP_CONNECT = 17  # host -> device: u16 conn, dst[16], u16 port
+MSG_TCP_OPENED  = 18  # device -> host: u16 conn, peer[16], u16 rport, u16 lport,
+                      #                 u8 accepted, u32 credit
+MSG_TCP_DATA    = 19  # both: u16 conn, data
+MSG_TCP_CREDIT  = 20  # both: u16 conn, u32 bytes the other side may send more
+MSG_TCP_CLOSE   = 21  # both: u16 conn, u8 kind (0 FIN, 1 RST), i8 err
 MSG_UDP_OPEN    = 24  # host -> device: u16 port, u8 flags (bit 0: ff02::fb)
 MSG_UDP_RECV    = 25  # device -> host: u16 port, src[16], u16 src_port, u8 flags, data
 MSG_UDP_SEND    = 26  # host -> device: u16 port, dst[16], u16 dst_port, data
@@ -176,3 +183,41 @@ def parse_result(p: bytes):
         return None
     req, ident, err = struct.unpack_from("<BHb", p, 0)
     return req, ident, err
+
+
+TCP_FIN = 0
+TCP_RST = 1
+
+
+def tcp_connect(conn: int, dst: bytes, port: int) -> bytes:
+    if len(dst) != 16:
+        raise ValueError("dst must be a 16-byte IPv6 address")
+    return frame(MSG_TCP_CONNECT, struct.pack("<H", conn) + dst + struct.pack("<H", port))
+
+
+def tcp_data(conn: int, data: bytes) -> bytes:
+    return frame(MSG_TCP_DATA, struct.pack("<H", conn) + data)
+
+
+def tcp_credit(conn: int, n: int) -> bytes:
+    return frame(MSG_TCP_CREDIT, struct.pack("<HI", conn, n))
+
+
+def tcp_close(conn: int, kind: int = TCP_FIN, err: int = 0) -> bytes:
+    return frame(MSG_TCP_CLOSE, struct.pack("<HBb", conn, kind, err))
+
+
+def parse_tcp_opened(p: bytes):
+    """(conn, peer16, rport, lport, accepted, credit) or None."""
+    if len(p) < 27:
+        return None
+    conn = struct.unpack_from("<H", p, 0)[0]
+    rport, lport, accepted, credit = struct.unpack_from("<HHBI", p, 18)
+    return conn, p[2:18], rport, lport, bool(accepted), credit
+
+
+def parse_tcp_close(p: bytes):
+    """(conn, kind, err) or None."""
+    if len(p) < 4:
+        return None
+    return struct.unpack_from("<HBb", p, 0)

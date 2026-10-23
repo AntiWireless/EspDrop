@@ -40,6 +40,13 @@ enum bridge_msg_type {
 	BRIDGE_MSG_CMD_REPLY   = 8, /* device -> host: command output text */
 	BRIDGE_MSG_HELLO       = 9, /* host -> device: u8 version, u8 mode (M4) */
 	BRIDGE_MSG_HELLO_REPLY = 10,/* device -> host: version, mode, mac, limits, caps */
+	BRIDGE_MSG_TCP_LISTEN  = 16, /* host -> device: u16 port (M4.4) */
+	BRIDGE_MSG_TCP_CONNECT = 17, /* host -> device: u16 conn, dst[16], u16 port */
+	BRIDGE_MSG_TCP_OPENED  = 18, /* device -> host: u16 conn, peer[16], u16 rport, u16 lport,
+	                              * u8 accepted, u32 credit */
+	BRIDGE_MSG_TCP_DATA    = 19, /* both: u16 conn, data */
+	BRIDGE_MSG_TCP_CREDIT  = 20, /* both: u16 conn, u32 bytes (the sender may send more) */
+	BRIDGE_MSG_TCP_CLOSE   = 21, /* both: u16 conn, u8 kind (0 FIN, 1 RST), i8 err */
 	/* Socket proxy, IP mode (docs/M4_ENTWURF.md section 4, main/sockproxy.c) */
 	BRIDGE_MSG_UDP_OPEN    = 24, /* host -> device: u16 port, u8 flags */
 	BRIDGE_MSG_UDP_RECV    = 25, /* device -> host: u16 port, src[16], u16 sport, u8 flags, data */
@@ -92,6 +99,16 @@ void bridge_notify_peer(bool added, const uint8_t mac[6]);
 
 /* printf-style LOG message to the host. */
 void bridge_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+/*
+ * Queue one message for the host without waiting (IP mode: the socket proxy).
+ * The payload is a || b. Messages queued here go out in order. Returns false
+ * when the queue is full (or absent); the callback set with
+ * bridge_set_post_space_cb then runs, from the forwarding task, as soon as an
+ * entry has gone out.
+ */
+bool bridge_post(uint8_t type, const void *a, size_t alen, const void *b, size_t blen);
+void bridge_set_post_space_cb(void (*cb)(void));
 
 #ifdef __cplusplus
 }
