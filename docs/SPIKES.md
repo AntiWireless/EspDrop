@@ -191,13 +191,16 @@ Radarerkennung).
   Port selbst (ein 64-Byte-Paket je Abholung durch den PC), nicht am Treiber;
   AirDrop nutzt davon schon ~90 %.
 - **Nachmessung (2026-10-23, mit Bluetooth in der Firmware):** eine 38-MB-Datei
-  mit ~0,6 MB/s laut OpenDrop, also mehr als die gemessenen ~255 kB/s. Die
-  2,87 MB oben waren zu klein (Aufbau und Annehmen zählen mit), und `usbtest`
-  scheint die Grenze zu unterschätzen; offen, bis `bytes_to_host` und die
-  Dauer einer Übertragung zusammen gemessen sind. Mit den Bluetooth-Defaults
-  sank die Empfangs-Warteschlange auf 16 Plätze (`rxq=16`, ~700 `rx_drops`);
-  seitdem sind die NimBLE-Puffer verkleinert und die Heap-Reserve für Wi-Fi
-  auf 24 KB gesenkt (gemessen fiel der freie Heap im Betrieb nur ~7 KB).
+  in etwa 60 s, ~0,6 MB/s laut OpenDrop. Da jedes empfangene Byte über USB
+  läuft, schafft der USB-Serial/JTAG-Weg mindestens das; `usbtest` (~255 kB/s)
+  hat die Grenze unterschätzt, und die 2,87 MB oben waren zu klein (Aufbau und
+  Annehmen zählen mit). Mit den Bluetooth-Defaults sank die Empfangs-
+  Warteschlange auf 16 Plätze (`rxq=16`, ~700 `rx_drops`); mit verkleinerten
+  NimBLE-Puffern und 24 KB Heap-Reserve für Wi-Fi waren es 425 Drops (~1,6 %
+  der Frames) bei **gleicher** Geschwindigkeit. Die Drops begrenzen also nicht,
+  sie sind TCPs Signal am Engpass; der liegt sehr wahrscheinlich am USB
+  (Full-Speed, praktisch rund 1 MB/s). Mehr ginge nur über einen anderen Weg
+  zum PC.
 
 ## Senden an ein iPhone (M3, PC -> iPhone)
 
