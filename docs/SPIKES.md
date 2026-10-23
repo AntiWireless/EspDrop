@@ -389,6 +389,26 @@ Kredite, TLS, `/Discover`, `/Ask` und `/Upload` und prüft, dass sie ankommt
 ~/opendrop-venv/bin/python -m unittest discover -s host/tests
 ```
 
+## M4.4: empfangen über den ESP (`espdrop receive`)
+
+Empfangen läuft jetzt ebenfalls über den eigenen IP-Stack des ESP. Die Firmware
+nimmt eingehende AWDL-Verbindungen an (`TCP_LISTEN`/accept), die Host-App meldet
+sich per mDNS als Empfänger an (Responder, alle 5 s, mit AAAA = Link-Local des
+ESP aus der HELLO-MAC) und fährt den OpenDrop-Server auf `127.0.0.1`; jede
+angenommene Verbindung wird dorthin durchgereicht.
+
+```sh
+~/opendrop-venv/bin/python tools/espdrop.py receive -n MeinPC
+```
+Am iPhone/iPad eine Datei teilen und „MeinPC“ wählen; die Datei landet im
+aktuellen Verzeichnis. `awdl_bridge.py` darf dabei nicht laufen.
+
+Tests ohne Hardware: Ein eingehend überbrückender Fake (`AcceptBridgeDevice`)
+simuliert ein verbindendes Apple-Gerät; ein echter OpenDrop-Sender fährt
+`/Discover`, `/Ask`, `/Upload` gegen den von `espdrop receive` gestarteten
+Server. `ReceiveEndToEndTest` prüft, dass die Datei ankommt. Zusammen 20
+Host-Tests.
+
 ## Danach
 
 Ergebnisse (auch Fehlschläge) in `docs/UEBERBLICK.md` unter „Offene Fragen"

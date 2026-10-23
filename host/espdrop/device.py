@@ -150,6 +150,10 @@ class Device:
         self._udp.pop(port, None)
         self._write(link.udp_close(port))
 
+    def listen(self, port, on_accept):
+        """Accept AWDL connections to `port`; on_accept(conn) per connection."""
+        self.tcp.listen(port, on_accept)
+
     # ---- used by proxy.py --------------------------------------------------
 
     def _send(self, framed: bytes):

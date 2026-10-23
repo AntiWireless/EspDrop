@@ -235,3 +235,76 @@ class EndToEndTest(unittest.TestCase):
                         if f.read() == payload:
                             got = fn
             self.assertIsNotNone(got, f"the payload did not arrive in {dl_dir}")
+
+
+class ReceiveEndToEndTest(unittest.TestCase):
+    """espdrop receive against a real OpenDrop sender, bridged by the fake
+    device as an inbound AWDL connection. Exercises the listener, the mDNS
+    responder's address, the splice to the loopback server, and the real
+    /Discover + /Ask + /Upload handlers."""
+
+    def test_receive_arrives(self):
+        import ipaddress
+        import tempfile
+        import threading
+        import time
+        from fake_device import AcceptBridgeDevice
+        from espdrop.device import Device
+        from espdrop.receive import Receiver, eui64_linklocal
+        from opendrop.client import AirDropClient
+        from opendrop.config import AirDropConfig
+
+        payload = b"receive end-to-end \x00\xff" * 500   # ~10 KB
+        with tempfile.TemporaryDirectory() as src_dir, tempfile.TemporaryDirectory() as dl:
+            src = os.path.join(src_dir, "in.bin")
+            with open(src, "wb") as f:
+                f.write(payload)
+            fake = AcceptBridgeDevice(mac=bytes.fromhex("020000000001"))
+            dev = Device(fake)
+            dev.hello(link.MODE_IP)
+            rx = Receiver(dev, name="EspPad")
+            cwd = os.getcwd()
+            os.chdir(dl)                       # the server extracts into cwd
+            try:
+                rx.start()
+                self.assertTrue(wait_for(lambda: fake.listening == 8771, 3),
+                                "device should be listening on 8771")
+                # A sender (real OpenDrop client) dials in through the fake.
+                sock = fake.open_incoming()
+                client = AirDropClient(AirDropConfig(computer_name="Sender"),
+                                       (str(eui64_text()), 8771))
+
+                def factory(address, timeout=None, source_address=None):
+                    return sock
+                from opendrop import client as odc
+                base = odc.HTTPSConnectionAWDL.__init__
+
+                def init(self, *a, **kw):
+                    base(self, *a, **kw)
+                    self._create_connection = factory
+                odc.HTTPSConnectionAWDL.__init__ = init
+                try:
+                    name = client.send_discover()
+                    self.assertEqual(name, "EspPad", "the receiver should be discoverable")
+                    self.assertTrue(client.send_ask([src]), "the receiver should accept")
+                    self.assertTrue(client.send_upload([src]), "the upload should succeed")
+                finally:
+                    odc.HTTPSConnectionAWDL.__init__ = base
+                time.sleep(0.3)
+            finally:
+                os.chdir(cwd)
+                rx.stop()
+                dev.close()
+            got = None
+            for root, _d, files in os.walk(dl):
+                for fn in files:
+                    with open(os.path.join(root, fn), "rb") as f:
+                        if f.read() == payload:
+                            got = fn
+            self.assertIsNotNone(got, f"the payload did not arrive in {dl}")
+
+
+def eui64_text():
+    import ipaddress
+    from espdrop.receive import eui64_linklocal
+    return ipaddress.IPv6Address(eui64_linklocal(bytes.fromhex("020000000001")))

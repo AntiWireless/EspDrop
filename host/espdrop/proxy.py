@@ -163,6 +163,7 @@ class Manager:
         self._conns = {}
         self._lock = threading.Lock()
         self._next = 1               # host ids: 0x0001..0x7fff (device uses 0x8000+)
+        self._on_accept = None       # called with each accepted TcpConn
 
     def connect(self, peer16: bytes, port: int, name="") -> TcpConn:
         """Open a connection to [peer]:port through the device; returns at once.
@@ -175,6 +176,12 @@ class Manager:
             self._conns[cid] = conn
         self.dev._send(link.tcp_connect(cid, peer16, port))
         return conn
+
+    def listen(self, port, on_accept):
+        """Ask the device to accept connections on `port`; on_accept(conn) runs
+        for each (the peer opened it; conn.app is ready)."""
+        self._on_accept = on_accept
+        self.dev._send(link.tcp_listen(port))
 
     def forget(self, cid):
         with self._lock:
@@ -197,9 +204,19 @@ class Manager:
         if msg_type == link.MSG_TCP_OPENED:
             o = link.parse_tcp_opened(payload)
             if o:
-                cid, peer16, rport, _lport, _accepted, credit = o
+                cid, peer16, rport, _lport, accepted, credit = o
                 c = self._conns.get(cid)
-                if c:
+                if c is None and accepted:
+                    # The device allocated this id (0x8000+) for a peer that
+                    # connected to our listener.
+                    chunk = (self.dev.hello_info or {}).get("max_chunk", 1400)
+                    c = TcpConn(self.dev, cid, max_chunk=chunk, name=f"accept{cid:#x}")
+                    with self._lock:
+                        self._conns[cid] = c
+                    c.on_opened(peer16, rport, credit)
+                    if self._on_accept:
+                        self._on_accept(c)
+                elif c:
                     c.on_opened(peer16, rport, credit)
         elif msg_type == link.MSG_TCP_DATA:
             if len(payload) >= 2:

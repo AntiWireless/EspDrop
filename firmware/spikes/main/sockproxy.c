@@ -67,6 +67,8 @@ typedef struct {
 } tcp_conn_t;
 static tcp_conn_t s_tcp[SOCKPROXY_TCP_SLOTS];
 static uint32_t   s_host_credit = 65536;   /* from HELLO */
+static struct tcp_pcb *s_listen;           /* the one listening pcb, if any */
+static uint16_t   s_next_accept = 0x8000;  /* device-allocated ids for accepts */
 /* Set when tcp_abort ran: a callback that did that must return ERR_ABRT. */
 static bool       s_aborted;
 
@@ -203,6 +205,9 @@ static void udp_send_job(const uint8_t *d, size_t n) {
 }
 
 /* ---- TCP --------------------------------------------------------------------- */
+
+static void tcp_setup(tcp_conn_t *c, struct tcp_pcb *pcb);
+static void tcp_post_opened(tcp_conn_t *c, struct tcp_pcb *pcb, uint8_t accepted);
 
 static tcp_conn_t *tcp_find(uint16_t id) {
 	for (int i = 0; i < SOCKPROXY_TCP_SLOTS; i++)
@@ -350,16 +355,37 @@ static err_t tcp_on_connected(void *arg, struct tcp_pcb *pcb, err_t err) {
 	if (err != ERR_OK) {   /* lwIP reports a failed connect through tcp_err */
 		return err;
 	}
+	tcp_post_opened(c, pcb, 0);   /* we connected, not accepted */
+	return ERR_OK;
+}
+
+static err_t tcp_on_accept(void *arg, struct tcp_pcb *pcb, err_t err) {
+	(void)arg;
+	if (err != ERR_OK || !pcb) return ERR_VAL;
+	tcp_conn_t *c = NULL;
+	for (int i = 0; i < SOCKPROXY_TCP_SLOTS && !c; i++)
+		if (!s_tcp[i].used) c = &s_tcp[i];
+	if (!c) { tcp_abort(pcb); return ERR_ABRT; }   /* no slot: refuse */
+	memset(c, 0, sizeof(*c));
+	c->used = true;
+	c->id = s_next_accept;
+	s_next_accept = s_next_accept < 0xffff ? s_next_accept + 1 : 0x8000;
+	c->host_credit = s_host_credit;
+	tcp_setup(c, pcb);
+	tcp_post_opened(c, pcb, 1);
+	return ERR_OK;
+}
+
+static void tcp_post_opened(tcp_conn_t *c, struct tcp_pcb *pcb, uint8_t accepted) {
 	uint8_t m[2 + 16 + 2 + 2 + 1 + 4];
 	wr16(m, c->id);
 	memcpy(m + 2, ip_2_ip6(&pcb->remote_ip)->addr, 16);
 	wr16(m + 18, pcb->remote_port);
 	wr16(m + 20, pcb->local_port);
-	m[22] = 0;                         /* we connected, not accepted */
+	m[22] = accepted;
 	wr32(m + 23, tcp_sndbuf(pcb));     /* the host may send this much */
 	post_ctl(BRIDGE_MSG_TCP_OPENED, m, sizeof(m));
 	s_tcp_opened++;
-	return ERR_OK;
 }
 
 static void tcp_setup(tcp_conn_t *c, struct tcp_pcb *pcb) {
@@ -406,6 +432,32 @@ static void tcp_connect_job(const uint8_t *d, size_t n) {
 		tcp_release(c, true);
 		tcp_fail(id, SOCKPROXY_EFAIL);
 	}
+}
+
+static void tcp_listen_job(const uint8_t *d, size_t n) {
+	if (n < 2) { send_result(BRIDGE_MSG_TCP_LISTEN, 0, SOCKPROXY_EBADREQ); return; }
+	uint16_t port = rd16(d);
+	struct netif *nif = awdl_netif_get();
+	if (!nif || !awdl_netif_is_up()) { send_result(BRIDGE_MSG_TCP_LISTEN, port, SOCKPROXY_EDOWN); return; }
+	if (s_listen) { send_result(BRIDGE_MSG_TCP_LISTEN, port, SOCKPROXY_OK); return; }
+	struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V6);
+	if (!pcb) { send_result(BRIDGE_MSG_TCP_LISTEN, port, SOCKPROXY_ENOMEM); return; }
+	tcp_bind_netif(pcb, nif);
+	if (tcp_bind(pcb, IP6_ADDR_ANY, port) != ERR_OK) {
+		tcp_close(pcb);
+		send_result(BRIDGE_MSG_TCP_LISTEN, port, SOCKPROXY_EFAIL);
+		return;
+	}
+	err_t e = ERR_OK;
+	struct tcp_pcb *lpcb = tcp_listen_with_backlog_and_err(pcb, SOCKPROXY_TCP_SLOTS, &e);
+	if (!lpcb) {
+		tcp_close(pcb);
+		send_result(BRIDGE_MSG_TCP_LISTEN, port, SOCKPROXY_EFAIL);
+		return;
+	}
+	s_listen = lpcb;
+	tcp_accept(lpcb, tcp_on_accept);
+	send_result(BRIDGE_MSG_TCP_LISTEN, port, SOCKPROXY_OK);
 }
 
 static void tcp_data_job(const uint8_t *d, size_t n) {
@@ -479,6 +531,7 @@ static void job_run(void *arg) {
 			if (s) udp_close_slot(s);
 		}
 		break;
+	case BRIDGE_MSG_TCP_LISTEN:  tcp_listen_job(j->data, j->len); break;
 	case BRIDGE_MSG_TCP_CONNECT: tcp_connect_job(j->data, j->len); break;
 	case BRIDGE_MSG_TCP_DATA:    tcp_data_job(j->data, j->len); break;
 	case BRIDGE_MSG_TCP_CREDIT:  tcp_credit_job(j->data, j->len); break;
@@ -513,6 +566,7 @@ static uint32_t          s_reset_credit;
 static void reset_job(void *arg) {
 	(void)arg;
 	for (int i = 0; i < UDP_SLOTS; i++) udp_close_slot(&s_udp[i]);
+	if (s_listen) { tcp_close(s_listen); s_listen = NULL; }
 	for (int i = 0; i < SOCKPROXY_TCP_SLOTS; i++)
 		if (s_tcp[i].used) tcp_release(&s_tcp[i], true);
 	s_host_credit = s_reset_credit ? s_reset_credit : 65536;

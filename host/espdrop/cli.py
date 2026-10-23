@@ -138,6 +138,27 @@ def cmd_send(args, transport=None):
         dev.close()
 
 
+def cmd_receive(args, transport=None):
+    import time
+    from .receive import Receiver
+    dev = _open(args, transport)
+    rx = Receiver(dev, name=args.name)
+    try:
+        _hello(dev)
+        rx.start()
+        print(f"ready: on the iPhone/iPad, share a file and pick {args.name!r}. "
+              f"Ctrl+C to stop.", flush=True)
+        try:
+            while not dev.error:
+                time.sleep(0.3)
+        except KeyboardInterrupt:
+            print()
+        return 0
+    finally:
+        rx.stop()
+        dev.close()
+
+
 def cmd_status(args, transport=None):
     dev = _open(args, transport)
     try:
@@ -179,6 +200,9 @@ def main(argv=None, transport=None):
     s.add_argument("--no-wake", action="store_true", help="do not send the BLE wake")
     s.add_argument("-v", "--verbose", action="store_true")
 
+    rv = sub.add_parser("receive", help="receive files from an Apple device")
+    rv.add_argument("-n", "--name", default="EspDrop", help="name shown on the sender")
+
     sub.add_parser("status", help="device, interface and counters")
     c = sub.add_parser("cmd", help="send one device command")
     c.add_argument("text", nargs="+")
@@ -186,7 +210,8 @@ def main(argv=None, transport=None):
     c.add_argument("--wait", type=float, default=12.0, help="ping6: seconds to show replies")
     c.set_defaults(verbose=True)
     args = ap.parse_args(argv)
-    handlers = {"find": cmd_find, "send": cmd_send, "status": cmd_status, "cmd": cmd_cmd}
+    handlers = {"find": cmd_find, "send": cmd_send, "receive": cmd_receive,
+                "status": cmd_status, "cmd": cmd_cmd}
     try:
         return handlers[args.action](args, transport)
     except (DeviceError, OSError) as e:

@@ -176,3 +176,74 @@ class TcpBridgeDevice(FakeDevice):
                 sk.close()
             except OSError:
                 pass
+
+
+class AcceptBridgeDevice(FakeDevice):
+    """A FakeDevice for the receive path: it has a listener (TCP_LISTEN), and
+    open_incoming() simulates a peer connecting to it. The returned socket is
+    the sender's end; the device bridges it to the host as an accepted
+    connection (TCP_OPENED accepted=1, then TCP_DATA/TCP_CREDIT both ways)."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.listening = None          # port, once TCP_LISTEN arrived
+        self._in = {}                  # accepted id -> sender-side socket (device end)
+        self._next = 0x8000
+
+    def _handle(self, t, p):
+        import socket
+        import struct
+        import threading
+        if t == link.MSG_TCP_LISTEN and len(p) >= 2:
+            self.listening = struct.unpack_from("<H", p)[0]
+            self._emit(link.MSG_RESULT, struct.pack("<BHb", link.MSG_TCP_LISTEN,
+                                                    self.listening, 0))
+        elif t == link.MSG_TCP_DATA and len(p) >= 2:
+            cid = struct.unpack_from("<H", p)[0]
+            sk = self._in.get(cid)
+            if sk:
+                try:
+                    sk.sendall(p[2:])
+                    self._emit(link.MSG_TCP_CREDIT, struct.pack("<HI", cid, len(p) - 2))
+                except OSError:
+                    pass
+        elif t == link.MSG_TCP_CREDIT:
+            pass
+        elif t == link.MSG_TCP_CLOSE and len(p) >= 3:
+            cid = struct.unpack_from("<H", p)[0]
+            sk = self._in.get(cid)
+            if sk:
+                try:
+                    sk.shutdown(1) if p[2] == 0 else sk.close()
+                except OSError:
+                    pass
+        else:
+            super()._handle(t, p)
+
+    def open_incoming(self, peer16=None):
+        """Return a socket the 'sender' writes to; the device bridges it to the
+        host as a newly accepted connection."""
+        import struct
+        import threading
+        from apple_mdns import PAD_IP
+        from espdrop.proxy import tcp_pair
+        a, b = tcp_pair()            # a: sender's end (TCP_NODELAY-capable); b: device's
+        cid = self._next
+        self._next += 1
+        self._in[cid] = b
+        peer = peer16 or PAD_IP.packed
+        self._emit(link.MSG_TCP_OPENED, struct.pack("<H", cid) + peer
+                   + struct.pack("<HHBI", 8771, 40000, 1, 65536))
+
+        def pump():
+            try:
+                while True:
+                    data = b.recv(2048)
+                    if not data:
+                        self._emit(link.MSG_TCP_CLOSE, struct.pack("<HBb", cid, 0, 0))
+                        return
+                    self._emit(link.MSG_TCP_DATA, struct.pack("<H", cid) + data)
+            except OSError:
+                pass
+        threading.Thread(target=pump, daemon=True).start()
+        return a

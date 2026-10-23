@@ -205,3 +205,76 @@ class Browser:
         rec.source = src
         rec.last_seen = time.monotonic()
         return rec
+
+
+class Responder:
+    """Announce our AirDrop receiver on the AWDL link (docs/M4_ENTWURF.md 5.3).
+
+    Builds our _airdrop._tcp records with python-zeroconf's ServiceInfo, sends
+    an unsolicited announcement every `interval` seconds (as the
+    opendrop-mdns-reannounce patch does: the iPhone only ever learns of us by
+    catching an announce burst over a link we share for a fraction of each
+    sequence), answers PTR queries, and sends a goodbye on stop."""
+
+    def __init__(self, device, instance_id, port, our_addr16, flags=0x3fb,
+                 interval=5.0, host=None):
+        from zeroconf import ServiceInfo
+        self.device = device
+        self.addr16 = our_addr16
+        self.server = host or f"{instance_id}.local."
+        name = f"{instance_id}._airdrop._tcp.local."
+        self.info = ServiceInfo(AIRDROP, name, port=port,
+                                properties={b"flags": str(flags).encode()},
+                                server=self.server, addresses=[bytes(our_addr16)])
+        self.interval = interval
+        self._stop = __import__("threading").Event()
+        self._thread = None
+
+    def _announce_packet(self):
+        out = DNSOutgoing(const._FLAGS_QR_RESPONSE | const._FLAGS_AA)
+        for rec in ([self.info.dns_pointer(), self.info.dns_service(),
+                     self.info.dns_text()] + list(self.info.dns_addresses())):
+            out.add_answer_at_time(rec, 0)
+        return out.packets()[0]
+
+    def start(self):
+        self.device.udp_open(MDNS_PORT, self._on_udp, join_mdns=True)
+        self._thread = __import__("threading").Thread(
+            target=self._loop, name="espdrop-mdns-rsp", daemon=True)
+        self._thread.start()
+
+    def _loop(self):
+        while not self._stop.is_set():
+            try:
+                self.device.udp_send(MDNS_PORT, MDNS_GROUP, MDNS_PORT, self._announce_packet())
+            except Exception:
+                pass
+            self._stop.wait(self.interval)
+
+    def _on_udp(self, src16, sport, multicast, data):
+        msg = DNSIncoming(data, (str(ipaddress.IPv6Address(src16)), MDNS_PORT))
+        if not msg.valid or not msg.is_query():
+            return
+        if any(q.name.lower() == AIRDROP and q.type in (T_PTR, const._TYPE_ANY)
+               for q in msg.questions):
+            pkt = self._announce_packet()
+            # Answer a QU question by unicast too, then multicast.
+            if not multicast:
+                self.device.udp_send(MDNS_PORT, src16, sport, pkt)
+            self.device.udp_send(MDNS_PORT, MDNS_GROUP, MDNS_PORT, pkt)
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=2)
+        try:
+            out = DNSOutgoing(const._FLAGS_QR_RESPONSE | const._FLAGS_AA)
+            self.info.dns_pointer().ttl = 0
+            out.add_answer_at_time(self.info.dns_pointer(), 0)
+            self.device.udp_send(MDNS_PORT, MDNS_GROUP, MDNS_PORT, out.packets()[0])
+        except Exception:
+            pass
+        try:
+            self.device.udp_close(MDNS_PORT)
+        except Exception:
+            pass

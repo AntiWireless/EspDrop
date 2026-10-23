@@ -189,6 +189,10 @@ TCP_FIN = 0
 TCP_RST = 1
 
 
+def tcp_listen(port: int) -> bytes:
+    return frame(MSG_TCP_LISTEN, struct.pack("<H", port))
+
+
 def tcp_connect(conn: int, dst: bytes, port: int) -> bytes:
     if len(dst) != 16:
         raise ValueError("dst must be a 16-byte IPv6 address")

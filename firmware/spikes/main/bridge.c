@@ -662,6 +662,7 @@ static void handle_msg(const uint8_t *msg, size_t len) {
 	case BRIDGE_MSG_UDP_OPEN:
 	case BRIDGE_MSG_UDP_SEND:
 	case BRIDGE_MSG_UDP_CLOSE:
+	case BRIDGE_MSG_TCP_LISTEN:
 	case BRIDGE_MSG_TCP_CONNECT:
 	case BRIDGE_MSG_TCP_DATA:
 	case BRIDGE_MSG_TCP_CREDIT:
