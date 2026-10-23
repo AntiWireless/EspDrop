@@ -42,10 +42,12 @@
  * an iPhone sends in 15 of 16 slots, so bursts are longer still (C5: 299 drops
  * at depth 32 in one transfer). Try the big depth first and fall back if the
  * heap is short. */
-static const uint8_t k_rx_q_depths[] = {64, 48, 32, 24, 16, 8};
+static const uint8_t k_rx_q_depths[] = {64, 48, 40, 32, 24, 16, 8};
 /* Wi-Fi allocates its RX/TX buffers dynamically from the same heap, so never
- * take the last of it: a larger depth is used only if this much stays free. */
-#define BRIDGE_HEAP_RESERVE (64u * 1024u)
+ * take the last of it: a larger depth is used only if this much stays free.
+ * Measured on the C5 with Bluetooth: over a 38 MB receive the free heap fell
+ * only ~7 KB below its idle value (stats heap vs heap_min). */
+#define BRIDGE_HEAP_RESERVE (24u * 1024u)
 typedef struct {
 	uint16_t len;
 	uint8_t  eth[14 + BRIDGE_RX_PAYLOAD_MAX];

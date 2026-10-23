@@ -30,4 +30,13 @@ CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 CONFIG_BT_NIMBLE_SECURITY_ENABLE=n
 CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+# Advertising only, so no connections and no ACL data: shrink the buffer pools
+# and the controller's reserved connection contexts. Their heap is what the
+# bridge's RX queue needs (with the defaults it dropped from 48 to 16 slots and
+# a 38 MB receive lost ~700 frames to a full queue).
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=12
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=8
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=4
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=16
+CONFIG_BT_LE_CONN_RESERVED_MEMORY_COUNT=0
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
