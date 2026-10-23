@@ -307,6 +307,13 @@ derselben Adresse senden):
 4. `ip` und `stats` noch einmal: Zähler, `heap=`.
 5. `mode l2`: zurück; `awdl0` funktioniert wieder wie zuvor.
 
+Ergebnis (2026-10-23, C5, iPad als Master auf Kanal 44): `ping6` vom ESP
+10/10 beantwortet, 4–460 ms (Sägezahn: 1 s Ping-Abstand gegen 1,048 s
+AWDL-Periode, jede Anfrage wartet auf den nächsten gemeinsamen Slot). Das iPad
+wurde aus dem Verkehr gelernt (`learned=10`, `nd=0`). Speicher in `ip`:
+`heap=30564`, `heap_min=24016`, weil die L2-Warteschlange (`rxq=40`, ~60 KB)
+auch in `ip` belegt bleibt; für TCP (M4.3) muss sie in `ip` frei werden.
+
 `ip`-Zähler: `rx` an lwIP übergeben, `not_ours` (an andere Stationen),
 `nomem`/`full` (verworfen: kein Speicher / lwIP-Warteschlange voll), `tx`
 gesendet, `fail` (AWDL-Sendewarteschlange voll), `learned` (Ziel aus der

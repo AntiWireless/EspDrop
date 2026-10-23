@@ -174,6 +174,9 @@ static void do_updown(void *arg) {
 		s_created = true;
 	}
 	if (u->up && !netif_is_up(&s_nif)) {
+		/* Up before netif_set_up: the MLD reports for the joins below must not
+		 * meet a linkoutput that still drops everything. */
+		s_up = true;
 		netif_set_link_up(&s_nif);
 		netif_set_up(&s_nif);
 #if LWIP_IPV6_SEND_ROUTER_SOLICIT
@@ -188,7 +191,7 @@ static void do_updown(void *arg) {
 		netif_set_down(&s_nif);
 		netif_set_link_down(&s_nif);
 	}
-	s_up = u->up;
+	s_up = u->up && netif_is_up(&s_nif);
 	xSemaphoreGive(u->done);
 }
 
