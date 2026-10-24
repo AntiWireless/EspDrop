@@ -528,6 +528,48 @@ Test (Firmware neu flashen, danach den ESP einmal ab- und anstecken):
 Der ESP sollte im Leerlauf spürbar kühler bleiben. `asleep=` zeigt, welchen
 Anteil der Zeit seit dem Start das WLAN aus war.
 
+## Desktop-App (PySide6)
+
+Die Host-App hat jetzt einen gemeinsamen Kern (`host/espdrop/session.py`) und
+darauf ein Fenster (`host/espdrop/gui.py`). Der Kern hält den ESP dauerhaft
+und baut die Verbindung nach dem Abstecken selbst wieder auf. Er empfängt in
+einem Zeitfenster und sendet nebenher; alle Ereignisse gehen an die
+Oberfläche. Neu dabei:
+
+- **Annehmen-Abfrage:** Jede eingehende Übertragung fragt zuerst (Absender,
+  Dateien, Vorschaubild). Ohne Antwort in 60 s wird abgelehnt. OpenDrop allein
+  nimmt alles an. Auch `espdrop receive` fragt jetzt `y/N` (`--yes` nimmt alles
+  an, `-d ORDNER` legt das Ziel fest).
+- **Empfängerauswahl:** Gefundene Geräte erscheinen mit ihrem Namen aus
+  `/Discover` („Bens iPad“), nicht nur mit der Kennung. Im Fenster wählen oder
+  Dateien auf ein Gerät ziehen; `espdrop send -r NAME` (Name, Teil davon oder
+  Kennung), bei mehreren ohne `-r` eine Liste zum Auswählen.
+- **Empfangsfenster** statt dauernd empfangsbereit (10 Minuten, 1 Stunde oder
+  dauerhaft), passend zum Schlafmodus der Firmware.
+
+Start: Linux `~/opendrop-venv/bin/python tools/espdrop.py gui`, Windows
+`.\tools\espdrop-gui.cmd` (ohne Konsolenfenster). PySide6 installiert
+`tools/opendrop_install.py`; eine mit `opendrop_install.sh` gebaute venv
+ergänzt `python3 tools/opendrop_install.py` (nur was fehlt) oder
+`~/opendrop-venv/bin/pip install PySide6`.
+
+Test auf der Hardware (Firmware mit Schlafmodus geflasht):
+1. App starten: oben „ESP verbunden“, rechts „Funk aus (spart Strom)“.
+2. „Geräte suchen“, am iPad Teilen-Menü öffnen: das iPad erscheint mit Namen.
+   Eine Datei darauf ziehen, am iPad annehmen: „gesendet“.
+3. „Empfangsbereit machen“, am iPad etwas teilen und „EspDrop“ wählen: der
+   Dialog fragt, „Annehmen“, die Datei liegt in `Downloads/EspDrop`.
+   Einmal „Ablehnen“: das iPad meldet die Ablehnung.
+4. Fenster schließen (läuft im Tray weiter), ESP ab- und anstecken: die App
+   verbindet sich wieder.
+5. Nach dem Ende des Empfangsfensters und ohne Suche: „Funk aus“, der ESP
+   bleibt kühl.
+
+Tests ohne Hardware: `test_session.py` (Suche mit Namen, Senden mit
+Fortschritt und Abbrechen, Empfangen mit Annehmen/Ablehnen/Zeitüberschreitung,
+Empfangsfenster, Neuverbinden) und `test_gui.py` (das Fenster offscreen:
+suchen und senden, Dialog annehmen und ablehnen). Zusammen 48 Host-Tests.
+
 ## Danach
 
 Ergebnisse (auch Fehlschläge) in `docs/UEBERBLICK.md` unter „Offene Fragen"

@@ -6,8 +6,8 @@
 # jedbillyb/airdrop-mt7921 (GPLv3) at the pinned revision, in their fixed order.
 # The patches and every resulting file are checked against pinned digests (those
 # of the install the bash script makes), so Windows and Linux run byte-identical
-# OpenDrop code. On top come pyserial (COM ports) and cryptography (the TLS
-# certificate, in place of the openssl command).
+# OpenDrop code. On top come pyserial (COM ports), cryptography (the TLS
+# certificate, in place of the openssl command) and PySide6 (the desktop app).
 #
 #   py tools\opendrop_install.py            Windows (Python 3.9+ from python.org)
 #   python3 tools/opendrop_install.py       works on Linux too
@@ -79,7 +79,7 @@ RESULT = {
     "opendrop/server.py": "be731940c314f2b2409c263d6585c407cb935c93c00de805affd602693d76503",
     "opendrop/util.py": "390ee35c01c3d332e57be49266610a44bd658dbe1fe16084a5e5bfeccb30fe2c",
 }
-EXTRAS = ["pyserial", "cryptography"]
+EXTRAS = ["pyserial", "cryptography", "PySide6"]
 # Markers in the venv, shared with the bash script: WIP while one of us builds
 # it, OK (holding the series signature) once every patch landed and was checked.
 STAMP_WIP = ".espdrop-installing"
@@ -379,10 +379,10 @@ def main():
 
     if up_to_date(venv):
         print(f"\nalready installed and up to date: {venv}")
-        extras = [m for m in ("serial", "cryptography")
+        extras = [m for m in ("serial", "cryptography", "PySide6")
                   if subprocess.run([py, "-c", f"import {m}"], capture_output=True).returncode]
-        if extras:      # a venv the bash script made has neither
-            step("adding pyserial and cryptography")
+        if extras:      # a venv the bash script made, or one from before the GUI
+            step("adding pyserial, cryptography and PySide6")
             run([py, "-m", "pip", "install", "-q"] + EXTRAS, "pip install")
     else:
         step(f"fetching the patch series (rev {REV})")
@@ -434,6 +434,7 @@ def main():
     step("espdrop check")
     rc = subprocess.run([py, os.path.join(HERE, "espdrop.py"), "check"]).returncode
     launcher = r".\tools\espdrop.cmd" if os.name == "nt" else f"{py} tools/espdrop.py"
+    gui = r".\tools\espdrop-gui.cmd" if os.name == "nt" else f"{launcher} gui"
     if rc:
         print(f"\ninstalled in {venv}, but the check above found problems.\n"
               f"libarchive: see host/README.md ('Windows'), then run this again with "
@@ -441,7 +442,8 @@ def main():
         return 1
     print(f"\ndone: {venv}\nnext: plug in the ESP (bridge firmware) and run, from the checkout,\n"
           f"  {launcher} status\n  {launcher} find\n  {launcher} send <file>\n"
-          f"  {launcher} receive")
+          f"  {launcher} receive\n"
+          f"the desktop app: {gui}")
     return 0
 
 

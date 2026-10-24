@@ -6,6 +6,7 @@
 #   espdrop status                            device, interface, counters
 #   espdrop cmd TEXT...                       one device command (as in the bridge)
 #   espdrop check                             is this PC ready (no device needed)
+#   espdrop gui                               the desktop app (gui.py, PySide6)
 #
 # The device is switched into IP mode (HELLO); it stays there until the next
 # session (tools/awdl_bridge.py switches it back to L2 itself).
@@ -324,6 +325,15 @@ def cmd_check(args, transport=None):
     return 0 if n == 0 else 1
 
 
+def cmd_gui(args, transport=None):
+    try:
+        from . import gui
+    except ImportError as e:
+        raise ImportError(f"the GUI needs PySide6 ({e}): pip install PySide6 into the venv, "
+                          f"or run tools/opendrop_install.py again") from e
+    return gui.main(port=args.port)
+
+
 def main(argv=None, transport=None):
     # Device and file names can be anything; a Windows console or a redirect in
     # its code page must not end the run over one character.
@@ -363,6 +373,7 @@ def main(argv=None, transport=None):
     c.add_argument("--wait", type=float, default=12.0, help="ping6: seconds to show replies")
     c.set_defaults(verbose=True)
     sub.add_parser("check", help="is this PC ready: Python, pyserial, OpenDrop, libarchive, TLS")
+    sub.add_parser("gui", help="the desktop app (PySide6)")
     args = ap.parse_args(argv)
     # Our steps (connect, accept, upload rate) at INFO; OpenDrop's own only from
     # WARNING on, unless -v asks for everything, with milliseconds since start.
@@ -373,7 +384,8 @@ def main(argv=None, transport=None):
     if not verbose:
         logging.getLogger("opendrop").setLevel(logging.WARNING)
     handlers = {"find": cmd_find, "send": cmd_send, "receive": cmd_receive,
-                "status": cmd_status, "cmd": cmd_cmd, "check": cmd_check}
+                "status": cmd_status, "cmd": cmd_cmd, "check": cmd_check,
+                "gui": cmd_gui}
     try:
         return handlers[args.action](args, transport)
     except ImportError as e:            # OpenDrop or libarchive (env.py says what to do)

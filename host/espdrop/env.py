@@ -352,6 +352,12 @@ def check(out=print):
     except ImportError as e:
         line(False, "zeroconf", f"{e}; {INSTALL_HINT}")
     try:
+        import PySide6
+        line(True, "pyside6", f"{PySide6.__version__} (espdrop gui)")
+    except ImportError:
+        line(None, "pyside6", "not installed: the command line works, the desktop app "
+                              "(espdrop gui) needs it")
+    try:
         path, detail = prepare_libarchive()
         line(True, "libarchive", detail)
     except ImportError as e:

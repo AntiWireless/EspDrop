@@ -161,6 +161,13 @@ class Session:
                 self._stop_receiver()
                 self._start_receiver()
 
+    def set_download_dir(self, path):
+        """Where received files go (OpenDrop's server writes into the current
+        directory, so this changes it for the whole process)."""
+        os.makedirs(path, exist_ok=True)
+        os.chdir(path)
+        self.download_dir = path
+
     def receivers(self):
         with self._lock:
             return list(self._receivers.values())
