@@ -43,13 +43,18 @@ typedef enum {
 	AWDL_AWAKE_HOLD,       /* power hold */
 	AWDL_AWAKE_WAKE,       /* BLE wake for a send */
 	AWDL_AWAKE_BUSY,       /* TCP connection (or its grace period) */
+	AWDL_AWAKE_ADVERT,     /* an AirDrop advert was heard while listening */
 } awdl_awake_reason_t;
+
+#define AWDL_POWER_ADVERT_WAKE_US   (25LL * 1000000)   /* awake after an AirDrop advert */
 
 typedef struct {
 	awdl_power_mode_t mode;
+	bool    listen;        /* watch for AirDrop adverts and wake on them */
 	int64_t hold_until;    /* power hold deadline */
 	int64_t wake_until;    /* BLE wake deadline */
 	int64_t busy_until;    /* last TCP connection + grace */
+	int64_t advert_until;  /* last AirDrop advert heard + wake */
 	int64_t host_seen;     /* last message from the host */
 } awdl_power_t;
 
@@ -64,6 +69,12 @@ void awdl_power_wake(awdl_power_t *p, int64_t now, uint32_t secs);
 void awdl_power_host_seen(awdl_power_t *p, int64_t now);
 /* Call regularly with the number of open TCP connections. */
 void awdl_power_busy(awdl_power_t *p, int64_t now, int open_tcp);
+/* Listen mode: watch for AirDrop adverts and wake the radio on them. */
+void awdl_power_set_listen(awdl_power_t *p, bool on);
+/* An AirDrop advert was heard: wake for a while (only acts while listening). */
+void awdl_power_advert(awdl_power_t *p, int64_t now);
+/* Should the BLE scan run now (listen mode, and the host is still around)? */
+bool awdl_power_want_scan(const awdl_power_t *p, int64_t now);
 
 /* Should the radio be on now, and why (AWDL_AWAKE_NONE: let it sleep). */
 awdl_awake_reason_t awdl_power_reason(const awdl_power_t *p, int64_t now);

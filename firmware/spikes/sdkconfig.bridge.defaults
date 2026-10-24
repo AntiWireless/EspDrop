@@ -27,7 +27,9 @@ CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=n
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
-CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+# Observer: a passive scan for AirDrop adverts, so the radio can sleep and wake
+# only when a phone nearby wants to share (main/ble_wake.c ble_scan, power.c).
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
 CONFIG_BT_NIMBLE_SECURITY_ENABLE=n
 CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
 # Advertising only, so no connections and no ACL data: shrink the buffer pools

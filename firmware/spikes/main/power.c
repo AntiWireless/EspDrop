@@ -14,6 +14,7 @@
 #include "freertos/task.h"
 
 #include "awdl_app.h"
+#include "ble_wake.h"
 #include "bridge.h"
 #include "radio.h"
 #include "sockproxy.h"
@@ -24,13 +25,38 @@ static awdl_power_t      s_pol;
 static portMUX_TYPE      s_mux = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t      s_task;
 static volatile bool     s_awake = true;    /* the radio comes up awake at boot */
-static uint32_t          s_sleeps, s_wakes, s_errors;
+static volatile bool     s_scanning;        /* the BLE AirDrop-advert scan is running */
+static uint32_t          s_sleeps, s_wakes, s_errors, s_adverts;
 static int64_t           s_asleep_us, s_since;   /* time asleep, last switch */
 
 static int64_t now_us(void) { return esp_timer_get_time(); }
 
 static void kick(void) {
 	if (s_task) xTaskNotifyGive(s_task);
+}
+
+/* NimBLE host task: an AirDrop advert is in range. Arm a short wake and let the
+ * power task bring the radio up; nothing about the sender is kept. */
+static void on_advert(void *ctx) {
+	(void)ctx;
+	int64_t t = now_us();
+	portENTER_CRITICAL(&s_mux);
+	awdl_power_advert(&s_pol, t);
+	s_adverts++;
+	portEXIT_CRITICAL(&s_mux);
+	kick();
+}
+
+/* Power task only: start/stop the BLE scan to match the wanted listen state. */
+static void apply_scan(bool want) {
+	if (want == s_scanning) return;
+	int rc = want ? ble_scan_start(on_advert, NULL) : ble_scan_stop();
+	if (rc == 0) {
+		s_scanning = want;
+		bridge_log("power: listen %s", want ? "on (watching for AirDrop)" : "off");
+	} else {
+		s_errors++;
+	}
 }
 
 /* Power task only: bring the radio to the wanted state. */
@@ -71,8 +97,10 @@ static void power_task(void *arg) {
 		portENTER_CRITICAL(&s_mux);
 		awdl_power_busy(&s_pol, t, open);
 		awdl_awake_reason_t why = awdl_power_reason(&s_pol, t);
+		bool want_scan = awdl_power_want_scan(&s_pol, t);
 		portEXIT_CRITICAL(&s_mux);
 		apply(why);
+		apply_scan(want_scan);
 	}
 }
 
@@ -108,6 +136,16 @@ void power_wake(uint32_t secs) {
 	kick();
 }
 
+void power_set_listen(bool on) {
+	portENTER_CRITICAL(&s_mux);
+	awdl_power_set_listen(&s_pol, on);
+	awdl_power_host_seen(&s_pol, now_us());
+	portEXIT_CRITICAL(&s_mux);
+	kick();
+}
+
+bool power_listen_supported(void) { return ble_scan_supported(); }
+
 void power_host_seen(void) {
 	int64_t t = now_us();
 	portENTER_CRITICAL(&s_mux);
@@ -126,13 +164,14 @@ int power_format_status(char *buf, size_t cap) {
 	int64_t asleep = s_asleep_us + (s_awake ? 0 : t - s_since);
 	int64_t up = t > 0 ? t : 1;
 	return snprintf(buf, cap,
-	                "power %s %s (%s) hold=%us wake=%us tcp=%d host=%us ago "
-	                "sleeps=%u wakes=%u asleep=%u%% err=%u",
+	                "power %s %s (%s) hold=%us wake=%us listen=%s tcp=%d host=%us ago "
+	                "sleeps=%u wakes=%u adverts=%u asleep=%u%% err=%u",
 	                p.mode == AWDL_POWER_ON ? "on" : "auto",
 	                s_awake ? "awake" : "asleep", awdl_power_reason_name(why),
 	                (unsigned)awdl_power_left_s(&p, p.hold_until, t),
 	                (unsigned)awdl_power_left_s(&p, p.wake_until, t),
+	                p.listen ? (s_scanning ? "on" : "arming") : "off",
 	                sockproxy_tcp_open(), (unsigned)((t - p.host_seen) / 1000000),
-	                (unsigned)s_sleeps, (unsigned)s_wakes,
+	                (unsigned)s_sleeps, (unsigned)s_wakes, (unsigned)s_adverts,
 	                (unsigned)(asleep * 100 / up), (unsigned)s_errors);
 }

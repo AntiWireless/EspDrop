@@ -509,24 +509,39 @@ unberührt.
   Empfangsfenster (`power hold <s>`, die App erneuert das alle 30 s) und
   solange eine TCP-Verbindung offen ist (plus 20 s). Meldet sich die Host-App
   90 s nicht mehr (beendet, abgesteckt), verfallen ihre Anforderungen.
+- **Empfangen im Schlaf (`power listen on`):** Der ESP lauscht dann per
+  Bluetooth-Scan auf AirDrop-Signale. Öffnet ein iPhone/iPad in der Nähe sein
+  Teilen-Menü, sendet es dasselbe Continuity-„AirDrop“-Advert (Typ 0x05), mit
+  dem es Empfänger sucht. Sieht der ESP es, weckt er das WLAN für ~25 s (jedes
+  weitere Advert verlängert, solange das Teilen-Menü offen ist), meldet sich
+  per mDNS und nimmt die Übertragung an; danach schläft das WLAN wieder. So
+  bleibt der Chip kühl und ist trotzdem empfangsbereit, ohne das WLAN
+  dauerhaft laufen zu lassen. Es wird nur „AirDrop in Reichweite“ ausgewertet,
+  nichts über das sendende Gerät gespeichert. `espdrop receive` und das GUI
+  schalten das automatisch ein (Firmware mit der Observer-Rolle, HELLO-Cap
+  `0x04`); fehlt sie, fällt die App auf ein durchgehend gehaltenes
+  Empfangsfenster zurück.
 - **Befehl `power`:** zeigt `power auto|on awake|asleep (grund) hold=… wake=…
-  tcp=… sleeps=… asleep=…%`; `power hold <1..3600>`, `power release`,
-  `power on`, `power auto`. Für Diagnose im IP-Betrieb (z. B. `ping6`) vorher
-  `power hold 120`.
+  listen=on|off tcp=… sleeps=… wakes=… adverts=… asleep=…%`; `power hold
+  <1..3600>`, `power release`, `power listen on|off`, `power on`, `power auto`.
+  Für Diagnose im IP-Betrieb (z. B. `ping6`) vorher `power hold 120`.
 
-Die Firmware lauscht dabei nicht auf Bluetooth-Signale anderer Geräte.
-Empfangen ist deshalb nur möglich, solange die App ein Empfangsfenster offen
-hat, ähnlich Apples „Für alle für 10 Minuten“. `espdrop receive` hält das
-Fenster offen, solange es läuft.
+Das BLE-Advert zum *Senden* (`wake`) und der BLE-Scan zum *Empfangen*
+(`listen`) laufen unabhängig; beide teilen sich mit dem WLAN den Funk über die
+Koexistenz.
 
 Test (Firmware neu flashen, danach den ESP einmal ab- und anstecken):
 ```sh
 ~/opendrop-venv/bin/python tools/espdrop.py cmd power      # asleep (none), kurz nach dem Start
 ~/opendrop-venv/bin/python tools/espdrop.py find -t 20     # wacht auf, findet das iPad
 ~/opendrop-venv/bin/python tools/espdrop.py cmd power      # nach dem Ende wieder asleep
+~/opendrop-venv/bin/python tools/espdrop.py receive -n MeinPC   # power zeigt listen=on
+#   am iPad Teilen-Menü öffnen: der ESP wacht von selbst auf (adverts= steigt),
+#   MeinPC erscheint, Datei annehmen; danach wieder asleep.
 ```
 Der ESP sollte im Leerlauf spürbar kühler bleiben. `asleep=` zeigt, welchen
-Anteil der Zeit seit dem Start das WLAN aus war.
+Anteil der Zeit seit dem Start das WLAN aus war, `adverts=` wie oft ein
+AirDrop-Signal in der Nähe den ESP geweckt hat.
 
 ## Desktop-App (PySide6)
 
@@ -545,7 +560,10 @@ Oberfläche. Neu dabei:
   Dateien auf ein Gerät ziehen; `espdrop send -r NAME` (Name, Teil davon oder
   Kennung), bei mehreren ohne `-r` eine Liste zum Auswählen.
 - **Empfangsfenster** statt dauernd empfangsbereit (10 Minuten, 1 Stunde oder
-  dauerhaft), passend zum Schlafmodus der Firmware.
+  dauerhaft), passend zum Schlafmodus der Firmware. Kann der ESP sich selbst
+  wecken (`power listen`, siehe oben), schläft das WLAN auch während des
+  Fensters und wacht erst auf, wenn ein Gerät in der Nähe teilen will; rechts
+  oben steht dann „Funk schläft (empfangsbereit)“.
 
 Start: Linux `~/opendrop-venv/bin/python tools/espdrop.py gui`, Windows
 `.\tools\espdrop-gui.cmd` (ohne Konsolenfenster). PySide6 installiert
@@ -557,9 +575,11 @@ Test auf der Hardware (Firmware mit Schlafmodus geflasht):
 1. App starten: oben „ESP verbunden“, rechts „Funk aus (spart Strom)“.
 2. „Geräte suchen“, am iPad Teilen-Menü öffnen: das iPad erscheint mit Namen.
    Eine Datei darauf ziehen, am iPad annehmen: „gesendet“.
-3. „Empfangsbereit machen“, am iPad etwas teilen und „EspDrop“ wählen: der
-   Dialog fragt, „Annehmen“, die Datei liegt in `Downloads/EspDrop`.
-   Einmal „Ablehnen“: das iPad meldet die Ablehnung.
+3. „Empfangsbereit machen“: rechts oben „Funk schläft (empfangsbereit)“ (der
+   ESP lauscht per Bluetooth). Am iPad etwas teilen: der ESP wacht von selbst
+   auf, „MeinPC“ erscheint am iPad, wählen; der Dialog fragt, „Annehmen“, die
+   Datei liegt in `Downloads/EspDrop`. Einmal „Ablehnen“: das iPad meldet die
+   Ablehnung.
 4. Fenster schließen (läuft im Tray weiter), ESP ab- und anstecken: die App
    verbindet sich wieder.
 5. Nach dem Ende des Empfangsfensters und ohne Suche: „Funk aus“, der ESP
@@ -567,8 +587,9 @@ Test auf der Hardware (Firmware mit Schlafmodus geflasht):
 
 Tests ohne Hardware: `test_session.py` (Suche mit Namen, Senden mit
 Fortschritt und Abbrechen, Empfangen mit Annehmen/Ablehnen/Zeitüberschreitung,
-Empfangsfenster, Neuverbinden) und `test_gui.py` (das Fenster offscreen:
-suchen und senden, Dialog annehmen und ablehnen). Zusammen 48 Host-Tests.
+Empfangsfenster, `power listen` bei scan-fähiger Firmware, Neuverbinden) und
+`test_gui.py` (das Fenster offscreen: suchen und senden, Dialog annehmen und
+ablehnen). Zusammen 49 Host-Tests.
 
 ## Danach
 

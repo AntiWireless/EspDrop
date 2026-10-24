@@ -46,8 +46,9 @@ PROTO_VERSION = 1     # BRIDGE_PROTO_VERSION
 MODE_L2 = 0           # frames to/from the host's awdl0 (tools/awdl_bridge.py)
 MODE_IP = 1           # the device's own IPv6 stack (this host app)
 
-CAP_BLE = 0x01        # HELLO_REPLY caps: the BLE AirDrop wake (`wake`) works
-CAP_IP  = 0x02        #                   IP mode is available
+CAP_BLE  = 0x01       # HELLO_REPLY caps: the BLE AirDrop wake (`wake`) works
+CAP_IP   = 0x02       #                   IP mode is available
+CAP_SCAN = 0x04       #                   `power listen`: wake AWDL on AirDrop adverts
 
 # RESULT error codes - enum sockproxy_err in firmware/spikes/main/sockproxy.h.
 ERRORS = {

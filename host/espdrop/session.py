@@ -99,7 +99,9 @@ class Session:
         self._factory = transport_factory     # tests: a callable returning a transport
         self._receive = receive
         self._receive_until = None            # end of a receive window (monotonic)
-        self._held = None                     # last power request sent: True hold, False release
+        self._held = None                     # last hold request sent: True hold, False release
+        self._listening = None                # last listen request sent
+        self._scan_ok = False                 # the ESP can wake itself on AirDrop adverts
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = None
@@ -277,13 +279,14 @@ class Session:
                 continue
             with self._lock:
                 self.dev = dev
+                self._scan_ok = bool(info.get("caps", 0) & link.CAP_SCAN)
                 self._set_state("connected", info=info)
                 if self._receive:
                     try:
                         self._start_receiver()
                     except Exception as e:     # noqa: BLE001
                         self._emit("log", text=f"receiving did not start: {e}")
-            self._held = None
+            self._held = self._listening = None    # re-send on the new device
             self._power()
             self._poll_power()
             self._serve(dev)
@@ -342,8 +345,11 @@ class Session:
 
     def _start_receiver(self):
         from .receive import Receiver
+        # Announce a little faster than OpenDrop's 5 s: when the radio wakes on
+        # an AirDrop advert, the phone should discover us within its share-sheet
+        # window (it also answers the phone's own queries once awake).
         self._receiver = Receiver(self.dev, name=self.name, on_ask=self._ask,
-                                  on_event=self._on_receive)
+                                  on_event=self._on_receive, announce_interval=2.5)
         self._receiver.start()
 
     def _stop_receiver(self):
@@ -436,25 +442,39 @@ class Session:
         except Exception as e:                 # noqa: BLE001
             self._emit("log", text=f"wake: {e}")
 
-    def _busy(self):
-        return bool(self._receive or self._browser or any(
-            t.state in ("new", "asking", "uploading") for t in self._transfers.values()))
+    def _sending(self):
+        return any(t.state in ("new", "asking", "uploading") for t in self._transfers.values())
+
+    def _hold_needed(self):
+        # The radio stays fully on while browsing or sending. For receiving it
+        # only needs a hold on firmware that cannot wake itself on AirDrop
+        # adverts; otherwise receiving uses listen (the radio sleeps between).
+        return bool(self._browser or self._sending()
+                    or (self._receive and not self._scan_ok))
 
     def _power(self):
-        """Ask the ESP to keep its radio on while we receive, browse or send,
-        and to let it sleep otherwise (firmware without a sleep mode ignores
-        it: its radio is always on)."""
+        """Match the ESP's radio to what we are doing: a hold keeps it on
+        (browse, send, or receive on firmware without BLE listen); listen lets
+        it sleep and wake on an AirDrop advert (receive). Firmware without a
+        sleep mode ignores both: its radio is always on."""
         dev = self.dev
         if not dev or self.state != "connected":
             return
-        need = self._busy()
-        if need == self._held:
-            return
-        self._held = need
+        hold = self._hold_needed()
+        if hold != self._held:
+            self._held = hold
+            self._power_cmd(dev, f"power hold {HOLD_SECS}" if hold else "power release")
+        if self._scan_ok:
+            listen = self._receive
+            if listen != self._listening:
+                self._listening = listen
+                self._power_cmd(dev, f"power listen {'on' if listen else 'off'}")
+
+    def _power_cmd(self, dev, text):
         try:
-            dev.cmd(f"power hold {HOLD_SECS}" if need else "power release")
+            dev.cmd(text)
         except Exception as e:                 # noqa: BLE001
-            self._emit("log", text=f"power: {e}")
+            self._emit("log", text=f"{text}: {e}")
 
     def _unwake(self):
         """End the BLE wake once neither a browse nor a send needs it."""

@@ -30,6 +30,8 @@ int power_init(awdl_power_mode_t mode);
 void power_set_mode(awdl_power_mode_t mode);
 void power_hold(uint32_t secs);          /* 0 releases */
 void power_wake(uint32_t secs);          /* BLE wake running for secs; 0 stopped */
+void power_set_listen(bool on);          /* watch for AirDrop adverts and wake on them */
+bool power_listen_supported(void);       /* false without the BLE observer role */
 void power_host_seen(void);
 bool power_awake(void);
 

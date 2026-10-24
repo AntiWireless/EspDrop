@@ -159,7 +159,8 @@ static void send_hello_reply(void) {
 	r[9] = 1400 & 0xff;                    /* max TCP_DATA chunk, little endian */
 	r[10] = 1400 >> 8;
 	r[11] = (ble_wake_ready() ? 0x01 : 0)  /* caps: BLE wake */
-	      | 0x02;                          /*       IP mode */
+	      | 0x02                           /*       IP mode */
+	      | ((ble_wake_ready() && ble_scan_supported()) ? 0x04 : 0);  /* listen (BLE scan) */
 	bridge_send(BRIDGE_MSG_HELLO_REPLY, r, sizeof(r));
 }
 
@@ -529,20 +530,29 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 	} else if (strcmp(cmd, "power") == 0 || strncmp(cmd, "power ", 6) == 0) {
 		/* `power` shows whether the radio is on and why; `power hold <secs>`
 		 * keeps it on (browsing, a receive window), `power release` ends that,
+		 * `power listen on|off` watches for AirDrop adverts and wakes on them,
 		 * `power on` / `power auto` set the mode (HELLO sets it too). */
 		const char *arg = cmd[5] == '\0' ? "" : cmd + 6;
 		bool bad = false;
 		if (strcmp(arg, "on") == 0) power_set_mode(AWDL_POWER_ON);
 		else if (strcmp(arg, "auto") == 0) power_set_mode(AWDL_POWER_AUTO);
 		else if (strcmp(arg, "release") == 0) power_hold(0);
-		else if (strncmp(arg, "hold ", 5) == 0) {
+		else if (strcmp(arg, "listen on") == 0) {
+			if (power_listen_supported()) power_set_listen(true);
+			else bad = true;
+		} else if (strcmp(arg, "listen off") == 0) {
+			power_set_listen(false);
+		} else if (strncmp(arg, "hold ", 5) == 0) {
 			char *end;
 			long secs = strtol(arg + 5, &end, 10);
 			bad = end == arg + 5 || *end || secs < 1 || secs > 3600;
 			if (!bad) power_hold((uint32_t)secs);
 		} else if (arg[0]) bad = true;
-		if (bad) snprintf(out, sizeof(out), "power: use `power`, `power hold <1..3600>`, "
-		                  "`power release`, `power on` or `power auto`");
+		if (strcmp(arg, "listen on") == 0 && !power_listen_supported())
+			snprintf(out, sizeof(out), "power: listen needs the BLE observer role, not in "
+			         "this firmware");
+		else if (bad) snprintf(out, sizeof(out), "power: use `power`, `power hold <1..3600>`, "
+		                  "`power release`, `power listen on|off`, `power on` or `power auto`");
 		else power_format_status(out, sizeof(out));
 		cmd_reply(out);
 	} else if (strcmp(cmd, "mode") == 0 || strncmp(cmd, "mode ", 5) == 0) {

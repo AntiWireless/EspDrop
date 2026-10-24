@@ -204,6 +204,35 @@ class ReceiveTest(SessionCase):
             time.sleep(0.05)
         self.assertEqual(fake.commands[-1], "power release")
 
+    def test_listen_mode_when_the_esp_can_wake_itself(self):
+        # A scan-capable ESP: receiving uses `power listen on` (the radio
+        # sleeps and wakes on an AirDrop advert), not a continuous hold.
+        fake = DuplexBridgeDevice(caps=link.CAP_BLE | link.CAP_IP | link.CAP_SCAN)
+        dl = os.path.join(self.tmp.name, "listen")
+        self.session = s = Session(transport_factory=lambda: fake, receive=True,
+                                   on_event=self.events, on_ask=lambda ask: True,
+                                   download_dir=dl, name="MeinPC")
+        s.start()
+        self.events.wait(device_state("connected"))
+        for _ in range(100):
+            if fake.listening == 8771:
+                break
+            time.sleep(0.05)
+        self.assertEqual(fake.listening, 8771)
+        self.assertIn("power listen on", fake.commands)
+        self.assertNotIn("power hold 90", fake.commands)
+        # A transfer still arrives (the firmware would have woken AWDL).
+        payload = b"listen path \xff" * 500
+        self.assertTrue(self.incoming(fake, "l.jpg", payload))
+        self.events.wait(lambda k, i: k == "receive" and i["phase"] == "received")
+        self.assertIn("l.jpg", os.listdir(dl))
+        s.set_receiving(False)
+        for _ in range(40):
+            if "power listen off" in fake.commands:
+                break
+            time.sleep(0.05)
+        self.assertIn("power listen off", fake.commands)
+
     def test_declined_and_unanswered(self):
         fake, dl = self.start(lambda ask: False)
         self.assertFalse(self.incoming(fake, "nein.txt", b"no"))

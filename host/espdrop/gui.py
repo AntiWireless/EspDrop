@@ -644,10 +644,12 @@ def power_text(reply):
         return ""
     if words[1] == "on":
         return "Funk immer an"
-    why = {"(hold)": "für die App", "(wake)": "zum Senden", "(busy)": "Übertragung"}.get(
-        words[3] if len(words) > 3 else "", "")
-    return "Funk aus (spart Strom)" if words[2] == "asleep" else f"Funk an ({why})" if why \
-        else "Funk an"
+    listen = next((w[7:] for w in words if w.startswith("listen=")), "off")
+    why = {"(hold)": "für die App", "(wake)": "zum Senden", "(busy)": "Übertragung",
+           "(advert)": "Gerät in der Nähe"}.get(words[3] if len(words) > 3 else "", "")
+    if words[2] == "asleep":
+        return "Funk schläft (empfangsbereit)" if listen != "off" else "Funk aus (spart Strom)"
+    return f"Funk an ({why})" if why else "Funk an"
 
 
 def default_download_dir():

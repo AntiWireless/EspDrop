@@ -166,6 +166,10 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(t("power auto asleep (none) hold=0s wake=0s"), "Funk aus (spart Strom)")
         self.assertEqual(t("power auto awake (hold) hold=80s"), "Funk an (für die App)")
         self.assertEqual(t("power on awake (on)"), "Funk immer an")
+        self.assertEqual(t("power auto asleep (none) hold=0s wake=0s listen=on tcp=0"),
+                         "Funk schläft (empfangsbereit)")
+        self.assertEqual(t("power auto awake (advert) hold=0s wake=0s listen=on tcp=0"),
+                         "Funk an (Gerät in der Nähe)")
         self.assertEqual(t("ok power"), "")
 
 

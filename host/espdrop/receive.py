@@ -106,11 +106,13 @@ class Receiver:
     received, total) and "received" (ask, files, ok, raw, size, secs). Files
     land in the current directory."""
 
-    def __init__(self, dev, name="EspDrop", flags=0x3fb, on_ask=None, on_event=None):
+    def __init__(self, dev, name="EspDrop", flags=0x3fb, on_ask=None, on_event=None,
+                 announce_interval=5.0):
         self.dev = dev
         env.ensure_identity(name)      # before OpenDrop would call openssl
         self.config = AirDropConfig(computer_name=name)
         self.config.flags = flags
+        self.announce_interval = announce_interval
         self.on_ask = on_ask
         self.on_event = on_event or (lambda kind, **info: None)
         self.httpd = None
@@ -240,6 +242,7 @@ class Receiver:
         instance = f"{mac.hex()}"
         self.responder = mdns.Responder(self.dev, instance, AIRDROP_PORT,
                                         eui64_linklocal(mac), flags=self.config.flags,
+                                        interval=self.announce_interval,
                                         host=f"{instance}.local.")
         self.responder.start()
         self.dev.listen(AIRDROP_PORT, self._on_accept)

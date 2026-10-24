@@ -30,6 +30,15 @@ static volatile bool    s_ready;    /* host synced with the controller */
 static volatile bool    s_active;   /* our advert is running */
 static volatile int64_t s_end_us;   /* when it stops by itself */
 
+#if CONFIG_BT_NIMBLE_ROLE_OBSERVER
+static volatile bool    s_scanning; /* the AirDrop-advert scan is running */
+static ble_scan_cb_t    s_scan_cb;
+static void            *s_scan_ctx;
+/* 40 ms every 320 ms: enough to catch a phone's AirDrop adverts within a
+ * second or two, low enough that scanning costs little while Wi-Fi is off. */
+#define SCAN_UNITS(ms) ((uint16_t)((ms) * 1000 / 625))   /* ms -> 0.625 ms units */
+#endif
+
 static void on_sync(void) { s_ready = true; }
 
 static void on_reset(int reason) {
@@ -136,6 +145,79 @@ unsigned ble_wake_remaining(void) {
 	return left > 0 ? (unsigned)((left + 999999) / 1000000) : 0;
 }
 
+#if CONFIG_BT_NIMBLE_ROLE_OBSERVER
+
+/* Is this an Apple "AirDrop" Continuity advert (manufacturer 0x004C, type
+ * 0x05)? Parse AD structures, then the Continuity TLVs inside Apple's
+ * manufacturer-specific data. We only answer yes/no; nothing is kept. */
+static bool is_airdrop_advert(const uint8_t *d, uint8_t len) {
+	for (int i = 0; i + 1 < len;) {
+		uint8_t ad_len = d[i];
+		if (ad_len == 0 || i + 1 + ad_len > len) break;
+		uint8_t ad_type = d[i + 1];
+		if (ad_type == 0xff && ad_len >= 4 && d[i + 2] == 0x4c && d[i + 3] == 0x00) {
+			int j = i + 4, end = i + 1 + ad_len;  /* Continuity TLVs: type, len, value */
+			while (j + 1 < end) {
+				uint8_t t = d[j], l = d[j + 1];
+				if (t == 0x05) return true;        /* 0x05 = AirDrop */
+				j += 2 + l;
+			}
+		}
+		i += 1 + ad_len;
+	}
+	return false;
+}
+
+/* NimBLE host task. An advert arrived while scanning. */
+static int on_disc(struct ble_gap_event *ev, void *arg) {
+	(void)arg;
+	if (ev->type == BLE_GAP_EVENT_DISC) {
+		if (s_scan_cb && is_airdrop_advert(ev->disc.data, ev->disc.length_data))
+			s_scan_cb(s_scan_ctx);
+	} else if (ev->type == BLE_GAP_EVENT_DISC_COMPLETE) {
+		s_scanning = false;             /* only if a duration was set; we scan forever */
+	}
+	return 0;
+}
+
+bool ble_scan_supported(void) { return true; }
+
+int ble_scan_start(ble_scan_cb_t cb, void *ctx) {
+	if (!s_ready) return BLE_HS_ENOTSYNCED;
+	s_scan_cb = cb;
+	s_scan_ctx = ctx;
+	if (s_scanning) return 0;
+	struct ble_gap_disc_params p = {0};
+	p.passive = 1;                      /* listen only, never send scan requests */
+	p.filter_duplicates = 0;            /* repeats re-arm the wake while sharing stays open */
+	p.itvl = SCAN_UNITS(320);
+	p.window = SCAN_UNITS(40);
+	int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &p, on_disc, NULL);
+	if (rc == 0) s_scanning = true;
+	return rc;
+}
+
+int ble_scan_stop(void) {
+	if (!s_scanning) return 0;
+	int rc = ble_gap_disc_cancel();
+	if (rc == 0 || rc == BLE_HS_EALREADY) {
+		s_scanning = false;
+		return 0;
+	}
+	return rc;
+}
+
+bool ble_scan_active(void) { return s_scanning; }
+
+#else /* observer role not built: scanning is unavailable */
+
+bool ble_scan_supported(void) { return false; }
+int ble_scan_start(ble_scan_cb_t cb, void *ctx) { (void)cb; (void)ctx; return BLE_HS_ENOTSUP; }
+int ble_scan_stop(void) { return 0; }
+bool ble_scan_active(void) { return false; }
+
+#endif /* CONFIG_BT_NIMBLE_ROLE_OBSERVER */
+
 #else /* !CONFIG_BT_NIMBLE_ENABLED: firmware built without Bluetooth */
 
 int ble_wake_init(void) { return ESP_ERR_NOT_SUPPORTED; }
@@ -147,5 +229,9 @@ int ble_wake_start(unsigned secs, const uint8_t hashes[8]) {
 }
 int ble_wake_stop(void) { return 0; }
 unsigned ble_wake_remaining(void) { return 0; }
+bool ble_scan_supported(void) { return false; }
+int ble_scan_start(ble_scan_cb_t cb, void *ctx) { (void)cb; (void)ctx; return ESP_ERR_NOT_SUPPORTED; }
+int ble_scan_stop(void) { return 0; }
+bool ble_scan_active(void) { return false; }
 
 #endif

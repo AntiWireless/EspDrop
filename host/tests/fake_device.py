@@ -78,6 +78,10 @@ class FakeDevice:
                 reply = "wake off" if arg == "off" else f"wake on {arg} s left"
             elif text == "wake":
                 reply = "wake off"
+            elif text.startswith("power"):
+                listen = "on" if "listen on" in text else "off"
+                reply = (f"power auto awake (hold) hold=90s wake=0s listen={listen} "
+                         f"tcp=0 host=0s ago sleeps=0 wakes=0 adverts=0 asleep=0% err=0")
             else:
                 reply = f"ok {text}"
             self._emit(link.MSG_CMD_REPLY, reply.encode())

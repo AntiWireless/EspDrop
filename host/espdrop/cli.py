@@ -271,17 +271,24 @@ def cmd_receive(args, transport=None):
                       f"raw archive kept: {info['raw'] or 'no'}", flush=True)
 
     dev = _open(args, transport)
-    rx = Receiver(dev, name=args.name, on_ask=on_ask, on_event=on_event)
+    rx = Receiver(dev, name=args.name, on_ask=on_ask, on_event=on_event,
+                  announce_interval=2.5)
+    listen = False
     try:
-        _hello(dev)
+        h = _hello(dev)
+        listen = bool(h["caps"] & link.CAP_SCAN)
         rx.start()
+        if listen:
+            dev.cmd("power listen on")             # the ESP wakes itself on AirDrop adverts
+            print("the ESP listens for AirDrop and keeps its Wi-Fi asleep until a device is "
+                  "near.", flush=True)
         print(f"ready: on the iPhone/iPad, share a file and pick {args.name!r}; files go to "
               f"{os.getcwd()}. Ctrl+C to stop.", flush=True)
         try:
             renew = 0.0
             while not dev.error:
-                if time.monotonic() >= renew:       # the radio stays on while we receive
-                    _hold(dev, 90)
+                if time.monotonic() >= renew:       # keep the host's requests from lapsing
+                    _hold(dev, 90) if not listen else dev.cmd("power")
                     renew = time.monotonic() + 30
                 time.sleep(0.3)
         except KeyboardInterrupt:
@@ -290,6 +297,11 @@ def cmd_receive(args, transport=None):
     finally:
         rx.stop()
         if not dev.error:
+            if listen:
+                try:
+                    dev.cmd("power listen off")
+                except DeviceError:
+                    pass
             _hold(dev, 0)
         dev.close()
 

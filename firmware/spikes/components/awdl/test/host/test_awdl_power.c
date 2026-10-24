@@ -62,11 +62,37 @@ static void test_requests_lapse_with_the_host(void) {
 	CHECK(awdl_power_reason(&p, S(310)) == AWDL_AWAKE_BUSY);
 }
 
+static void test_listen_and_advert(void) {
+	awdl_power_t p;
+	awdl_power_init(&p, AWDL_POWER_AUTO, 0);
+	awdl_power_host_seen(&p, S(10));
+	/* Listen off: no scan, and an advert does not wake the radio. */
+	CHECK(!awdl_power_want_scan(&p, S(11)));
+	awdl_power_advert(&p, S(11));
+	CHECK(awdl_power_reason(&p, S(12)) == AWDL_AWAKE_NONE);
+	/* Listen on: the scan runs; that earlier advert does not linger past its window. */
+	awdl_power_set_listen(&p, true);
+	CHECK(awdl_power_want_scan(&p, S(12)));
+	CHECK(awdl_power_reason(&p, S(40)) == AWDL_AWAKE_NONE);   /* 11 + 25 s passed */
+	/* A fresh advert wakes it, and a later one re-arms it (share sheet still open). */
+	awdl_power_advert(&p, S(40));
+	CHECK(awdl_power_reason(&p, S(50)) == AWDL_AWAKE_ADVERT);
+	CHECK(awdl_power_reason(&p, S(66)) == AWDL_AWAKE_NONE);   /* 40 + 25 s passed */
+	awdl_power_advert(&p, S(60));
+	CHECK(awdl_power_reason(&p, S(80)) == AWDL_AWAKE_ADVERT);
+	/* Host goes quiet: no scan, and adverts stop keeping it awake. */
+	CHECK(awdl_power_want_scan(&p, S(10 + 89)));
+	CHECK(!awdl_power_want_scan(&p, S(10 + 90)));
+	awdl_power_advert(&p, S(200));
+	CHECK(awdl_power_reason(&p, S(205)) == AWDL_AWAKE_NONE);  /* host silent since 10 s */
+}
+
 int main(void) {
 	test_auto_sleeps_without_requests();
 	test_hold_and_release();
 	test_wake_and_busy();
 	test_requests_lapse_with_the_host();
+	test_listen_and_advert();
 	if (failures) {
 		printf("test_awdl_power: %d failure(s)\n", failures);
 		return EXIT_FAILURE;

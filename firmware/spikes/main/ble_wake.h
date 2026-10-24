@@ -51,6 +51,22 @@ int ble_wake_stop(void);
 /* Seconds the running wake has left, 0 if it is off. */
 unsigned ble_wake_remaining(void);
 
+/*
+ * Listen for AirDrop over Bluetooth, the other way round: an iPhone/iPad with
+ * its share sheet open sends the same Continuity "AirDrop" advert (type 0x05)
+ * to find receivers. A passive BLE scan watches for it, so main/power.c can
+ * keep the Wi-Fi radio asleep and only wake AWDL when a phone nearby actually
+ * wants to share, instead of keeping AWDL on all the time. cb runs on the
+ * NimBLE host task for every AirDrop advert seen (no device identity is kept;
+ * only "an AirDrop advert is in range" matters). Needs the observer role in
+ * the build; ble_scan_supported() is false otherwise and ble_scan_start fails.
+ */
+typedef void (*ble_scan_cb_t)(void *ctx);
+bool ble_scan_supported(void);
+int ble_scan_start(ble_scan_cb_t cb, void *ctx);
+int ble_scan_stop(void);
+bool ble_scan_active(void);
+
 #ifdef __cplusplus
 }
 #endif
