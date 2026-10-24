@@ -27,6 +27,7 @@
 #include "ble_wake.h" /* `wake`: the AirDrop wake over our own Bluetooth */
 #include "awdl_netif.h" /* IP mode: the AWDL link as an lwIP interface */
 #include "sockproxy.h"  /* IP mode: host sockets on that interface */
+#include "power.h"      /* `power`: the radio sleeps while nothing needs it */
 #include "radio.h"    /* radio_get_stats, for the `radio` diagnostic command */
 
 #define BRIDGE_MAX_PAYLOAD 1600
@@ -495,6 +496,7 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 			else snprintf(out, sizeof(out), "wake off");
 		} else if (strcmp(arg, "off") == 0) {
 			int rc = ble_wake_stop();
+			power_wake(0);
 			if (rc) snprintf(out, sizeof(out), "wake error %d", rc);
 			else snprintf(out, sizeof(out), "wake off");
 		} else {
@@ -518,10 +520,30 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 				         "`wake <1..%d> [16 hex digits]`", BLE_WAKE_MAX_SECS);
 			} else {
 				int rc = ble_wake_start((unsigned)secs, have_h ? h : NULL);
+				if (!rc) power_wake((uint32_t)secs);   /* AWDL up for the send it announces */
 				if (rc) snprintf(out, sizeof(out), "wake error %d", rc);
 				else snprintf(out, sizeof(out), "wake on %u s left", ble_wake_remaining());
 			}
 		}
+		cmd_reply(out);
+	} else if (strcmp(cmd, "power") == 0 || strncmp(cmd, "power ", 6) == 0) {
+		/* `power` shows whether the radio is on and why; `power hold <secs>`
+		 * keeps it on (browsing, a receive window), `power release` ends that,
+		 * `power on` / `power auto` set the mode (HELLO sets it too). */
+		const char *arg = cmd[5] == '\0' ? "" : cmd + 6;
+		bool bad = false;
+		if (strcmp(arg, "on") == 0) power_set_mode(AWDL_POWER_ON);
+		else if (strcmp(arg, "auto") == 0) power_set_mode(AWDL_POWER_AUTO);
+		else if (strcmp(arg, "release") == 0) power_hold(0);
+		else if (strncmp(arg, "hold ", 5) == 0) {
+			char *end;
+			long secs = strtol(arg + 5, &end, 10);
+			bad = end == arg + 5 || *end || secs < 1 || secs > 3600;
+			if (!bad) power_hold((uint32_t)secs);
+		} else if (arg[0]) bad = true;
+		if (bad) snprintf(out, sizeof(out), "power: use `power`, `power hold <1..3600>`, "
+		                  "`power release`, `power on` or `power auto`");
+		else power_format_status(out, sizeof(out));
 		cmd_reply(out);
 	} else if (strcmp(cmd, "mode") == 0 || strncmp(cmd, "mode ", 5) == 0) {
 		/* `mode` shows L2 (frames to the host's awdl0) or IP (the device's own
@@ -626,6 +648,7 @@ static void handle_msg(const uint8_t *msg, size_t len) {
 	uint8_t type = msg[0];
 	const uint8_t *payload = msg + 1;
 	size_t plen = len - 1;
+	power_host_seen();              /* the host is there; its requests stay valid */
 
 	switch (type) {
 	case BRIDGE_MSG_ECHO:
@@ -652,6 +675,9 @@ static void handle_msg(const uint8_t *msg, size_t len) {
 			set_mode(payload[1]);
 		else
 			set_mode(BRIDGE_MODE_L2);
+		/* L2 (the host's awdl0) expects AWDL all the time; in IP mode the
+		 * radio runs only while the host asks for it (power.h). */
+		power_set_mode(s_mode == BRIDGE_MODE_IP ? AWDL_POWER_AUTO : AWDL_POWER_ON);
 		/* A new host session starts with no sockets, and says how much each
 		 * connection may send it before it grants more. */
 		sockproxy_reset(plen >= 6 ? (uint32_t)(payload[2] | (payload[3] << 8) |

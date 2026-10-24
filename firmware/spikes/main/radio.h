@@ -128,6 +128,17 @@ int radio_set_channel(uint8_t channel);
 uint8_t radio_get_channel(void);
 
 /*
+ * Switch the Wi-Fi radio off (radio_sleep: promiscuous off, esp_wifi_stop) and
+ * on again (radio_wake: esp_wifi_start, power save off, country, band, channel
+ * and TX power re-applied, promiscuous back if it was on). For main/power.c;
+ * the AWDL task must be paused first (awdl_app_sleep). While asleep,
+ * radio_set_channel only records the channel and radio_tx fails.
+ */
+int radio_sleep(void);
+int radio_wake(void);
+bool radio_asleep(void);
+
+/*
  * TX power ceiling in 0.25 dBm steps (8..84, e.g. 80 = 20 dBm), as for
  * esp_wifi_set_max_tx_power. The effective ceiling is the lower of this and the
  * 11 dBm cap on channels 149+ (25 mW EIRP, short-range-device band in the EU).

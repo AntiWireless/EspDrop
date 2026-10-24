@@ -10,6 +10,7 @@
 #     "device"    state="connecting"|"connected"|"lost"|"stopped", info, error
 #     "power"     text=<the device's `power` reply>
 #     "browse"    on=True|False
+#     "receiving" on=True|False, until=<time.monotonic() deadline or None>
 #     "receiver"  action="found"|"updated"|"gone", receiver=ReceiverInfo
 #     "send"      transfer=Transfer, state, progress (0..1), error
 #     "receive"   ask, phase="asked"|"receiving"|"received", plus Receiver's info
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 RECONNECT_SECS = 2.0
 KEEPALIVE_SECS = 30.0
 BROWSE_SECS = 60.0
+HOLD_SECS = 90             # `power hold` per keepalive: the radio stays on while needed
 
 
 class ReceiverInfo:
@@ -96,6 +98,8 @@ class Session:
         self.ask_timeout = ask_timeout
         self._factory = transport_factory     # tests: a callable returning a transport
         self._receive = receive
+        self._receive_until = None            # end of a receive window (monotonic)
+        self._held = None                     # last power request sent: True hold, False release
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = None
@@ -130,15 +134,24 @@ class Session:
     def receiving(self):
         return self._receive
 
-    def set_receiving(self, on):
+    def set_receiving(self, on, for_secs=None):
+        """Receive (others see us and can send) or not. for_secs: a window that
+        closes by itself, like Apple's "Everyone for 10 minutes"; the ESP's
+        radio is only on while receiving, browsing or sending."""
         with self._lock:
             self._receive = bool(on)
-            if self.state != "connected":
-                return
-            if on and not self._receiver:
-                self._start_receiver()
-            elif not on and self._receiver:
-                self._stop_receiver()
+            self._receive_until = time.monotonic() + for_secs if on and for_secs else None
+            if self.state == "connected":
+                if on and not self._receiver:
+                    self._start_receiver()
+                elif not on and self._receiver:
+                    self._stop_receiver()
+        self._emit("receiving", on=self._receive, until=self._receive_until)
+        self._power()
+
+    @property
+    def receive_until(self):
+        return self._receive_until
 
     def set_name(self, name):
         """The name others see; restarts receiving if it runs."""
@@ -166,7 +179,10 @@ class Session:
             from .mdns import Browser
             self._browser = Browser(self.dev, on_found=self._found, on_gone=self._gone)
             self._wake(seconds)
-            self._browser.start()
+        self._power()
+        with self._lock:
+            if self._browser:
+                self._browser.start()
         self._emit("browse", on=True)
 
     def stop_browse(self):
@@ -177,6 +193,7 @@ class Session:
             b.stop()
             self._emit("browse", on=False)
             self._unwake()
+            self._power()
 
     @property
     def browsing(self):
@@ -199,6 +216,7 @@ class Session:
             self._transfers[t.id] = t
             dev = self.dev
         self._wake(180)                         # also covers Accept and the upload
+        self._power()
         threading.Thread(target=self._send, args=(dev, t), name=f"espdrop-send{t.id}",
                          daemon=True).start()
         return t
@@ -258,6 +276,8 @@ class Session:
                         self._start_receiver()
                     except Exception as e:     # noqa: BLE001
                         self._emit("log", text=f"receiving did not start: {e}")
+            self._held = None
+            self._power()
             self._poll_power()
             self._serve(dev)
             with self._lock:
@@ -275,11 +295,15 @@ class Session:
             now = time.monotonic()
             if self._browser and now >= self._browse_until:
                 self.stop_browse()
+            if self._receive_until and now >= self._receive_until:
+                self.set_receiving(False)               # the receive window closed
             for t in list(self._transfers.values()):
                 if t.state == "uploading":
                     self._emit_send(t)                  # progress, 4 times a second
             if now >= next_keepalive:
                 next_keepalive = now + KEEPALIVE_SECS
+                self._held = None                       # renew the hold
+                self._power()
                 self._poll_power()
 
     def _poll_power(self):
@@ -385,6 +409,7 @@ class Session:
                 self._emit_send(t)
         finally:
             self._unwake()
+            self._power()
 
     def _emit_send(self, t):
         # state and progress as of now: the Transfer itself keeps changing
@@ -403,6 +428,26 @@ class Session:
             dev.cmd(f"wake {int(min(600, seconds))}")
         except Exception as e:                 # noqa: BLE001
             self._emit("log", text=f"wake: {e}")
+
+    def _busy(self):
+        return bool(self._receive or self._browser or any(
+            t.state in ("new", "asking", "uploading") for t in self._transfers.values()))
+
+    def _power(self):
+        """Ask the ESP to keep its radio on while we receive, browse or send,
+        and to let it sleep otherwise (firmware without a sleep mode ignores
+        it: its radio is always on)."""
+        dev = self.dev
+        if not dev or self.state != "connected":
+            return
+        need = self._busy()
+        if need == self._held:
+            return
+        self._held = need
+        try:
+            dev.cmd(f"power hold {HOLD_SECS}" if need else "power release")
+        except Exception as e:                 # noqa: BLE001
+            self._emit("log", text=f"power: {e}")
 
     def _unwake(self):
         """End the BLE wake once neither a browse nor a send needs it."""

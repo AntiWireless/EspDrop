@@ -45,6 +45,9 @@ void sockproxy_handle(uint8_t type, const uint8_t *payload, size_t len);
  * credit). Waits for the lwIP thread. */
 void sockproxy_reset(uint32_t host_credit);
 
+/* Open TCP connections (any task; a snapshot, for main/power.c). */
+int sockproxy_tcp_open(void);
+
 /* One-line status for the `ip` command. */
 int sockproxy_format_status(char *buf, size_t cap);
 

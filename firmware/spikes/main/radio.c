@@ -26,6 +26,8 @@ static const char *TAG = "radio";
 static radio_stats_t          s_stats;
 static portMUX_TYPE           s_stats_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool          s_promisc;
+static volatile bool          s_asleep;      /* radio_sleep: Wi-Fi stopped */
+static bool                   s_wake_promisc; /* promiscuous again on radio_wake */
 static uint8_t                s_channel = 6;
 static radio_action_handler_t s_action_handler;
 static void                  *s_action_ctx;
@@ -325,8 +327,40 @@ int radio_set_self_mac(const uint8_t mac[6]) {
 
 int radio_set_channel(uint8_t channel) {
 	if (!radio_channel_supported(channel)) return ESP_ERR_INVALID_ARG;
+	if (s_asleep) {                 /* applied by radio_wake */
+		s_channel = channel;
+		return ESP_OK;
+	}
 	return set_channel_and_power(channel);
 }
+
+int radio_sleep(void) {
+	if (s_asleep) return ESP_OK;
+	s_wake_promisc = s_promisc;
+	if (s_promisc) radio_promisc(false);
+	esp_err_t err = esp_wifi_stop();
+	if (err != ESP_OK) {
+		if (s_wake_promisc) radio_promisc(true);
+		return err;
+	}
+	s_asleep = true;
+	return ESP_OK;
+}
+
+int radio_wake(void) {
+	if (!s_asleep) return ESP_OK;
+	esp_err_t err = esp_wifi_start();
+	if (err != ESP_OK) return err;
+	s_asleep = false;
+	err = apply_rf(s_channel);      /* power save off, country, band, channel, TX power */
+	if (s_wake_promisc) {
+		esp_err_t e = radio_promisc(true);
+		if (err == ESP_OK) err = e;
+	}
+	return err;
+}
+
+bool radio_asleep(void) { return s_asleep; }
 
 uint8_t radio_get_channel(void) { return s_channel; }
 
@@ -342,6 +376,7 @@ int8_t radio_get_max_tx_power(void) {
 }
 
 int radio_tx(const uint8_t *buf, int len) {
+	if (s_asleep) return ESP_ERR_WIFI_NOT_STARTED;
 	esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, buf, len, false /* keep our seq */);
 	if (err == ESP_OK) stat_inc(&s_stats.tx_ok);
 	else               stat_inc(&s_stats.tx_err);

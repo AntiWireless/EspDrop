@@ -582,6 +582,13 @@ void sockproxy_reset(uint32_t host_credit) {
 		xSemaphoreTake(s_reset_done, pdMS_TO_TICKS(1000));
 }
 
+int sockproxy_tcp_open(void) {
+	int open = 0;
+	for (int i = 0; i < SOCKPROXY_TCP_SLOTS; i++)
+		if (s_tcp[i].used) open++;
+	return open;
+}
+
 int sockproxy_format_status(char *buf, size_t cap) {
 	int o = snprintf(buf, cap, "udp:");
 	for (int i = 0; i < UDP_SLOTS && o > 0 && (size_t)o < cap; i++)

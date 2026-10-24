@@ -38,6 +38,7 @@ static uint8_t boot_channel(void) {
 #include "bridge.h"
 #include "awdl_app.h"
 #include "ble_wake.h"
+#include "power.h"
 
 /* AWDL peer appeared/left -> tell the host so it can manage the awdl0 neighbour
  * table. Runs on the AWDL timing task, so it only enqueues (bridge_notify_peer
@@ -89,6 +90,12 @@ void app_main(void) {
 	if (radio_promisc(true) != ESP_OK)
 		bridge_log("warning: promiscuous RX did not enable");
 	bridge_log("awdl rx/tx up on %s ch %u", CONFIG_IDF_TARGET, chan);
+
+	/* Nobody needs AWDL until a host says so: the radio goes to sleep right
+	 * after boot (Wi-Fi off, the chip stays cool) and a HELLO sets the mode -
+	 * L2 always on, IP on while the host holds it (power.h). */
+	if (power_init(AWDL_POWER_AUTO) != 0)
+		bridge_log("warning: no power task, the radio stays on");
 }
 
 #else /* console mode */

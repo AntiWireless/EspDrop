@@ -494,6 +494,40 @@ komplett durch (frische venv, 17 Patches, alle Prüfsummen gleich,
 `check` ok); erneutes Ausführen erkennt die fertige Installation,
 eine mit `opendrop_install.sh` gebaute auch. Zusammen 34 Host-Tests.
 
+## Schlafmodus: WLAN aus, solange niemand AWDL braucht
+
+AWDL hält das WLAN des ESP ständig im Empfang und sendet alle paar
+Millisekunden; deshalb wurde der C5 auch unbenutzt warm. Die Firmware schaltet
+das WLAN jetzt ab, solange nichts es braucht (`main/power.c`, Regeln in
+`components/awdl/awdl_power.c` mit Host-Tests). Bluetooth bleibt davon
+unberührt.
+
+- **Nach dem Start** schläft das WLAN sofort, bis eine Host-App sich meldet.
+- **L2-Betrieb** (`awdl_bridge.py`, `HELLO L2`): WLAN immer an, wie bisher.
+- **IP-Betrieb** (`espdrop`, `HELLO IP`): WLAN nur an, solange die Host-App es
+  hält: beim Suchen und Senden (`wake <s>` hält es mit), in einem
+  Empfangsfenster (`power hold <s>`, die App erneuert das alle 30 s) und
+  solange eine TCP-Verbindung offen ist (plus 20 s). Meldet sich die Host-App
+  90 s nicht mehr (beendet, abgesteckt), verfallen ihre Anforderungen.
+- **Befehl `power`:** zeigt `power auto|on awake|asleep (grund) hold=… wake=…
+  tcp=… sleeps=… asleep=…%`; `power hold <1..3600>`, `power release`,
+  `power on`, `power auto`. Für Diagnose im IP-Betrieb (z. B. `ping6`) vorher
+  `power hold 120`.
+
+Die Firmware lauscht dabei nicht auf Bluetooth-Signale anderer Geräte.
+Empfangen ist deshalb nur möglich, solange die App ein Empfangsfenster offen
+hat, ähnlich Apples „Für alle für 10 Minuten“. `espdrop receive` hält das
+Fenster offen, solange es läuft.
+
+Test (Firmware neu flashen, danach den ESP einmal ab- und anstecken):
+```sh
+~/opendrop-venv/bin/python tools/espdrop.py cmd power      # asleep (none), kurz nach dem Start
+~/opendrop-venv/bin/python tools/espdrop.py find -t 20     # wacht auf, findet das iPad
+~/opendrop-venv/bin/python tools/espdrop.py cmd power      # nach dem Ende wieder asleep
+```
+Der ESP sollte im Leerlauf spürbar kühler bleiben. `asleep=` zeigt, welchen
+Anteil der Zeit seit dem Start das WLAN aus war.
+
 ## Danach
 
 Ergebnisse (auch Fehlschläge) in `docs/UEBERBLICK.md` unter „Offene Fragen"

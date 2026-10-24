@@ -170,7 +170,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(rc, 0, out + err)
         self.assertIn(f"found  {PAD_ID}  [{PAD_IP}]:8770  flags 111611", out)
         self.assertIn("wake 12", fake.commands)
-        self.assertEqual(fake.commands[-1], "wake off")
+        self.assertEqual(fake.commands[-2:], ["wake off", "power release"])
+        self.assertIn("power hold 12", fake.commands)      # the radio is on while we look
         self.assertTrue(fake.closed)
 
     def test_find_nothing(self):

@@ -26,7 +26,7 @@ message(STATUS "EspDrop: target '${IDF_TARGET}', USB-Serial/JTAG via '${ESPDROP_
 
 idf_component_register(
     SRCS "app_main.c" "radio.c" "console.c" "awdl_app.c" "bridge.c" "ble_wake.c"
-         "awdl_netif.c" "sockproxy.c"
+         "awdl_netif.c" "sockproxy.c" "power.c"
     INCLUDE_DIRS "."
     REQUIRES awdl esp_wifi esp_event esp_netif nvs_flash console esp_timer esp_hw_support
              bt lwip ${ESPDROP_USJ_COMPONENT} ${ESPDROP_USJ_LL_COMPONENT}

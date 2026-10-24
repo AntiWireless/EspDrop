@@ -42,12 +42,22 @@ def _hello(dev):
     return h
 
 
+def _hold(dev, secs):
+    """Keep the ESP's radio on for `secs` (0: let it sleep again). Firmware
+    without a sleep mode answers `unknown cmd`: its radio is always on."""
+    try:
+        dev.cmd(f"power hold {int(secs)}" if secs else "power release")
+    except DeviceError:
+        pass
+
+
 def cmd_find(args, transport=None):
     from .mdns import AIRDROP, Browser
     dev = _open(args, transport)
     woke = False
     try:
         h = _hello(dev)
+        _hold(dev, args.time + 10)
         if not args.no_wake:
             if h["caps"] & link.CAP_BLE:
                 secs = min(600, int(args.time) + 10)
@@ -117,6 +127,8 @@ def cmd_find(args, transport=None):
                 dev.cmd("wake off")
             except DeviceError:
                 pass
+        if not dev.error:
+            _hold(dev, 0)
         dev.close()
 
 
@@ -154,6 +166,7 @@ def cmd_send(args, transport=None):
     woke = False
     try:
         h = _hello(dev)
+        _hold(dev, min(3600, args.time + 600))     # browse, Accept and the upload
         if not args.no_wake and h["caps"] & link.CAP_BLE:
             secs = min(600, int(args.time) + 120)   # also covers Accept and the upload
             reply = dev.cmd(f"wake {secs}")
@@ -189,6 +202,8 @@ def cmd_send(args, transport=None):
                 dev.cmd("wake off")
             except DeviceError:
                 pass
+        if not dev.error:
+            _hold(dev, 0)
         dev.close()
 
 
@@ -262,13 +277,19 @@ def cmd_receive(args, transport=None):
         print(f"ready: on the iPhone/iPad, share a file and pick {args.name!r}; files go to "
               f"{os.getcwd()}. Ctrl+C to stop.", flush=True)
         try:
+            renew = 0.0
             while not dev.error:
+                if time.monotonic() >= renew:       # the radio stays on while we receive
+                    _hold(dev, 90)
+                    renew = time.monotonic() + 30
                 time.sleep(0.3)
         except KeyboardInterrupt:
             print()
         return 0
     finally:
         rx.stop()
+        if not dev.error:
+            _hold(dev, 0)
         dev.close()
 
 
@@ -276,7 +297,7 @@ def cmd_status(args, transport=None):
     dev = _open(args, transport)
     try:
         _hello(dev)
-        for c in ("node", "ip", "stats", "wake"):
+        for c in ("node", "ip", "stats", "wake", "power"):
             print(f"{c}: {dev.cmd(c)}", flush=True)
         return 0
     finally:

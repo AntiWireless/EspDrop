@@ -47,6 +47,12 @@ void awdl_app_tx(uint8_t subtype);
  * channels, so nothing goes out on a channel we only pass through. */
 void awdl_app_pause_tx(bool paused);
 
+/* Sleep (true): send nothing more (PSF, MIF, data), drop queued host data and
+ * ignore new frames, so main/power.c can switch the radio off; the node keeps
+ * running and its peers age out as they go quiet. Wake (false): resume. */
+void awdl_app_sleep(bool asleep);
+bool awdl_app_asleep(void);
+
 /*
  * Retune the radio and the AWDL node to a channel at runtime, keeping sync and
  * the peer table (unlike awdl_app_set_self, which resets the node). keep_auto

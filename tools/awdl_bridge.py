@@ -66,7 +66,7 @@ MAX_LEARNED = 64     # neighbour entries kept; the oldest is dropped beyond that
 CTL_DIR = "/run/espdrop"
 # Device commands the control socket passes on (no usbtest: it floods the link).
 CTL_COMMANDS = {"wake", "mac", "stats", "radio", "tx", "node", "chan", "seq", "checks", "ping",
-                "mode", "ip", "ping6"}
+                "mode", "ip", "ping6", "power"}
 CTL_TIMEOUT = 3.0    # seconds to wait for the device's reply to a socket command
 
 

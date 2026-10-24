@@ -101,7 +101,8 @@ class SendTest(SessionCase):
             self.assertEqual([x for i, x in enumerate(states) if i == 0 or states[i - 1] != x],
                              ["asking", "uploading", "done"])
             s.stop_browse()
-            self.assertEqual(fake.commands[-1], "wake off")
+            self.assertEqual(fake.commands[-2:], ["wake off", "power release"])
+            self.assertIn("power hold 90", fake.commands)
         finally:
             rx.stop()
         got = [f for f in os.listdir(dl) if open(os.path.join(dl, f), "rb").read() == payload]
@@ -190,6 +191,18 @@ class ReceiveTest(SessionCase):
         self.assertEqual(done["files"], [os.path.join(os.path.realpath(dl), "bild.jpg")])
         with open(done["files"][0], "rb") as f:
             self.assertEqual(f.read(), payload)
+
+    def test_receive_window_closes_and_radio_sleeps(self):
+        fake, dl = self.start(lambda ask: True)
+        self.assertEqual(fake.commands.count("power hold 90"), 1)   # held while receiving
+        self.session.set_receiving(True, for_secs=0.6)
+        self.events.wait(lambda k, i: k == "receiving" and not i["on"], secs=5)
+        self.assertFalse(self.session.receiving)
+        for _ in range(40):
+            if fake.commands[-1:] == ["power release"]:
+                break
+            time.sleep(0.05)
+        self.assertEqual(fake.commands[-1], "power release")
 
     def test_declined_and_unanswered(self):
         fake, dl = self.start(lambda ask: False)
