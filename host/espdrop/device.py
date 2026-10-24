@@ -30,7 +30,8 @@ class Device:
         self._hello_event = threading.Event()
         self._results = {}                  # (request type, id) -> err, for waiters
         self._result_cond = threading.Condition()
-        self._udp = {}                      # port -> handler(src16, sport, multicast, data)
+        self._udp = {}                      # port -> [handler(src16, sport, multicast, data)]
+        self._udp_lock = threading.Lock()
         self.tcp = Manager(self)            # proxied TCP connections
         self._stop = threading.Event()
         self.error = None                   # set if the reader thread died
@@ -73,8 +74,7 @@ class Device:
         elif t == link.MSG_UDP_RECV:
             u = link.parse_udp_recv(p)
             if u:
-                handler = self._udp.get(u[0])
-                if handler:
+                for handler in list(self._udp.get(u[0], ())):
                     handler(*u[1:])
         elif t in (link.MSG_TCP_OPENED, link.MSG_TCP_DATA, link.MSG_TCP_CREDIT,
                    link.MSG_TCP_CLOSE):
@@ -132,22 +132,45 @@ class Device:
             return self._results.pop((req, ident))
 
     def udp_open(self, port, handler, join_mdns=True, timeout=2.0):
-        """Open a UDP port on the AWDL interface; handler(src16, sport, mcast, data)."""
-        self._udp[port] = handler
+        """Open a UDP port on the AWDL interface; handler(src16, sport, mcast, data).
+
+        Several handlers may share a port (the mDNS browser and responder both
+        use 5353): the device opens it once, every handler gets each datagram,
+        and it closes when the last one leaves (udp_close)."""
+        with self._udp_lock:
+            if self._udp.get(port):
+                self._udp[port].append(handler)
+                return
+            self._udp[port] = [handler]
         with self._result_cond:
             self._results.pop((link.MSG_UDP_OPEN, port), None)
-        self._write(link.udp_open(port, join_mdns))
-        err = self._wait_result(link.MSG_UDP_OPEN, port, timeout)
+        try:
+            self._write(link.udp_open(port, join_mdns))
+            err = self._wait_result(link.MSG_UDP_OPEN, port, timeout)
+        except Exception:
+            with self._udp_lock:
+                self._udp.pop(port, None)
+            raise
         if err:
-            del self._udp[port]
+            with self._udp_lock:
+                self._udp.pop(port, None)
             raise DeviceError(f"UDP port {port}: {link.ERRORS.get(err, err)}")
 
     def udp_send(self, port, dst16: bytes, dst_port, data: bytes):
         self._check()
         self._write(link.udp_send(port, dst16, dst_port, data))
 
-    def udp_close(self, port):
-        self._udp.pop(port, None)
+    def udp_close(self, port, handler=None):
+        """Remove `handler` (all handlers if None); the port closes with the last."""
+        with self._udp_lock:
+            hs = self._udp.get(port, [])
+            if handler is not None and handler in hs:
+                hs.remove(handler)
+            else:
+                hs.clear()
+            if hs:
+                return
+            self._udp.pop(port, None)
         self._write(link.udp_close(port))
 
     def listen(self, port, on_accept):

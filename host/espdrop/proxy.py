@@ -95,6 +95,30 @@ class TcpConn:
             self.opened.set()          # a failed connect: wake the waiter
             self._finish()
 
+    def abort(self):
+        """Cancel the connection from our side: RST to the peer, and the
+        application's blocked send/recv on `app` returns with an error."""
+        if self.closed.is_set():
+            return
+        self.error = self.error or "cancelled"
+        with self._cv:
+            self._dead = True
+            self._cv.notify_all()
+        try:
+            self.dev._send(link.tcp_close(self.id, link.TCP_RST))
+        except Exception:
+            pass
+        for s in (self.app, self._own):
+            try:
+                s.shutdown(socket.SHUT_RDWR)       # wakes a blocked send/recv
+            except OSError:
+                pass
+        if self.opened.is_set():
+            self._down.put(_RST)                   # the downlink pump closes up
+        else:
+            self.opened.set()
+            self._finish()
+
     # ---- pumps -------------------------------------------------------------
 
     def _uplink(self):

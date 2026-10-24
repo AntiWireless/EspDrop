@@ -106,7 +106,7 @@ class Browser:
         if self._thread:
             self._thread.join(timeout=2)
         try:
-            self.device.udp_close(MDNS_PORT)
+            self.device.udp_close(MDNS_PORT, self._on_udp)
         except Exception:
             pass
 
@@ -275,6 +275,6 @@ class Responder:
         except Exception:
             pass
         try:
-            self.device.udp_close(MDNS_PORT)
+            self.device.udp_close(MDNS_PORT, self._on_udp)
         except Exception:
             pass

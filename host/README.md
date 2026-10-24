@@ -14,8 +14,14 @@ how to test each stage: [`docs/SPIKES.md`](../docs/SPIKES.md).
 | `espdrop/airdrop.py` | `send`: the patched OpenDrop client over the proxy |
 | `espdrop/receive.py` | `receive`: the patched OpenDrop server on loopback |
 | `espdrop/env.py` | platform setup: libarchive, TLS certificate, Windows fixes, `check` |
+| `espdrop/session.py` | one long-running link for a GUI: receiving always ready, sends alongside, events, reconnect |
 | `espdrop/cli.py` | `find`, `send`, `receive`, `status`, `cmd`, `check` |
-| `tests/` | simulated device with iPad-shaped mDNS answers, end-to-end via OpenDrop |
+| `tests/` | simulated devices with iPad-shaped mDNS answers, end-to-end via OpenDrop |
+
+`receive` asks before each transfer (`y`/`n` within 60 s, else declined;
+`--yes` accepts all, `-d DIR` picks the folder). `find` shows each receiver's
+name from its `/Discover` answer; `send` takes `-r NAME` (or id, or part of
+the name) and lists the receivers to choose from when it finds several.
 
 Only one program can own the serial port: stop `tools/awdl_bridge.py` first.
 

@@ -247,3 +247,98 @@ class AcceptBridgeDevice(FakeDevice):
                 pass
         threading.Thread(target=pump, daemon=True).start()
         return a
+
+
+class DuplexBridgeDevice(FakeDevice):
+    """Both directions at once, as the session needs them: TCP_CONNECT goes to
+    a loopback target (an OpenDrop receiver), open_incoming() simulates a peer
+    connecting to our listener. unplug() makes the transport fail like a
+    pulled USB cable."""
+
+    def __init__(self, target=None, mdns_port=8770, **kw):
+        super().__init__(**kw)
+        self.target = target
+        self.mdns_port = mdns_port
+        self.listening = None
+        self._socks = {}               # conn id -> device-side socket
+        self._next = 0x8000
+        self._unplugged = False
+
+    # transport API: an unplugged device fails reads and writes
+    def read(self, timeout):
+        if self._unplugged:
+            raise OSError("device unplugged")
+        return super().read(min(timeout, 0.05))
+
+    def write(self, data, timeout=5.0):
+        if self._unplugged:
+            raise OSError("device unplugged")
+        super().write(data, timeout)
+
+    def unplug(self):
+        self._unplugged = True
+
+    def _handle(self, t, p):
+        import socket
+        if t == link.MSG_TCP_CONNECT and len(p) >= 20:
+            cid = struct.unpack_from("<H", p)[0]
+            try:
+                sk = socket.create_connection(self.target, timeout=5)
+            except (OSError, TypeError):
+                self._emit(link.MSG_TCP_CLOSE, struct.pack("<HBb", cid, 1, -1))
+                return
+            self._socks[cid] = sk
+            self._emit(link.MSG_TCP_OPENED, struct.pack("<H", cid) + p[2:18]
+                       + struct.pack("<HHBI", struct.unpack_from("<H", p, 18)[0],
+                                     40000, 0, 65536))
+            self._pump(cid, sk)
+        elif t == link.MSG_TCP_LISTEN and len(p) >= 2:
+            self.listening = struct.unpack_from("<H", p)[0]
+            self._emit(link.MSG_RESULT, struct.pack("<BHb", link.MSG_TCP_LISTEN,
+                                                    self.listening, 0))
+        elif t == link.MSG_TCP_DATA and len(p) >= 2:
+            sk = self._socks.get(struct.unpack_from("<H", p)[0])
+            if sk:
+                try:
+                    sk.sendall(p[2:])
+                    self._emit(link.MSG_TCP_CREDIT, struct.pack("<HI", p[0] | p[1] << 8,
+                                                                len(p) - 2))
+                except OSError:
+                    pass
+        elif t == link.MSG_TCP_CREDIT:
+            pass
+        elif t == link.MSG_TCP_CLOSE and len(p) >= 3:
+            sk = self._socks.get(struct.unpack_from("<H", p)[0])
+            if sk:
+                try:
+                    sk.shutdown(1) if p[2] == 0 else sk.close()
+                except OSError:
+                    pass
+        else:
+            super()._handle(t, p)
+
+    def _pump(self, cid, sk):
+        def run():
+            try:
+                while True:
+                    data = sk.recv(2048)
+                    if not data:
+                        self._emit(link.MSG_TCP_CLOSE, struct.pack("<HBb", cid, 0, 0))
+                        return
+                    self._emit(link.MSG_TCP_DATA, struct.pack("<H", cid) + data)
+            except OSError:
+                self._emit(link.MSG_TCP_CLOSE, struct.pack("<HBb", cid, 1, -1))
+            finally:
+                self._socks.pop(cid, None)
+        threading.Thread(target=run, daemon=True).start()
+
+    def open_incoming(self, peer16=None):
+        from espdrop.proxy import tcp_pair
+        a, b = tcp_pair()
+        cid = self._next
+        self._next += 1
+        self._socks[cid] = b
+        self._emit(link.MSG_TCP_OPENED, struct.pack("<H", cid) + (peer16 or PAD_IP.packed)
+                   + struct.pack("<HHBI", 8771, 40000, 1, 65536))
+        self._pump(cid, b)
+        return a
