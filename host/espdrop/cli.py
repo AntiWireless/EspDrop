@@ -6,7 +6,7 @@
 #   espdrop status                            device, interface, counters
 #   espdrop cmd TEXT...                       one device command (as in the bridge)
 #   espdrop check                             is this PC ready (no device needed)
-#   espdrop gui                               the desktop app (gui.py, PySide6)
+#   espdrop gui [--background] [--send FILE...]  the desktop app (gui.py, PySide6)
 #
 # The device is switched into IP mode (HELLO); it stays there until the next
 # session (tools/awdl_bridge.py switches it back to L2 itself).
@@ -343,7 +343,7 @@ def cmd_gui(args, transport=None):
     except ImportError as e:
         raise ImportError(f"the GUI needs PySide6 ({e}): pip install PySide6 into the venv, "
                           f"or run tools/opendrop_install.py again") from e
-    return gui.main(port=args.port)
+    return gui.main(port=args.port, background=args.background, send=args.send)
 
 
 def main(argv=None, transport=None):
@@ -385,7 +385,11 @@ def main(argv=None, transport=None):
     c.add_argument("--wait", type=float, default=12.0, help="ping6: seconds to show replies")
     c.set_defaults(verbose=True)
     sub.add_parser("check", help="is this PC ready: Python, pyserial, OpenDrop, libarchive, TLS")
-    sub.add_parser("gui", help="the desktop app (PySide6)")
+    g = sub.add_parser("gui", help="the desktop app (PySide6)")
+    g.add_argument("--background", action="store_true",
+                   help="tray only, receiving until switched off (what autostart runs)")
+    g.add_argument("--send", nargs="*", metavar="FILE",
+                   help="ask whom to send these files to (Explorer's \"Senden an\")")
     args = ap.parse_args(argv)
     # Our steps (connect, accept, upload rate) at INFO; OpenDrop's own only from
     # WARNING on, unless -v asks for everything, with milliseconds since start.

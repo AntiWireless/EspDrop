@@ -584,12 +584,29 @@ Test auf der Hardware (Firmware mit Schlafmodus geflasht):
    verbindet sich wieder.
 5. Nach dem Ende des Empfangsfensters und ohne Suche: „Funk aus“, der ESP
    bleibt kühl.
+6. Menü EspDrop → „Beim Anmelden im Hintergrund starten“, abmelden und wieder
+   anmelden: kein Fenster, nur das Tray-Symbol; die App ist dauerhaft
+   empfangsbereit (bei Firmware mit `power listen` schläft der Funk dabei).
+   Vom iPad etwas senden: nur der Annehmen-Dialog erscheint, danach eine
+   Benachrichtigung „Empfangen: …“ (Klick öffnet die Datei).
+7. Menü EspDrop → „Im Explorer-Menü anbieten“. Im Explorer Dateien markieren,
+   Rechtsklick → „Senden an“ → „EspDrop (AirDrop)“ (Windows 11: erst
+   „Weitere Optionen anzeigen“) oder „Mit EspDrop senden“: „An wen senden?“
+   öffnet sich, das iPad erscheint, anklicken, am iPad annehmen; der Dialog
+   schließt sich nach „Gesendet an …“.
+
+Windows' eigenes Teilen-Fenster („Teilen“) zeigt nur Apps mit Paket-Identität
+(MSIX). Dorthin kommt EspDrop mit der späteren paketierten Version; bis dahin
+sind „Senden an“ und das Rechtsklick-Menü der Weg aus dem Explorer.
 
 Tests ohne Hardware: `test_session.py` (Suche mit Namen, Senden mit
 Fortschritt und Abbrechen, Empfangen mit Annehmen/Ablehnen/Zeitüberschreitung,
 Empfangsfenster, `power listen` bei scan-fähiger Firmware, Neuverbinden) und
 `test_gui.py` (das Fenster offscreen: suchen und senden, Dialog annehmen und
-ablehnen). Zusammen 49 Host-Tests.
+ablehnen, Hintergrundbetrieb, „An wen senden?“ mit Dateien aus zwei Aufrufen,
+nur eine laufende App) und `test_integration.py` (Autostart und
+Dateimanager-Menü: Linux echt in Temp-Ordnern, Windows-Registry und
+„Senden an“ nachgebildet). Zusammen 57 Host-Tests.
 
 ## Danach
 

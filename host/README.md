@@ -42,6 +42,19 @@ one window that owns the ESP for as long as it runs:
   with the sleep mode, docs/SPIKES.md); the label top right says which.
 - Closing the window keeps it in the tray; "Beenden" ends it. Unplugging the
   ESP is fine: it reconnects when it comes back.
+- **Autostart:** menu EspDrop → "Beim Anmelden im Hintergrund starten"
+  (Windows: `HKCU\…\CurrentVersion\Run`; Linux: `~/.config/autostart`). It
+  then starts as `espdrop gui --background`: tray only, receiving until
+  switched off, and only an incoming transfer brings up its dialog; a
+  notification says when files arrived (click: open them).
+- **Sending from the file manager:** menu EspDrop → "Im Explorer-Menü
+  anbieten" adds "Senden an → EspDrop (AirDrop)" and "Mit EspDrop senden" to
+  the right-click menu (on Windows 11 under "Weitere Optionen anzeigen"); on
+  Linux "Öffnen mit → AirDrop (EspDrop)". Either opens "An wen senden?": the
+  devices a search finds, one click sends. Windows' own share sheet ("Teilen")
+  only lists packaged apps (MSIX); that comes with a packaged build.
+- **One copy per user:** a second start (autostart, the file manager, the
+  launcher) hands its files to the running app over a local socket and exits.
 
 It needs PySide6 in the venv: `tools/opendrop_install.py` installs it; for a
 venv made by `opendrop_install.sh`, run `python3 tools/opendrop_install.py`

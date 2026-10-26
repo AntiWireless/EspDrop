@@ -83,7 +83,7 @@ class GuiTest(unittest.TestCase):
             time.sleep(0.02)
         return cond()
 
-    def window(self, fake):
+    def window(self, fake, background=False):
         from espdrop.session import Session
 
         def factory(w):
@@ -91,8 +91,9 @@ class GuiTest(unittest.TestCase):
                            download_dir=self.dl, on_event=w.bridge.on_event,
                            on_ask=w.bridge.on_ask, ask_timeout=w.bridge.ask_timeout)
         self.w = self.gui.MainWindow(settings=self.settings, session_factory=factory,
-                                     ask_timeout=20.0, tray=False)
-        self.w.show()
+                                     ask_timeout=20.0, tray=False, background=background)
+        if not background:
+            self.w.show()
         self.assertTrue(self.pump(lambda: self.w.device_label.text().startswith("ESP verbunden")),
                         self.w.device_label.text())
         return self.w
@@ -160,6 +161,76 @@ class GuiTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(os.listdir(self.dl), [])
         self.assertEqual(w.transfers.topLevelItemCount(), 0)
+
+    def test_background_shows_only_the_question(self):
+        # Autostart: no window, receiving until switched off; an incoming
+        # transfer brings up its dialog on its own, the window stays hidden.
+        fake = DuplexBridgeDevice()
+        w = self.window(fake, background=True)
+        self.assertFalse(w.isVisible())
+        self.assertTrue(self.pump(lambda: fake.listening == 8771))
+        self.assertTrue(w.session.receiving)
+        self.assertIsNone(w.session.receive_until)            # dauerhaft
+        src = self.file("hintergrund.jpg", b"arrives while hidden " * 200)
+        result = {}
+        th = threading.Thread(target=lambda: result.setdefault("ok", incoming(fake, src)))
+        th.start()
+        self.assertTrue(self.pump(lambda: getattr(w, "_last_ask_dialog", None) is not None))
+        dlg = w._last_ask_dialog
+        self.assertTrue(dlg.isVisible())
+        self.assertIsNone(dlg.parent())                        # its own window
+        self.assertFalse(w.isVisible())
+        dlg.yes.click()
+        self.assertTrue(self.pump(lambda: not th.is_alive(), 20))
+        self.assertTrue(result.get("ok"))
+        self.assertTrue(self.pump(lambda: w._notify_files is not None))
+        self.assertEqual([os.path.basename(f) for f in w._notify_files], ["hintergrund.jpg"])
+        self.assertFalse(w.isVisible())
+
+    def test_send_dialog_from_the_share_menu(self):
+        from loopback_receiver import LoopbackReceiver
+        pad = os.path.join(self.tmp.name, "pad")
+        os.makedirs(pad)
+        rx = LoopbackReceiver(name="TestPad")
+        port = rx.start()
+        try:
+            fake = DuplexBridgeDevice(target=("127.0.0.1", port), mdns_port=port,
+                                      answers={1: ["small"]})
+            w = self.window(fake, background=True)
+            a = self.file("a.txt", b"first " * 100)
+            b = self.file("b.txt", b"second " * 100)
+            # Explorer's context menu starts one copy per file: both land in
+            # the same dialog.
+            w.handle_message({"files": [a], "send": True})
+            w.handle_message({"files": [b], "send": True})
+            (d,) = w._send_dialogs
+            self.assertEqual([os.path.basename(f) for f in d.files], ["a.txt", "b.txt"])
+            self.assertTrue(self.pump(lambda: d.list.count() == 1
+                                      and "TestPad" in d.list.item(0).text()))
+            os.chdir(pad)                      # the loopback receiver writes into cwd
+            d._pick(d.list.item(0))
+            self.assertIsNotNone(d.transfer_id)
+            self.assertTrue(self.pump(lambda: d not in w._send_dialogs, 20),
+                            d.status.text())
+            self.assertFalse(w.isVisible())
+        finally:
+            rx.stop()
+        self.assertEqual(sorted(f for f in os.listdir(pad) if f.endswith(".txt")),
+                         ["a.txt", "b.txt"])
+
+    def test_single_instance(self):
+        name = f"espdrop-test-{os.getpid()}-{time.monotonic_ns()}"
+        self.assertFalse(self.gui.send_to_running({"show": True}, name=name, timeout_ms=200))
+        server = self.gui.InstanceServer(name)
+        got = []
+        server.message.connect(got.append)
+        try:
+            msg = {"files": ["/tmp/x y.jpg"], "send": True, "show": False}
+            self.assertTrue(self.gui.send_to_running(msg, name=name))
+            self.assertTrue(self.pump(lambda: got, 5))
+            self.assertEqual(got, [msg])
+        finally:
+            server.close()
 
     def test_power_text(self):
         t = self.gui.power_text
