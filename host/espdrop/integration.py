@@ -52,13 +52,16 @@ def launch_command(*args):
 
 
 def supported():
-    """What this system offers: {"autostart": bool, "send": label or None}."""
+    """What this system offers: {"autostart": bool, "send": label or None,
+    "send_hint": what the label switches on}."""
     if IS_WINDOWS:
-        return {"autostart": winreg is not None, "send": "Im Explorer-Menü anbieten "
-                                                        "(„Senden an“)"}
+        return {"autostart": winreg is not None,
+                "send": "Im Rechtsklickmenü des Explorers anbieten",
+                "send_hint": "„Senden an → EspDrop (AirDrop)“ und „Mit EspDrop senden“"}
     if sys.platform.startswith("linux"):
-        return {"autostart": True, "send": "Im Dateimanager anbieten („Öffnen mit“)"}
-    return {"autostart": False, "send": None}
+        return {"autostart": True, "send": "Im Dateimanager anbieten",
+                "send_hint": "„Öffnen mit → AirDrop (EspDrop)“"}
+    return {"autostart": False, "send": None, "send_hint": None}
 
 
 # ---- autostart ---------------------------------------------------------------

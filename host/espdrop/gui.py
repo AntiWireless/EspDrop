@@ -2,17 +2,18 @@
 #
 #   espdrop gui [-p PORT]          (Windows: .\tools\espdrop-gui.cmd)
 #   espdrop gui --background       tray only, receiving; what autostart runs
-#   espdrop gui --send FILE...     "An wen senden?" (Explorer "Senden an")
+#   espdrop gui --send FILE...     the AirDrop sheet (the file manager's right-click menu)
 #
-# One window: the ESP's state, a receive window that closes by itself (like
-# Apple's "Everyone for 10 minutes"), the receivers a search found with their
-# names, sending by button or by dropping files on a receiver, every transfer
-# with its progress, and a dialog that asks before anything is received. It
+# In the look of Apple's own apps (ui.py): one column of rounded cards -
+# visibility ("Aus / 10 Minuten / Für alle", as on the iPhone), name and
+# folder; the devices nearby as round avatars to click or drop files on; the
+# transfers; the general settings - a floating card that asks before anything
+# is received, and an AirDrop sheet for sending from the file manager. It
 # keeps running in the tray when the window is closed; in the background it
-# only shows itself for an incoming transfer.
+# only shows itself for an incoming transfer. Light and dark follow the system.
 #
 # One copy per user: a second start hands its files (or "show yourself") to
-# the running one over a local socket and exits, so Explorer's "Senden an" and
+# the running one over a local socket and exits, so the file manager and
 # autostart never fight over the serial port.
 #
 # Session events arrive on worker threads; a Qt signal carries them to the GUI
@@ -30,42 +31,32 @@ import sys
 import threading
 import time
 
-from PySide6.QtCore import QObject, QPoint, QSettings, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import (QAction, QColor, QDesktopServices, QFont, QIcon, QPainter,
-                           QPixmap, QPolygon)
+from PySide6.QtCore import QObject, QSettings, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox,
-                               QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-                               QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
-                               QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-                               QSystemTrayIcon, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QFrame,
+                               QGraphicsDropShadowEffect, QHBoxLayout, QInputDialog, QLabel,
+                               QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
+                               QScrollArea, QSystemTrayIcon, QToolButton, QVBoxLayout, QWidget)
 
-from . import integration
+from . import integration, ui
 from .session import Session
 
 APP = "EspDrop"
-WINDOWS = {"10 Minuten": 600, "1 Stunde": 3600, "dauerhaft": None}
+# Who may send to us, as AirDrop on the iPhone puts it: label, seconds (0: off,
+# None: until switched off).
+VISIBILITY = [("Aus", 0), ("10 Minuten", 600), ("Für alle", None)]
 
-SEND_STATES = {"new": "wartet", "asking": "wartet auf Annehmen", "uploading": "sendet",
-               "done": "gesendet", "declined": "abgelehnt", "failed": "fehlgeschlagen",
-               "cancelled": "abgebrochen"}
+SEND_STATES = {"new": "Warten …", "asking": "Warten auf Annahme …", "uploading": "Senden …",
+               "done": "Gesendet", "declined": "Abgelehnt", "failed": "Fehlgeschlagen",
+               "cancelled": "Abgebrochen"}
+TILE_PHASE = {"new": "waiting", "asking": "waiting", "uploading": "sending", "done": "sent",
+              "declined": "declined", "failed": "failed", "cancelled": "cancelled"}
+PHOTO_EXT = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".gif", ".webp", ".tif", ".tiff",
+             ".bmp", ".dng"}
+VIDEO_EXT = {".mov", ".mp4", ".m4v", ".avi", ".hevc"}
 
-
-def app_icon():
-    """A drawn icon (no image files to ship): a blue tile with a white drop."""
-    pm = QPixmap(64, 64)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setBrush(QColor("#1f6feb"))
-    p.setPen(Qt.NoPen)
-    p.drawRoundedRect(2, 2, 60, 60, 14, 14)
-    p.setBrush(QColor("white"))
-    p.drawEllipse(18, 26, 28, 28)
-    p.drawPolygon(QPolygon([QPoint(32, 8), QPoint(20, 34), QPoint(44, 34)]))
-    p.end()
-    return QIcon(pm)
+app_icon = ui.app_icon
 
 
 def run_bg(fn, *args, on_error=None):
@@ -82,16 +73,35 @@ def run_bg(fn, *args, on_error=None):
 def human(n):
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1000 or unit == "GB":
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+            text = f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+            return text.replace(".", ",")
         n /= 1000
 
 
 def _safe(fn, default):
-    """fn(), or `default` when asking the system fails (a menu still opens)."""
+    """fn(), or `default` when asking the system fails (the window still opens)."""
     try:
         return fn()
     except Exception:                          # noqa: BLE001
         return default
+
+
+def _kind(path):
+    ext = os.path.splitext(path)[1].lower()
+    return "photo" if ext in PHOTO_EXT else "video" if ext in VIDEO_EXT else "file"
+
+
+def what_text(files, urls=()):
+    """'ein Foto', '3 Dateien', 'einen Link' - what a transfer carries."""
+    if urls and not files:
+        return "einen Link" if len(urls) == 1 else f"{len(urls)} Links"
+    n = len(files)
+    if not n:
+        return "etwas"
+    kinds = {_kind(f) for f in files}
+    one, many = {"photo": ("ein Foto", "Fotos"), "video": ("ein Video", "Videos")}.get(
+        kinds.pop() if len(kinds) == 1 else "file", ("eine Datei", "Dateien"))
+    return one if n == 1 else f"{n} {many}"
 
 
 # ---- one copy per user -------------------------------------------------------
@@ -112,7 +122,7 @@ def send_to_running(message, name=None, timeout_ms=1000):
     sock.write(json.dumps(message).encode("utf-8") + b"\n")
     sock.waitForBytesWritten(timeout_ms)
     sock.disconnectFromServer()
-    if sock.state() != QLocalSocket.UnconnectedState:
+    if sock.state() != QLocalSocket.LocalSocketState.UnconnectedState:
         sock.waitForDisconnected(timeout_ms)
     return True
 
@@ -125,7 +135,7 @@ class InstanceServer(QObject):
         super().__init__()
         self.name = name or instance_name()
         self.server = QLocalServer(self)
-        self.server.setSocketOptions(QLocalServer.UserAccessOption)
+        self.server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
         if not self.server.listen(self.name):
             # A socket file left by a copy that crashed (Linux); main() only
             # gets here when nothing answered on it.
@@ -177,192 +187,256 @@ class Bridge(QObject):
         return reply["ok"]
 
 
+# ---- asking before a transfer -------------------------------------------------
+
 class AskDialog(QDialog):
-    """'Bens iPhone möchte 2 Dateien senden' - Annehmen / Ablehnen, with a countdown."""
+    """A floating card, as AirDrop asks: the picture, '„Bens iPhone“ möchte ein
+    Foto teilen.', Ablehnen / Annehmen, and a line running out until it is
+    declined by itself. Enter accepts nothing by accident: no default button."""
 
     def __init__(self, parent, ask, reply, timeout):
         super().__init__(parent)
         self.reply = reply
+        self.timeout = timeout
+        self._grab = None
         self.setWindowTitle("AirDrop")
-        self.setWindowFlag(Qt.WindowStaysOnTopHint)
-        lay = QVBoxLayout(self)
-        top = QHBoxLayout()
-        if ask.icon:
-            pm = QPixmap()
-            if pm.loadFromData(ask.icon):
-                thumb = QLabel()
-                thumb.setPixmap(pm.scaled(96, 96, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                top.addWidget(thumb)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint
+                            | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(28, 20, 28, 36)          # room for the shadow
+        card = QFrame()
+        card.setObjectName("alert")
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(44)
+        shadow.setOffset(0, 12)
+        shadow.setColor(QColor(0, 0, 0, ui.T["shadow_alpha"] + 25))
+        card.setGraphicsEffect(shadow)
+        v = QVBoxLayout(card)
+        v.setContentsMargins(22, 22, 22, 18)
+        v.setSpacing(8)
+        pic = QLabel()
+        pic.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        pic.setPixmap(self._preview(ask))
+        v.addWidget(pic)
+        v.addSpacing(4)
+        v.addWidget(ui.label(f"„{ask.sender}“ möchte {what_text(ask.files, ask.urls)} teilen.",
+                             "headline", wrap=True, center=True))
         what = ask.files or ask.urls
-        noun = ("Link" if len(what) == 1 else "Links") if ask.urls and not ask.files else \
-               ("Datei" if len(what) == 1 else "Dateien")
-        text = QLabel(f"<b>{_esc(ask.sender)}</b> möchte {len(what) or ''} {noun} senden:"
-                      f"<br>{'<br>'.join(_esc(w) for w in what[:8])}"
-                      f"{'<br>…' if len(what) > 8 else ''}")
-        text.setTextFormat(Qt.RichText)
-        text.setWordWrap(True)
-        top.addWidget(text, 1)
-        lay.addLayout(top)
-        self.left = QLabel()
-        lay.addWidget(self.left)
-        buttons = QDialogButtonBox()
-        self.yes = buttons.addButton("Annehmen", QDialogButtonBox.AcceptRole)
-        self.no = buttons.addButton("Ablehnen", QDialogButtonBox.RejectRole)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        lay.addWidget(buttons)
+        if what:
+            names = ", ".join(what[:3]) + (f" und {len(what) - 3} weitere" if len(what) > 3 else "")
+            v.addWidget(ui.label(names, "secondary", wrap=True, center=True))
+        v.addSpacing(6)
+        self.countdown = ui.ThinProgress()
+        self.countdown.set_value(1.0)
+        v.addWidget(self.countdown)
+        self.left = ui.label("", "caption", center=True)
+        v.addWidget(self.left)
+        v.addSpacing(2)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.no = ui.button("Ablehnen")
+        self.yes = ui.button("Annehmen", "primary")
+        for b in (self.no, self.yes):
+            b.setAutoDefault(False)
+            b.setDefault(False)
+            b.setMinimumHeight(32)
+            row.addWidget(b, 1)
+        self.no.clicked.connect(self.reject)
+        self.yes.clicked.connect(self.accept)
+        v.addLayout(row)
+        outer.addWidget(card)
+        self.setFixedWidth(400)
         self.end = time.monotonic() + timeout
-        self.timer = QTimer(self, interval=500, timeout=self._tick)
+        self.timer = QTimer(self)
+        self.timer.setInterval(250)
+        self.timer.timeout.connect(self._tick)
         self.timer.start()
         self._tick()
         self.finished.connect(self._answer)
+
+    @staticmethod
+    def _preview(ask):
+        pm = QPixmap()
+        if ask.icon and pm.loadFromData(ask.icon):
+            return ui.rounded_fit(pm, 260, 170, 12)
+        if ask.files:
+            return ui.file_badge(os.path.splitext(ask.files[0])[1], 72)
+        return ui.app_pixmap(64)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        parent = self.parentWidget()
+        screen = (parent.screen() if parent and parent.isVisible()
+                  else QGuiApplication.primaryScreen())
+        if screen:
+            g = screen.availableGeometry()
+            self.adjustSize()
+            self.move(g.center().x() - self.width() // 2, g.top() + int(g.height() * 0.2))
+
+    def mousePressEvent(self, e):                 # no title bar: drag it anywhere
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._grab = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+
+    def mouseMoveEvent(self, e):
+        if self._grab is not None and e.buttons() & Qt.MouseButton.LeftButton:
+            self.move(e.globalPosition().toPoint() - self._grab)
+
+    def mouseReleaseEvent(self, e):
+        self._grab = None
 
     def _tick(self):
         left = self.end - time.monotonic()
         if left <= 0:
             self.reject()
             return
+        self.countdown.set_value(left / self.timeout)
         self.left.setText(f"Ohne Antwort abgelehnt in {left:.0f} s")
 
     def _answer(self, result):
         self.timer.stop()
-        self.reply["ok"] = result == QDialog.Accepted
+        self.reply["ok"] = result == QDialog.DialogCode.Accepted
         self.reply["done"].set()
 
 
-def _esc(text):
-    return (str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-
-
-class ReceiverList(QListWidget):
-    """The receivers; files dropped on one are sent to it."""
-    dropped = Signal(str, list)                # receiver id, paths
-
-    def __init__(self):
-        super().__init__()
-        self.setAcceptDrops(True)
-        self.setDropIndicatorShown(True)
-
-    def dragEnterEvent(self, e):
-        if e.mimeData().hasUrls():
-            e.acceptProposedAction()
-
-    def dragMoveEvent(self, e):
-        item = self.itemAt(e.position().toPoint())
-        if e.mimeData().hasUrls() and item is not None and item.data(Qt.UserRole):
-            self.setCurrentItem(item)
-            e.acceptProposedAction()
-        else:
-            e.ignore()
-
-    def dropEvent(self, e):
-        item = self.itemAt(e.position().toPoint())
-        paths = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
-        if item is not None and paths:
-            self.dropped.emit(item.data(Qt.UserRole), paths)
-            e.acceptProposedAction()
-
+# ---- the AirDrop sheet ----------------------------------------------------------
 
 class SendDialog(QDialog):
-    """'An wen senden?' as AirDrop shows it: the files, the devices a search
-    finds, one click sends. It shows the transfer and closes itself when the
-    files are through; Abbrechen (or closing it) cancels a running one."""
+    """The AirDrop sheet: the files on top, the devices a search finds as
+    avatars, one click sends. The avatar shows the wait for Accept and the
+    progress; the sheet closes itself when the files are through. Abbrechen
+    (or closing it) cancels a running transfer."""
 
     def __init__(self, window, files):
         super().__init__(None)                 # top-level: the main window may be hidden
         self.w = window
         self.files = []
         self.transfer_id = None
+        self._target = None
         self._browsing = False
-        self.setWindowTitle("Per AirDrop senden")
-        self.setWindowIcon(app_icon())
-        self.setWindowFlag(Qt.WindowStaysOnTopHint)
-        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.setWindowTitle("AirDrop")
+        self.setWindowIcon(ui.app_icon())
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.resize(480, 470)
+        self.setMinimumWidth(400)
         lay = QVBoxLayout(self)
-        self.files_label = QLabel()
-        self.files_label.setWordWrap(True)
-        lay.addWidget(self.files_label)
-        self.status = QLabel()
-        self.status.setWordWrap(True)
-        self.status.setStyleSheet("color: gray")
-        lay.addWidget(self.status)
-        self.list = QListWidget()
-        self.list.itemClicked.connect(self._pick)
-        lay.addWidget(self.list, 1)
-        self.bar = QProgressBar()
-        self.bar.setVisible(False)
-        lay.addWidget(self.bar)
-        row = QHBoxLayout()
-        self.more_btn = QPushButton("Dateien …")
+        lay.setContentsMargins(20, 18, 20, 18)
+        lay.setSpacing(10)
+        head = QHBoxLayout()
+        head.setSpacing(14)
+        self.preview = QLabel()
+        self.preview.setFixedSize(64, 72)
+        head.addWidget(self.preview, 0, Qt.AlignmentFlag.AlignVCenter)
+        titles = QVBoxLayout()
+        titles.setSpacing(2)
+        titles.addStretch(1)
+        self.title = ui.ElidedLabel()
+        self.title.setFont(ui.font(15, QFont.Weight.DemiBold))
+        self.subtitle = ui.label("", "secondary")
+        titles.addWidget(self.title)
+        titles.addWidget(self.subtitle)
+        titles.addStretch(1)
+        head.addLayout(titles, 1)
+        self.more_btn = ui.button("Hinzufügen …", "link")
         self.more_btn.clicked.connect(self._choose_files)
-        cancel = QPushButton("Abbrechen")
-        cancel.clicked.connect(self.reject)
-        row.addWidget(self.more_btn)
-        row.addStretch(1)
-        row.addWidget(cancel)
-        lay.addLayout(row)
-        self.resize(420, 380)
+        head.addWidget(self.more_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addLayout(head)
+        lay.addWidget(ui.section("AirDrop"))
+        card = ui.Card()
+        body = QWidget()
+        bv = QVBoxLayout(body)
+        bv.setContentsMargins(0, 0, 0, 0)
+        bv.setSpacing(8)
+        self.radar = ui.Radar()
+        self.grid = ui.DeviceGrid()
+        self.grid.clicked.connect(self._pick)
+        self.grid.dropped.connect(self._dropped)
+        self.status = ui.label("", "secondary", wrap=True, center=True)
+        bv.addWidget(self.radar)
+        bv.addWidget(self.grid)
+        bv.addWidget(self.status)
+        card.add(body, margins=(12, 14, 12, 16))
+        lay.addWidget(card, 1)
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        self.close_btn = ui.button("Abbrechen")
+        self.close_btn.clicked.connect(self.reject)
+        bottom.addWidget(self.close_btn)
+        lay.addLayout(bottom)
         self.add_files(files)
         for r in window.session.receivers():
             if r.present:
                 self.on_receiver(r)
         self.on_device(window.session.state == "connected")
+        self._update_view()
 
     # ---- files ----------------------------------------------------------------
 
     def add_files(self, files):
-        """More files for this send (Explorer passes them one by one)."""
+        """More files for this send (Explorer passes them one call at a time)."""
         if self.transfer_id is not None:
             return False
         for f in files:
             f = os.path.abspath(f)
             if os.path.isfile(f) and f not in self.files:
                 self.files.append(f)
-        names = [os.path.basename(f) for f in self.files]
-        if names:
-            shown = ", ".join(names[:4]) + (f" (+{len(names) - 4})" if len(names) > 4 else "")
+        self.preview.setPixmap(ui.files_preview(self.files, 64))
+        if self.files:
             size = sum(os.path.getsize(f) for f in self.files)
-            self.files_label.setText(f"<b>{len(names)} {'Datei' if len(names) == 1 else 'Dateien'}"
-                                     f"</b> ({human(size)}): {_esc(shown)}")
+            if len(self.files) == 1:
+                self.title.setText(os.path.basename(self.files[0]))
+                ext = os.path.splitext(self.files[0])[1].lstrip(".").upper()
+                self.subtitle.setText(f"{ext} · {human(size)}" if ext else human(size))
+            else:
+                text = what_text(self.files)
+                self.title.setText(text[0].upper() + text[1:])
+                self.subtitle.setText(human(size))
         else:
-            self.files_label.setText("Noch keine Datei gewählt (Ordner gehen noch nicht).")
+            self.title.setText("Keine Datei gewählt")
+            self.subtitle.setText("„Hinzufügen …“ wählt Dateien (Ordner gehen noch nicht).")
         return True
 
     def _choose_files(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Dateien senden")
+        files, _ = QFileDialog.getOpenFileNames(self, "Per AirDrop senden")
         self.add_files(files)
 
     # ---- devices --------------------------------------------------------------
+
+    def _update_view(self):
+        has = self.grid.count() > 0
+        self.radar.setVisible(not has)
+        self.radar.set_running(self._browsing)
+        self.grid.setVisible(has)
 
     def on_device(self, connected):
         if not connected:
             self.status.setText("Verbinde mit dem ESP …")
             self._browsing = False
+            self._update_view()
             return
         if not self._browsing and self.transfer_id is None:
             self._browsing = True
-            self.status.setText("Suche Geräte … Am iPhone/iPad: AirDrop „Für alle“, "
-                                "entsperrt, Teilen-Menü offen.")
+            self.status.setText("Suche nach Geräten in der Nähe …\nAm iPhone oder iPad: "
+                                "AirDrop „Für alle“, entsperrt, Teilen-Menü offen.")
             run_bg(self.w.session.browse, 60, on_error=self.w._log)
+        self._update_view()
 
     def on_receiver(self, r):
-        item = None
-        for i in range(self.list.count()):
-            if self.list.item(i).data(Qt.UserRole) == r.id:
-                item = self.list.item(i)
-        if item is None:
-            if not r.present:
-                return
-            item = QListWidgetItem()
-            item.setData(Qt.UserRole, r.id)
-            self.list.addItem(item)
-        model = f"  ({r.model})" if r.model else ""
-        item.setText(f"{r.label}{model}" + ("" if r.present else "  – nicht mehr da"))
-        item.setForeground(QColor("black") if r.present else QColor("gray"))
-        if self.transfer_id is None and self._browsing:
-            self.status.setText("Auf ein Gerät klicken, um zu senden.")
+        if r.id not in self.grid.tiles and not r.present:
+            return
+        tile = self.grid.upsert(r.id, r.label, r.model, r.present, r.discovered)
+        if self.transfer_id is not None:
+            tile.setEnabled(r.id == self._target)
+        elif self._browsing:
+            self.status.setText("Zum Senden auf ein Gerät klicken.")
+        self._update_view()
 
-    def _pick(self, item):
+    def _dropped(self, rid, files):
+        self.add_files(files)
+        self._pick(rid)
+
+    def _pick(self, rid):
         if self.transfer_id is not None:
             return
         if not self.files:
@@ -370,16 +444,17 @@ class SendDialog(QDialog):
             if not self.files:
                 return
         try:
-            t = self.w.session.send(item.data(Qt.UserRole), self.files)
+            t = self.w.session.send(rid, self.files)
         except Exception as e:                 # noqa: BLE001
             self.status.setText(f"Senden geht nicht: {e}")
             return
-        self.transfer_id = t.id
-        self.list.setEnabled(False)
+        self.transfer_id, self._target = t.id, rid
+        self.grid.set_tiles_enabled(False, except_rid=rid)
+        tile = self.grid.tiles.get(rid)
+        if tile:
+            tile.set_phase("waiting")
         self.more_btn.setEnabled(False)
-        self.bar.setVisible(True)
-        self.bar.setRange(0, 0)
-        self.status.setText(f"Warte, bis {t.receiver.label} annimmt …")
+        self.status.setText(f"Warten, bis {t.receiver.label} annimmt …")
 
     # ---- the transfer ---------------------------------------------------------
 
@@ -388,40 +463,43 @@ class SendDialog(QDialog):
         if t.id != self.transfer_id:
             return
         state = info["state"]
+        tile = self.grid.tiles.get(t.receiver.id)
+        if tile:
+            tile.set_phase(TILE_PHASE.get(state, "idle"), info.get("progress") or 0.0)
         if state == "uploading":
-            self.bar.setRange(0, 1000)
-            self.bar.setValue(int(1000 * info["progress"]))
-            self.status.setText(f"Sende an {t.receiver.label} …")
+            self.status.setText(f"Senden an {t.receiver.label} …")
         elif state == "done":
-            self.bar.setRange(0, 1000)
-            self.bar.setValue(1000)
             self.status.setText(f"Gesendet an {t.receiver.label}.")
             self.transfer_id = None
+            self.close_btn.setText("Fertig")
             QTimer.singleShot(1500, self.accept)
         elif state in ("declined", "failed", "cancelled"):
             text = {"declined": f"{t.receiver.label} hat abgelehnt.",
                     "cancelled": "Abgebrochen."}.get(state, f"Fehlgeschlagen: {info.get('error')}")
-            self.status.setText(text + " Nochmal: auf ein Gerät klicken.")
+            self.status.setText(text + " Zum erneuten Versuch auf ein Gerät klicken.")
             self.transfer_id = None
-            self.bar.setVisible(False)
-            self.list.setEnabled(True)
+            self.grid.set_tiles_enabled(True)
             self.more_btn.setEnabled(True)
 
     def done(self, result):
-        if result != QDialog.Accepted and self.transfer_id is not None:
+        if result != QDialog.DialogCode.Accepted and self.transfer_id is not None:
             run_bg(self.w.session.cancel, self.transfer_id)
         self.w._send_dialog_closed(self)
         super().done(result)
 
 
+# ---- the window -------------------------------------------------------------------
+
 class MainWindow(QMainWindow):
     def __init__(self, port=None, settings=None, session_factory=None, ask_timeout=60.0,
                  tray=True, background=False):
         super().__init__()
+        ui.ensure(QApplication.instance())
         self.settings = settings or QSettings(APP, APP)
         self.setWindowTitle(APP)
-        self.setWindowIcon(app_icon())
-        self.resize(720, 640)
+        self.setWindowIcon(ui.app_icon())
+        self.resize(560, 800)
+        self.setMinimumWidth(480)
         self.port = port or self.settings.value("port", "") or None
         self.bridge = Bridge(ask_timeout)
         self.bridge.event.connect(self._on_event)
@@ -429,27 +507,30 @@ class MainWindow(QMainWindow):
         # session_factory(window) -> Session, for tests; it must use window.bridge
         self._make_session = ((lambda: session_factory(self)) if session_factory
                               else self._default_session)
-        self._rows = {}                        # ("send", id) / ("recv", n) -> QTreeWidgetItem
+        self._rows = {}                        # ("send", id) / ("recv", n) -> TransferRow
         self._recv_n = 0
         self._recv_row = None                  # the row of the transfer being received
         self._quitting = False
-        self._send_dialogs = []                # open "An wen senden?" dialogs
-        self._ask_dialogs = []                 # open accept dialogs (may have no parent)
+        self._browsing = False
+        self._connected = False
+        self._send_dialogs = []                # open AirDrop sheets
+        self._ask_dialogs = []                 # open accept cards (may have no parent)
         self._notify_files = None              # what clicking the last notification opens
         self._build()
         self.tray = self._make_tray() if tray and QSystemTrayIcon.isSystemTrayAvailable() else None
         self.session = self._make_session()
         self.session.start()
         self._update_dir()
-        self.clock = QTimer(self, interval=1000, timeout=self._tick)
+        self.clock = QTimer(self)
+        self.clock.setInterval(1000)
+        self.clock.timeout.connect(self._tick)
         self.clock.start()
         if background:
-            # Autostart: receive until switched off; the window stays hidden
-            # and only an incoming transfer shows its dialog. (Not through the
-            # button: that would also store "dauerhaft" as the user's choice.)
-            self.window_combo.setCurrentText("dauerhaft")
-            self._receiving_ui(True)
+            # Autostart: visible to everyone until switched off; the window
+            # stays hidden and only an incoming transfer shows its card.
+            self._receiving_ui(True, None)
             run_bg(self.session.set_receiving, True, None, on_error=self._log)
+        self._tick()
 
     # ---- setup ---------------------------------------------------------------
 
@@ -460,143 +541,182 @@ class MainWindow(QMainWindow):
                        on_ask=self.bridge.on_ask, ask_timeout=self.bridge.ask_timeout)
 
     def _build(self):
-        root = QWidget()
-        lay = QVBoxLayout(root)
+        page = QWidget()
+        page.setObjectName("page")
+        col = QVBoxLayout(page)
+        col.setContentsMargins(24, 22, 24, 24)
+        col.setSpacing(4)
 
-        # device and name
+        # the app, and whether the ESP is there
         head = QHBoxLayout()
-        self.device_label = QLabel("Suche ESP …")
-        self.power_label = QLabel("")
-        self.power_label.setStyleSheet("color: gray")
-        head.addWidget(self.device_label, 1)
-        head.addWidget(self.power_label)
-        lay.addLayout(head)
-        name_row = QHBoxLayout()
-        name_row.addWidget(QLabel("Name für andere Geräte:"))
-        self.name_edit = QLineEdit(self.settings.value("name", "") or APP)
-        self.name_edit.editingFinished.connect(self._name_changed)
-        name_row.addWidget(self.name_edit, 1)
-        lay.addLayout(name_row)
+        head.setSpacing(14)
+        mark = QLabel()
+        mark.setPixmap(ui.app_pixmap(56))
+        head.addWidget(mark)
+        titles = QVBoxLayout()
+        titles.setSpacing(3)
+        titles.addStretch(1)
+        titles.addWidget(ui.label(APP, "title"))
+        status = QHBoxLayout()
+        status.setSpacing(6)
+        self.dot = ui.StatusDot()
+        status.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.device_label = ui.label("Suche ESP …", "secondary")
+        self.power_label = ui.label("", "secondary")
+        status.addWidget(self.device_label)
+        status.addWidget(self.power_label)
+        status.addStretch(1)
+        titles.addLayout(status)
+        titles.addStretch(1)
+        head.addLayout(titles, 1)
+        self.more_btn = ui.tool_button("more", "Mehr")
+        self.more_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self.more_btn)
+        self.log_action = menu.addAction("Protokoll anzeigen")
+        self.log_action.setCheckable(True)
+        menu.addAction("Serieller Port …", self._pick_port)
+        menu.addSeparator()
+        menu.addAction("Beenden", self.quit)
+        self.more_btn.setMenu(menu)
+        head.addWidget(self.more_btn, 0, Qt.AlignmentFlag.AlignTop)
+        col.addLayout(head)
 
-        # receiving
-        rbox = QGroupBox("Empfangen")
-        rl = QVBoxLayout(rbox)
-        r1 = QHBoxLayout()
-        self.receive_btn = QPushButton("Empfangsbereit machen")
-        self.receive_btn.setCheckable(True)
-        self.receive_btn.toggled.connect(self._receive_toggled)
-        self.window_combo = QComboBox()
-        self.window_combo.addItems(list(WINDOWS))
-        self.window_combo.setCurrentText(self.settings.value("window", "10 Minuten"))
-        self.receive_left = QLabel("aus")
-        r1.addWidget(self.receive_btn)
-        r1.addWidget(self.window_combo)
-        r1.addWidget(self.receive_left, 1)
-        rl.addLayout(r1)
-        r2 = QHBoxLayout()
-        self.dir_label = QLabel()
-        self.dir_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        pick = QPushButton("Ordner …")
-        pick.clicked.connect(self._pick_dir)
-        show = QPushButton("Öffnen")
+        # AirDrop: who may send to us, our name, where files go
+        col.addWidget(ui.section("AirDrop"))
+        card = ui.Card()
+        self.visibility = ui.Segmented([lbl for lbl, _ in VISIBILITY])
+        self.visibility.changed.connect(self._visibility_picked)
+        vis = QWidget()                        # the segments, and below them how long
+        vv = QVBoxLayout(vis)
+        vv.setContentsMargins(0, 0, 0, 0)
+        vv.setSpacing(4)
+        vh = QHBoxLayout()
+        vh.addWidget(QLabel("Empfangen von"))
+        vh.addStretch(1)
+        vh.addWidget(self.visibility)
+        vv.addLayout(vh)
+        self.receive_left = ui.label("", "caption")
+        vv.addWidget(self.receive_left)
+        card.add(vis, margins=(16, 10, 14, 9))
+        self.name_edit = QLineEdit(self.settings.value("name", "") or APP)
+        self.name_edit.setFixedWidth(210)
+        self.name_edit.editingFinished.connect(self._name_changed)
+        card.add_row("Name", self.name_edit, "So sehen dich iPhone, iPad und Mac.")
+        folder = QWidget()
+        fh = QHBoxLayout(folder)
+        fh.setContentsMargins(0, 0, 0, 0)
+        fh.setSpacing(8)
+        fv = QVBoxLayout()
+        fv.setSpacing(2)
+        fv.addWidget(QLabel("Empfangene Dateien"))
+        self.dir_label = ui.ElidedLabel()
+        self.dir_label.setProperty("role", "caption")
+        fv.addWidget(self.dir_label)
+        fh.addLayout(fv, 1)
+        change = ui.button("Ändern …", "link")
+        change.clicked.connect(self._pick_dir)
+        show = ui.button("Öffnen", "link")
         show.clicked.connect(lambda: QDesktopServices.openUrl(
             QUrl.fromLocalFile(self.session.download_dir or os.getcwd())))
-        r2.addWidget(QLabel("Ziel:"))
-        r2.addWidget(self.dir_label, 1)
-        r2.addWidget(pick)
-        r2.addWidget(show)
-        rl.addLayout(r2)
-        lay.addWidget(rbox)
+        fh.addWidget(change)
+        fh.addWidget(show)
+        card.add(folder, margins=(16, 9, 12, 9))
+        col.addWidget(card)
 
-        # sending
-        sbox = QGroupBox("Senden")
-        sl = QVBoxLayout(sbox)
-        s1 = QHBoxLayout()
-        self.search_btn = QPushButton("Geräte suchen")
+        # devices nearby
+        self.search_btn = ui.button("Suchen")
         self.search_btn.clicked.connect(self._search)
-        self.search_label = QLabel("Am iPhone/iPad: AirDrop „Für alle“, entsperrt, "
-                                   "Teilen-Menü offen.")
-        self.search_label.setWordWrap(True)
-        s1.addWidget(self.search_btn)
-        s1.addWidget(self.search_label, 1)
-        sl.addLayout(s1)
-        self.receivers_list = ReceiverList()
-        self.receivers_list.dropped.connect(self._send_to)
-        self.receivers_list.itemDoubleClicked.connect(lambda item: self._send_dialog())
-        sl.addWidget(self.receivers_list, 1)
-        s2 = QHBoxLayout()
-        self.send_btn = QPushButton("Dateien senden …")
-        self.send_btn.clicked.connect(self._send_dialog)
-        s2.addWidget(QLabel("Dateien auf ein Gerät ziehen oder:"))
-        s2.addStretch(1)
-        s2.addWidget(self.send_btn)
-        sl.addLayout(s2)
-        lay.addWidget(sbox, 2)
+        col.addWidget(ui.section("Geräte in der Nähe", self.search_btn))
+        dcard = ui.Card()
+        body = QWidget()
+        bv = QVBoxLayout(body)
+        bv.setContentsMargins(0, 0, 0, 0)
+        bv.setSpacing(6)
+        self.radar = ui.Radar()
+        self.radar_text = ui.label("Suche nach Geräten in der Nähe …", "secondary", center=True)
+        self.devices_note = ui.label("„Suchen“ findet AirDrop-Geräte in der Nähe. Am iPhone "
+                                     "oder iPad: AirDrop „Für alle“, entsperrt, Teilen-Menü "
+                                     "offen.", "secondary", wrap=True, center=True)
+        self.devices_note.setContentsMargins(12, 10, 12, 10)
+        self.devices = ui.DeviceGrid()
+        self.devices.clicked.connect(self._tile_clicked)
+        self.devices.dropped.connect(self._send_to)
+        self.devices_hint = ui.label("Dateien auf ein Gerät ziehen oder es anklicken.",
+                                     "caption", center=True)
+        for w in (self.radar, self.radar_text, self.devices_note, self.devices,
+                  self.devices_hint):
+            bv.addWidget(w)
+        dcard.add(body, margins=(12, 12, 12, 12))
+        col.addWidget(dcard)
 
         # transfers
-        tbox = QGroupBox("Übertragungen")
-        tl = QVBoxLayout(tbox)
-        self.transfers = QTreeWidget()
-        self.transfers.setHeaderLabels(["", "Gerät", "Dateien", "Status"])
-        self.transfers.setRootIsDecorated(False)
-        self.transfers.header().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.transfers.setColumnWidth(0, 28)
-        self.transfers.setColumnWidth(1, 160)
-        self.transfers.itemDoubleClicked.connect(self._open_transfer)
-        self.transfers.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.transfers.customContextMenuRequested.connect(self._transfer_menu)
-        tl.addWidget(self.transfers)
-        lay.addWidget(tbox, 2)
+        col.addWidget(ui.section("Übertragungen"))
+        tcard = ui.Card()
+        self.transfers = ui.TransferList()
+        tcard.add(self.transfers, margins=(0, 0, 0, 0))
+        col.addWidget(tcard)
 
+        # general
+        caps = integration.supported()
+        self.autostart_switch = self.send_menu_switch = None
+        if caps["autostart"] or caps["send"]:
+            col.addWidget(ui.section("Allgemein"))
+            gcard = ui.Card()
+            if caps["autostart"]:
+                s = self.autostart_switch = ui.Switch()
+                s.set_quiet(_safe(integration.autostart_enabled, False))
+                s.toggled.connect(lambda on, s=s: self._integrate(integration.set_autostart, on, s))
+                gcard.add_row("Beim Anmelden im Hintergrund starten", s,
+                              "Unsichtbar im Infobereich und für alle sichtbar; nur eingehende "
+                              "Dateien melden sich.")
+            if caps["send"]:
+                s = self.send_menu_switch = ui.Switch()
+                s.set_quiet(_safe(integration.send_menu_enabled, False))
+                s.toggled.connect(lambda on, s=s: self._integrate(integration.set_send_menu, on, s))
+                gcard.add_row(caps["send"], s, caps.get("send_hint"))
+            col.addWidget(gcard)
+
+        # the log, off unless asked for
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(500)
-        self.log.setFont(QFont("monospace", 8))
-        self.log.setVisible(False)
-        lay.addWidget(self.log, 1)
+        mono = QFont("Consolas")
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        mono.setPixelSize(11)
+        self.log.setFont(mono)
+        self.log.setMinimumHeight(140)
+        self.log_box = QWidget()
+        lb = QVBoxLayout(self.log_box)
+        lb.setContentsMargins(0, 0, 0, 0)
+        lb.addWidget(ui.section("Protokoll"))
+        lb.addWidget(self.log)
+        self.log_box.hide()
+        self.log_action.toggled.connect(self.log_box.setVisible)
+        col.addWidget(self.log_box)
+        col.addStretch(1)
 
-        menu = self.menuBar().addMenu("&EspDrop")
-        a = QAction("Protokoll anzeigen", self, checkable=True)
-        a.toggled.connect(self.log.setVisible)
-        menu.addAction(a)
-        a = QAction("Port …", self)
-        a.triggered.connect(self._pick_port)
-        menu.addAction(a)
-        menu.addSeparator()
-        caps = integration.supported()
-        self.autostart_action = self.send_menu_action = None
-        if caps["autostart"]:
-            a = self.autostart_action = QAction("Beim Anmelden im Hintergrund starten",
-                                                self, checkable=True)
-            a.setChecked(_safe(integration.autostart_enabled, False))
-            a.toggled.connect(lambda on: self._integrate(integration.set_autostart, on, a))
-            menu.addAction(a)
-        if caps["send"]:
-            a = self.send_menu_action = QAction(caps["send"], self, checkable=True)
-            a.setChecked(_safe(integration.send_menu_enabled, False))
-            a.toggled.connect(lambda on: self._integrate(integration.set_send_menu, on, a))
-            menu.addAction(a)
-        menu.addSeparator()
-        a = QAction("Beenden", self)
-        a.triggered.connect(self.quit)
-        menu.addAction(a)
-        self.setCentralWidget(root)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(page)
+        self.setCentralWidget(scroll)
         self._update_dir()
         self._set_device_ui(False)
+        self._update_devices_ui()
 
     def _make_tray(self):
-        tray = QSystemTrayIcon(app_icon(), self)
+        tray = QSystemTrayIcon(ui.app_icon(), self)
         menu = QMenu()
-        menu.addAction("Anzeigen", self._show)
+        menu.addAction("EspDrop öffnen", self._show)
         menu.addAction("Dateien senden …", lambda: self.open_send_dialog([]))
-        self.tray_receive = menu.addAction("Empfangsbereit machen",
-                                           lambda: self.receive_btn.setChecked(
-                                               not self.receive_btn.isChecked()))
+        self.tray_receive = menu.addAction("Für alle sichtbar (10 Minuten)",
+                                           lambda: self.visibility.select(
+                                               0 if self.session.receiving else 1))
         menu.addSeparator()
         menu.addAction("Beenden", self.quit)
         tray.setContextMenu(menu)
         tray.activated.connect(lambda reason: self._show()
-                               if reason == QSystemTrayIcon.Trigger else None)
+                               if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
         tray.messageClicked.connect(self._notification_clicked)
         tray.setToolTip(APP)
         tray.show()
@@ -606,24 +726,25 @@ class MainWindow(QMainWindow):
         """A tray notification; clicking it opens `files` (else the window)."""
         self._notify_files = files
         if self.tray:
-            self.tray.showMessage(APP, text, QSystemTrayIcon.Information, msecs)
+            self.tray.showMessage(APP, text, QSystemTrayIcon.MessageIcon.Information, msecs)
 
     def _notification_clicked(self):
-        files = self._notify_files
-        if files:
-            target = files[0] if len(files) == 1 else os.path.dirname(files[0])
-            QDesktopServices.openUrl(QUrl.fromLocalFile(target))
+        if self._notify_files:
+            self._open_files(self._notify_files)
         else:
             self._show()
 
-    def _integrate(self, fn, on, action):
-        """Autostart / Explorer menu on or off; a failure is shown and undone."""
+    def _open_files(self, files):
+        if files:
+            target = files[0] if len(files) == 1 else os.path.dirname(files[0])
+            QDesktopServices.openUrl(QUrl.fromLocalFile(target))
+
+    def _integrate(self, fn, on, switch):
+        """Autostart / file manager menu on or off; a failure is shown and undone."""
         try:
             fn(on)
         except Exception as e:                 # noqa: BLE001
-            action.blockSignals(True)
-            action.setChecked(not on)
-            action.blockSignals(False)
+            switch.set_quiet(not on)
             QMessageBox.warning(self, APP, f"Das ging nicht: {e}")
 
     # ---- other starts and the share menu -------------------------------------
@@ -637,8 +758,8 @@ class MainWindow(QMainWindow):
             self._show()
 
     def open_send_dialog(self, files):
-        """'An wen senden?' for these files; Explorer passes files one call
-        at a time, so they join a dialog that has not started sending yet."""
+        """The AirDrop sheet for these files; Explorer passes files one call at
+        a time, so they join a sheet that has not started sending yet."""
         for d in self._send_dialogs:
             if d.transfer_id is None and d.add_files(files):
                 d.show()
@@ -671,8 +792,7 @@ class MainWindow(QMainWindow):
         if self.tray and not self._quitting:
             e.ignore()
             self.hide()
-            self.tray.showMessage(APP, "Läuft im Hintergrund weiter (Symbol in der "
-                                       "Taskleiste).", QSystemTrayIcon.Information, 3000)
+            self._notify("Läuft im Hintergrund weiter (Symbol im Infobereich).", None, 3000)
             return
         self._shutdown()
         e.accept()
@@ -696,31 +816,39 @@ class MainWindow(QMainWindow):
         if kind == "device":
             state = info.get("state")
             if state == "connected":
+                self._connected = True
+                self.dot.set_state("green")
+                self.device_label.setText("ESP verbunden")
                 mac = (info.get("info") or {}).get("mac", "")
-                self.device_label.setText(f"ESP verbunden ({mac})")
+                self.device_label.setToolTip(f"ESP {mac}" if mac else "")
                 self._set_device_ui(True)       # the session restarts receiving itself
-            elif state == "connecting":
-                pass
             elif state == "lost":
-                err = info.get("error") or ""
-                self.device_label.setText(f"Kein ESP: {err}" if err else "Kein ESP")
+                self._connected = False
+                self.dot.set_state("red")
+                self.device_label.setText("Kein ESP")
+                self.device_label.setToolTip(info.get("error") or "")
                 self._set_device_ui(False)
             elif state == "stopped":
-                self.device_label.setText("beendet")
+                self.device_label.setText("Beendet")
             if state in ("connected", "lost"):
                 for d in list(self._send_dialogs):
                     d.on_device(state == "connected")
         elif kind == "power":
-            self.power_label.setText(power_text(info.get("text", "")))
+            text = power_text(info.get("text", ""))
+            self.power_label.setText(f"· {text}" if text else "")
         elif kind == "browse":
-            self.search_btn.setEnabled(not info["on"] and self.session.state == "connected")
-            self.search_btn.setText("Suche läuft …" if info["on"] else "Geräte suchen")
+            self._browsing = info["on"]
+            self.search_btn.setText("Suche läuft …" if info["on"] else "Suchen")
+            self.search_btn.setEnabled(not info["on"] and self._connected)
+            self._update_devices_ui()
         elif kind == "receiver":
-            self._receiver_item(info["receiver"])
+            r = info["receiver"]
+            self.devices.upsert(r.id, r.label, r.model, r.present, r.discovered)
+            self._update_devices_ui()
             for d in list(self._send_dialogs):
-                d.on_receiver(info["receiver"])
+                d.on_receiver(r)
         elif kind == "receiving":
-            self._receiving_ui(info["on"])
+            self._receiving_ui(info["on"], info.get("until"))
         elif kind == "send":
             self._send_row(info)
             for d in list(self._send_dialogs):
@@ -732,7 +860,7 @@ class MainWindow(QMainWindow):
             self._log(info.get("text", ""))
 
     def _send_notice(self, info):
-        """In the background nobody sees the dialog close: say how it went."""
+        """In the background nobody sees the sheet close: say how it went."""
         if self.isVisible() or self._send_dialogs:
             return
         t, state = info["transfer"], info["state"]
@@ -746,53 +874,64 @@ class MainWindow(QMainWindow):
         self.log.appendPlainText(f"{time.strftime('%H:%M:%S')} {text}")
 
     def _set_device_ui(self, connected):
-        self.search_btn.setEnabled(connected and not self.session_browsing())
-        self.send_btn.setEnabled(connected)
+        self.search_btn.setEnabled(connected and not self._browsing)
+        self.devices.set_tiles_enabled(connected)
         if not connected:
             self.power_label.setText("")
 
     def session_browsing(self):
-        s = getattr(self, "session", None)
-        return bool(s and s.browsing)
+        return self._browsing
+
+    def _update_devices_ui(self):
+        has = self.devices.count() > 0
+        self.radar.setVisible(not has and self._browsing)
+        self.radar_text.setVisible(not has and self._browsing)
+        self.radar.set_running(self._browsing)
+        self.devices_note.setVisible(not has and not self._browsing)
+        self.devices.setVisible(has)
+        self.devices_hint.setVisible(has)
 
     def _tick(self):
-        until = self.session.receive_until
-        if self.session.receiving:
+        s = getattr(self, "session", None)
+        if s is not None and s.receiving:
+            until = s.receive_until
             if until:
                 left = max(0, until - time.monotonic())
-                self.receive_left.setText(f"empfangsbereit, noch {int(left // 60)}:"
-                                          f"{int(left % 60):02d}")
+                text = f"Für alle sichtbar – noch {int(left // 60)}:{int(left % 60):02d}"
             else:
-                self.receive_left.setText("empfangsbereit (dauerhaft)")
+                text = "Für alle sichtbar, bis du es ausschaltest."
+        else:
+            text = "Niemand kann dir gerade etwas senden."
+        if self.receive_left.text() != text:
+            self.receive_left.setText(text)
 
     # ---- receiving -------------------------------------------------------------
 
-    def _receive_toggled(self, on):
-        secs = WINDOWS.get(self.window_combo.currentText())
-        self.settings.setValue("window", self.window_combo.currentText())
-        self._receiving_ui(on)
-        run_bg(self.session.set_receiving, on, secs, on_error=self._log)
+    def _visibility_picked(self, index):
+        _label, secs = VISIBILITY[index]
+        self._receiving_ui(bool(index), secs)
+        if index:
+            run_bg(self.session.set_receiving, True, secs, on_error=self._log)
+        else:
+            run_bg(self.session.set_receiving, False, on_error=self._log)
 
-    def _receiving_ui(self, on):
-        if self.receive_btn.isChecked() != on:
-            self.receive_btn.blockSignals(True)
-            self.receive_btn.setChecked(on)
-            self.receive_btn.blockSignals(False)
-        self.receive_btn.setText("Empfangen beenden" if on else "Empfangsbereit machen")
-        self.window_combo.setEnabled(not on)
-        if not on:
-            self.receive_left.setText("aus")
+    def _receiving_ui(self, on, until):
+        index = 0 if not on else (1 if until else 2)
+        if self.visibility.index() != index:
+            self.visibility.set_index(index)
         if self.tray:
-            self.tray_receive.setText("Empfangen beenden" if on else "Empfangsbereit machen")
+            self.tray_receive.setText("Nicht mehr sichtbar" if on
+                                      else "Für alle sichtbar (10 Minuten)")
+        self._tick()
 
     def _on_ask(self, ask, reply):
         # Hidden (autostart, tray): only the question comes up, on its own;
         # the window stays where it is.
         hidden = not self.isVisible()
-        self._notify(f"{ask.sender} möchte etwas senden")
+        self._notify(f"{ask.sender} möchte {what_text(ask.files, ask.urls)} teilen")
         dlg = AskDialog(None if hidden else self, ask, reply, self.bridge.ask_timeout)
         if hidden:
-            dlg.setWindowIcon(app_icon())
+            dlg.setWindowIcon(ui.app_icon())
         self._ask_dialogs.append(dlg)
         dlg.finished.connect(lambda _r, d=dlg: self._ask_dialogs.remove(d)
                              if d in self._ask_dialogs else None)
@@ -809,37 +948,34 @@ class MainWindow(QMainWindow):
                 self._log(f"abgelehnt: {ask.summary() if ask else '?'}")
                 return
             self._recv_n += 1
-            item = QTreeWidgetItem(["↓", ask.sender if ask else "?",
-                                    ", ".join(ask.files or ask.urls) if ask else "", ""])
-            self.transfers.insertTopLevelItem(0, item)
-            bar = QProgressBar()
-            bar.setRange(0, 0)                 # busy until sizes are known
-            self.transfers.setItemWidget(item, 3, bar)
-            self._rows[("recv", self._recv_n)] = item
-            self._recv_row = item
+            row = ui.TransferRow("receive", ", ".join(ask.files or ask.urls) if ask else "?",
+                                 ask.sender if ask else "?")
+            row.set_state("Wird empfangen …", running=True)
+            row.open.connect(lambda r=row: self._open_files(r.files))
+            self.transfers.add(row)
+            self._rows[("recv", self._recv_n)] = row
+            self._recv_row = row
         elif phase == "receiving" and self._recv_row is not None:
-            bar = self.transfers.itemWidget(self._recv_row, 3)
-            total = info.get("total")
-            if isinstance(bar, QProgressBar):
-                if total:
-                    bar.setRange(0, 1000)
-                    bar.setValue(int(1000 * min(1.0, info["received"] / total)))
-                bar.setFormat(human(info["received"]))
+            got, total = info["received"], info.get("total")
+            text = f"{human(got)} von {human(total)}" if total else human(got)
+            self._recv_row.set_state(text, running=True,
+                                     progress=min(1.0, got / total) if total else None)
         elif phase == "received":
-            item = self._recv_row
+            row = self._recv_row
             self._recv_row = None
-            if item is None:
+            if row is None:
                 return
-            self.transfers.removeItemWidget(item, 3)
             files = info.get("files") or []
             if info.get("ok"):
-                item.setText(3, f"empfangen ({human(info.get('size', 0))})")
-                item.setData(0, Qt.UserRole, files)
-                item.setText(2, ", ".join(os.path.basename(f) for f in files))
-                self._notify(f"Empfangen: {item.text(2)} – klicken zum Öffnen", files)
+                names = ", ".join(os.path.basename(f) for f in files)
+                row.set_title(names)
+                row.set_state(f"Empfangen · {human(info.get('size', 0))}", files=files,
+                              tone="done")
+                self._notify(f"Empfangen: {names} – klicken zum Öffnen", files)
             else:
-                item.setText(3, "unvollständig")
-                item.setData(0, Qt.UserRole, files + ([info["raw"]] if info.get("raw") else []))
+                row.set_state("Unvollständig",
+                              files=files + ([info["raw"]] if info.get("raw") else []),
+                              tone="bad")
 
     def _pick_dir(self):
         d = QFileDialog.getExistingDirectory(self, "Ordner für empfangene Dateien",
@@ -868,31 +1004,10 @@ class MainWindow(QMainWindow):
         self.search_btn.setEnabled(False)
         run_bg(self.session.browse, 60, on_error=self._log)
 
-    def _receiver_item(self, r):
-        item = None
-        for i in range(self.receivers_list.count()):
-            if self.receivers_list.item(i).data(Qt.UserRole) == r.id:
-                item = self.receivers_list.item(i)
-        if item is None:
-            item = QListWidgetItem()
-            item.setData(Qt.UserRole, r.id)
-            self.receivers_list.addItem(item)
-            if self.receivers_list.currentItem() is None:
-                self.receivers_list.setCurrentItem(item)
-        model = f"  ({r.model})" if r.model else ""
-        item.setText(f"{r.label}{model}" if r.present else f"{r.label}{model}  – nicht mehr da")
-        item.setForeground(QColor("black") if r.present else QColor("gray"))
-
-    def _selected_receiver(self):
-        item = self.receivers_list.currentItem()
-        return item.data(Qt.UserRole) if item else None
-
-    def _send_dialog(self):
-        rid = self._selected_receiver()
-        if not rid:
-            QMessageBox.information(self, APP, "Zuerst „Geräte suchen“ und ein Gerät wählen.")
-            return
-        files, _ = QFileDialog.getOpenFileNames(self, "Dateien senden")
+    def _tile_clicked(self, rid):
+        tile = self.devices.tiles.get(rid)
+        files, _ = QFileDialog.getOpenFileNames(
+            self, f"An {tile.name if tile else 'das Gerät'} senden")
         if files:
             self._send_to(rid, files)
 
@@ -911,54 +1026,30 @@ class MainWindow(QMainWindow):
     def _send_row(self, info):
         t = info["transfer"]
         key = ("send", t.id)
-        item = self._rows.get(key)
-        if item is None:
-            item = QTreeWidgetItem(["↑", t.receiver.label,
-                                    ", ".join(os.path.basename(f) for f in t.files), ""])
-            item.setData(0, Qt.UserRole + 1, t.id)
-            self.transfers.insertTopLevelItem(0, item)
-            self._rows[key] = item
+        row = self._rows.get(key)
+        if row is None:
+            row = ui.TransferRow("send", ", ".join(os.path.basename(f) for f in t.files),
+                                 t.receiver.label)
+            row.cancel.connect(lambda tid=t.id: run_bg(self.session.cancel, tid))
+            row.open.connect(lambda r=row: self._open_files(r.files))
+            self.transfers.add(row)
+            self._rows[key] = row
         state = info["state"]
-        if state == "uploading":
-            bar = self.transfers.itemWidget(item, 3)
-            if not isinstance(bar, QProgressBar):
-                bar = QProgressBar()
-                bar.setRange(0, 1000)
-                self.transfers.setItemWidget(item, 3, bar)
-            bar.setValue(int(1000 * info["progress"]))
-        else:
-            if self.transfers.itemWidget(item, 3) is not None:
-                self.transfers.removeItemWidget(item, 3)
-            text = SEND_STATES.get(state, state)
-            if state == "failed" and info.get("error"):
-                text += f": {info['error']}"
-            item.setText(3, text)
-
-    def _transfer_menu(self, pos):
-        item = self.transfers.itemAt(pos)
-        if item is None:
-            return
-        tid = item.data(0, Qt.UserRole + 1)
-        menu = QMenu(self)
-        if tid is not None:
-            menu.addAction("Abbrechen", lambda: run_bg(self.session.cancel, tid))
-        if item.data(0, Qt.UserRole):
-            menu.addAction("Öffnen", lambda: self._open_transfer(item))
-        menu.addAction("Aus der Liste entfernen",
-                       lambda: self.transfers.takeTopLevelItem(
-                           self.transfers.indexOfTopLevelItem(item)))
-        menu.exec(self.transfers.viewport().mapToGlobal(pos))
-
-    def _open_transfer(self, item, column=0):
-        files = item.data(0, Qt.UserRole) or []
-        target = files[0] if len(files) == 1 else (os.path.dirname(files[0]) if files else None)
-        if target:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(target))
+        text = SEND_STATES.get(state, state)
+        if state == "failed" and info.get("error"):
+            text += f": {info['error']}"
+        running = state in ("new", "asking", "uploading")
+        tone = "done" if state == "done" else "bad" if state in ("declined", "failed") else None
+        row.set_state(text, running=running,
+                      progress=info.get("progress") if state == "uploading" else None,
+                      files=None if running else t.files, tone=tone)
+        tile = self.devices.tiles.get(t.receiver.id)
+        if tile:
+            tile.set_phase(TILE_PHASE.get(state, "idle"), info.get("progress") or 0.0)
 
     # ---- settings --------------------------------------------------------------
 
     def _pick_port(self):
-        from PySide6.QtWidgets import QInputDialog
         from .transport import candidates
         ports = ["automatisch"] + candidates()
         current = self.port or "automatisch"
@@ -968,8 +1059,8 @@ class MainWindow(QMainWindow):
             return
         self.port = None if port == "automatisch" else port
         self.settings.setValue("port", self.port or "")
-        receiving = self.session.receiving
-        secs = WINDOWS.get(self.window_combo.currentText())
+        receiving, until = self.session.receiving, self.session.receive_until
+        secs = None if not until else max(1, int(until - time.monotonic()))
         old, new = self.session, self._make_session()
         self.session = new
 
@@ -1007,6 +1098,7 @@ def main(port=None, background=False, send=None):
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP)
     app.setQuitOnLastWindowClosed(False)
+    ui.apply(app)
     files = [os.path.abspath(f) for f in (send or [])]
     # Already running (autostart, an earlier start)? Hand over and leave.
     if send_to_running({"files": files, "send": send is not None,

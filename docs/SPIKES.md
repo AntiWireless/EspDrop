@@ -559,8 +559,8 @@ Oberfläche. Neu dabei:
   `/Discover` („Bens iPad“), nicht nur mit der Kennung. Im Fenster wählen oder
   Dateien auf ein Gerät ziehen; `espdrop send -r NAME` (Name, Teil davon oder
   Kennung), bei mehreren ohne `-r` eine Liste zum Auswählen.
-- **Empfangsfenster** statt dauernd empfangsbereit (10 Minuten, 1 Stunde oder
-  dauerhaft), passend zum Schlafmodus der Firmware. Kann der ESP sich selbst
+- **Empfangsfenster** statt dauernd empfangsbereit („Empfangen von: Aus /
+  10 Minuten / Für alle“, wie am iPhone), passend zum Schlafmodus der Firmware. Kann der ESP sich selbst
   wecken (`power listen`, siehe oben), schläft das WLAN auch während des
   Fensters und wacht erst auf, wenn ein Gerät in der Nähe teilen will; rechts
   oben steht dann „Funk schläft (empfangsbereit)“.
@@ -572,41 +572,51 @@ ergänzt `python3 tools/opendrop_install.py` (nur was fehlt) oder
 `~/opendrop-venv/bin/pip install PySide6`.
 
 Test auf der Hardware (Firmware mit Schlafmodus geflasht):
-1. App starten: oben „ESP verbunden“, rechts „Funk aus (spart Strom)“.
-2. „Geräte suchen“, am iPad Teilen-Menü öffnen: das iPad erscheint mit Namen.
-   Eine Datei darauf ziehen, am iPad annehmen: „gesendet“.
-3. „Empfangsbereit machen“: rechts oben „Funk schläft (empfangsbereit)“ (der
+1. App starten: unter dem Titel „ESP verbunden · Funk aus (spart Strom)“.
+2. „Suchen“, am iPad Teilen-Menü öffnen: das iPad erscheint als rundes Bild mit
+   Namen.
+   Eine Datei darauf ziehen, am iPad annehmen: der Ring um das Bild zeigt das
+   Warten und den Fortschritt, danach „Gesendet“.
+3. „Empfangen von: 10 Minuten“: unter dem Titel „Funk schläft (empfangsbereit)“ (der
    ESP lauscht per Bluetooth). Am iPad etwas teilen: der ESP wacht von selbst
-   auf, „MeinPC“ erscheint am iPad, wählen; der Dialog fragt, „Annehmen“, die
+   auf, „MeinPC“ erscheint am iPad, wählen; die Annehmen-Karte fragt, „Annehmen“, die
    Datei liegt in `Downloads/EspDrop`. Einmal „Ablehnen“: das iPad meldet die
    Ablehnung.
 4. Fenster schließen (läuft im Tray weiter), ESP ab- und anstecken: die App
    verbindet sich wieder.
 5. Nach dem Ende des Empfangsfensters und ohne Suche: „Funk aus“, der ESP
    bleibt kühl.
-6. Menü EspDrop → „Beim Anmelden im Hintergrund starten“, abmelden und wieder
+6. Allgemein → „Beim Anmelden im Hintergrund starten“, abmelden und wieder
    anmelden: kein Fenster, nur das Tray-Symbol; die App ist dauerhaft
    empfangsbereit (bei Firmware mit `power listen` schläft der Funk dabei).
-   Vom iPad etwas senden: nur der Annehmen-Dialog erscheint, danach eine
+   Vom iPad etwas senden: nur die Annehmen-Karte erscheint, danach eine
    Benachrichtigung „Empfangen: …“ (Klick öffnet die Datei).
-7. Menü EspDrop → „Im Explorer-Menü anbieten“. Im Explorer Dateien markieren,
-   Rechtsklick → „Senden an“ → „EspDrop (AirDrop)“ (Windows 11: erst
-   „Weitere Optionen anzeigen“) oder „Mit EspDrop senden“: „An wen senden?“
-   öffnet sich, das iPad erscheint, anklicken, am iPad annehmen; der Dialog
-   schließt sich nach „Gesendet an …“.
+7. Allgemein → „Im Rechtsklickmenü des Explorers anbieten“. Im Explorer
+   Dateien markieren, Rechtsklick → „Senden an“ → „EspDrop (AirDrop)“
+   (Windows 11: erst „Weitere Optionen anzeigen“) oder „Mit EspDrop senden“:
+   das AirDrop-Blatt öffnet sich, das iPad erscheint, anklicken, am iPad
+   annehmen; das Blatt schließt sich nach „Gesendet an …“.
 
-Windows' eigenes Teilen-Fenster („Teilen“) zeigt nur Apps mit Paket-Identität
-(MSIX). Dorthin kommt EspDrop mit der späteren paketierten Version; bis dahin
-sind „Senden an“ und das Rechtsklick-Menü der Weg aus dem Explorer.
+Aus dem Explorer wird über das Rechtsklick-Menü gesendet („Senden an“ und „Mit
+EspDrop senden“); so bleibt es auch, Windows' eigenes Teilen-Fenster ist nicht
+nötig.
+
+Aussehen: Die App ist im Stil von Apples eigenen Apps gezeichnet
+(`host/espdrop/ui.py`): helle bzw. dunkle Oberfläche nach Systemeinstellung,
+abgerundete Karten wie in den macOS-Systemeinstellungen, Schalter und
+Segment-Steuerung, Geräte als runde Bilder mit Fortschrittsring, „Radar“
+während der Suche, eine schwebende Karte zum Annehmen und ein AirDrop-Blatt
+zum Senden. Ohne Bild- oder Schriftdateien; die Schrift ist die des Systems
+(Windows 11: Segoe UI Variable).
 
 Tests ohne Hardware: `test_session.py` (Suche mit Namen, Senden mit
 Fortschritt und Abbrechen, Empfangen mit Annehmen/Ablehnen/Zeitüberschreitung,
 Empfangsfenster, `power listen` bei scan-fähiger Firmware, Neuverbinden) und
 `test_gui.py` (das Fenster offscreen: suchen und senden, Dialog annehmen und
-ablehnen, Hintergrundbetrieb, „An wen senden?“ mit Dateien aus zwei Aufrufen,
+ablehnen, Hintergrundbetrieb, AirDrop-Blatt mit Dateien aus zwei Aufrufen,
 nur eine laufende App) und `test_integration.py` (Autostart und
 Dateimanager-Menü: Linux echt in Temp-Ordnern, Windows-Registry und
-„Senden an“ nachgebildet). Zusammen 57 Host-Tests.
+„Senden an“ nachgebildet). Zusammen 59 Host-Tests.
 
 ## Danach
 

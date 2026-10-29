@@ -115,16 +115,21 @@ class GuiTest(unittest.TestCase):
                                       answers={1: ["small"]})
             w = self.window(fake)
             src = self.file("foto.jpg", b"\xff\xd8 gui send " * 500)
+            self.assertFalse(w.radar.isVisible())              # not searching yet
             w.search_btn.click()
-            self.assertTrue(self.pump(lambda: w.receivers_list.count() == 1
-                                      and "TestPad" in w.receivers_list.item(0).text()))
+            self.assertTrue(self.pump(lambda: w.devices.count() == 1 and next(
+                iter(w.devices.tiles.values())).name == "TestPad"))
+            (rid, tile), = w.devices.tiles.items()
+            self.assertEqual(tile.caption(), "OpenDrop")        # its /Discover model
             os.chdir(pad)                      # the loopback receiver writes into cwd
-            w._send_to(w._selected_receiver(), [src])
-            row = lambda: w.transfers.topLevelItem(0)              # noqa: E731
-            self.assertTrue(self.pump(lambda: row() and row().text(3) in
-                                      ("gesendet", "fehlgeschlagen", "abgelehnt")))
-            self.assertEqual(row().text(3), "gesendet")
-            self.assertEqual((row().text(1), row().text(2)), ("TestPad", "foto.jpg"))
+            w._send_to(rid, [src])
+            row = lambda: w.transfers.rows[0] if w.transfers.rows else None  # noqa: E731
+            self.assertTrue(self.pump(lambda: row() and row().status_text() in
+                                      ("Gesendet", "Fehlgeschlagen", "Abgelehnt")))
+            self.assertEqual(row().status_text(), "Gesendet")
+            self.assertEqual((row().device, row().title_text()), ("TestPad", "foto.jpg"))
+            self.assertEqual(tile.phase, "sent")               # the avatar says so too
+            self.assertTrue(row().open_btn.isVisibleTo(w))
         finally:
             rx.stop()
         self.assertIn("foto.jpg", os.listdir(pad))
@@ -132,18 +137,20 @@ class GuiTest(unittest.TestCase):
     def answer_incoming(self, accept):
         fake = DuplexBridgeDevice()
         w = self.window(fake)
-        w.receive_btn.click()                  # empfangsbereit (10 Minuten)
+        w.visibility.select(1)                 # "10 Minuten", as a click
         self.assertTrue(self.pump(lambda: fake.listening == 8771))
         self.assertTrue(w.session.receiving)
         self.assertIsNotNone(w.session.receive_until)
+        self.assertTrue(self.pump(lambda: w.receive_left.text().startswith(
+            "Für alle sichtbar – noch")), w.receive_left.text())
         src = self.file("bild.jpg", b"incoming via the dialog " * 300)
         result = {}
         th = threading.Thread(target=lambda: result.setdefault("ok", incoming(fake, src)))
         th.start()
         self.assertTrue(self.pump(lambda: getattr(w, "_last_ask_dialog", None) is not None))
         dlg = w._last_ask_dialog
-        self.assertIn("Sender", dlg.findChildren(type(w.device_label))[0].text()
-                      + "".join(lbl.text() for lbl in dlg.findChildren(type(w.device_label))))
+        texts = [lbl.text() for lbl in dlg.findChildren(type(w.device_label))]
+        self.assertIn("„Sender“ möchte ein Foto teilen.", texts)
         (dlg.yes if accept else dlg.no).click()
         self.assertTrue(self.pump(lambda: not th.is_alive(), 20))
         return w, result.get("ok")
@@ -151,16 +158,17 @@ class GuiTest(unittest.TestCase):
     def test_receive_through_the_dialog(self):
         w, ok = self.answer_incoming(True)
         self.assertTrue(ok)
-        row = lambda: w.transfers.topLevelItem(0)                  # noqa: E731
-        self.assertTrue(self.pump(lambda: row() and row().text(3).startswith("empfangen")))
-        self.assertEqual(row().text(2), "bild.jpg")
+        row = lambda: w.transfers.rows[0] if w.transfers.rows else None  # noqa: E731
+        self.assertTrue(self.pump(lambda: row() and row().status_text().startswith("Empfangen")))
+        self.assertEqual((row().title_text(), row().device), ("bild.jpg", "Sender"))
         self.assertIn("bild.jpg", os.listdir(self.dl))
 
     def test_declined_in_the_dialog(self):
         w, ok = self.answer_incoming(False)
         self.assertFalse(ok)
         self.assertEqual(os.listdir(self.dl), [])
-        self.assertEqual(w.transfers.topLevelItemCount(), 0)
+        self.assertEqual(w.transfers.count(), 0)
+        self.assertTrue(w.transfers.placeholder.isVisibleTo(w))
 
     def test_background_shows_only_the_question(self):
         # Autostart: no window, receiving until switched off; an incoming
@@ -171,6 +179,7 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(self.pump(lambda: fake.listening == 8771))
         self.assertTrue(w.session.receiving)
         self.assertIsNone(w.session.receive_until)            # dauerhaft
+        self.assertEqual(w.visibility.index(), 2)              # "Für alle"
         src = self.file("hintergrund.jpg", b"arrives while hidden " * 200)
         result = {}
         th = threading.Thread(target=lambda: result.setdefault("ok", incoming(fake, src)))
@@ -205,11 +214,15 @@ class GuiTest(unittest.TestCase):
             w.handle_message({"files": [b], "send": True})
             (d,) = w._send_dialogs
             self.assertEqual([os.path.basename(f) for f in d.files], ["a.txt", "b.txt"])
-            self.assertTrue(self.pump(lambda: d.list.count() == 1
-                                      and "TestPad" in d.list.item(0).text()))
+            self.assertEqual(d.title.full_text(), "2 Dateien")
+            self.assertTrue(self.pump(lambda: d.grid.count() == 1 and next(
+                iter(d.grid.tiles.values())).name == "TestPad"))
+            self.assertFalse(d.radar.isVisible())              # devices replace the radar
+            (rid, tile), = d.grid.tiles.items()
             os.chdir(pad)                      # the loopback receiver writes into cwd
-            d._pick(d.list.item(0))
+            d._pick(rid)
             self.assertIsNotNone(d.transfer_id)
+            self.assertIn(tile.phase, ("waiting", "sending", "sent"))
             self.assertTrue(self.pump(lambda: d not in w._send_dialogs, 20),
                             d.status.text())
             self.assertFalse(w.isVisible())
@@ -231,6 +244,40 @@ class GuiTest(unittest.TestCase):
             self.assertEqual(got, [msg])
         finally:
             server.close()
+
+    def test_what_text(self):
+        w = self.gui.what_text
+        self.assertEqual(w(["a.jpg"]), "ein Foto")
+        self.assertEqual(w(["a.JPG", "b.heic"]), "2 Fotos")
+        self.assertEqual(w(["a.mov"]), "ein Video")
+        self.assertEqual(w(["a.jpg", "b.pdf"]), "2 Dateien")
+        self.assertEqual(w([], ["https://example.org"]), "einen Link")
+        self.assertEqual(w([]), "etwas")
+
+    def test_controls(self):
+        from espdrop import ui
+        seg = ui.Segmented(["Aus", "10 Minuten", "Für alle"])
+        picked = []
+        seg.changed.connect(picked.append)
+        seg.set_index(2)                       # programmatic: no signal
+        seg.select(1)                          # as a click
+        seg.select(1)
+        self.assertEqual((seg.index(), picked), (1, [1]))
+        sw = ui.Switch()
+        flips = []
+        sw.toggled.connect(flips.append)
+        sw.set_quiet(True)
+        sw.click()
+        self.assertEqual((sw.isChecked(), flips), (False, [False]))
+        self.assertEqual(ui.pretty_model("iPad13,1"), "iPad")
+        self.assertEqual(ui.device_kind("iPhone15,2", None), "phone")
+        self.assertEqual(ui.device_kind(None, "MacBook von Anna"), "mac")
+        self.assertEqual(ui.initials("Bens iPad"), "BI")
+        for dark in (False, True):             # both looks build
+            ui.T.clear()
+            ui.T.update(ui.DARK if dark else ui.LIGHT)
+            self.assertIn(ui.T["accent"], ui.qss())
+        ui.refresh(self.app)
 
     def test_power_text(self):
         t = self.gui.power_text

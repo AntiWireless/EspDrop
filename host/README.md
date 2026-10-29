@@ -29,30 +29,33 @@ Only one program can own the serial port: stop `tools/awdl_bridge.py` first.
 ## Desktop app
 
 `espdrop gui` (Windows: `.\tools\espdrop-gui.cmd`, no console window) opens
-one window that owns the ESP for as long as it runs:
+one window that owns the ESP for as long as it runs. It is drawn in the look of
+Apple's own apps (`espdrop/ui.py`: rounded cards, switches, segmented
+controls, round device avatars; light and dark follow the system), with no
+image or font files: text uses the system face (Segoe UI Variable on Windows
+11, Inter or the desktop font on Linux).
 
-- **Empfangen:** "Empfangsbereit machen" for 10 minutes, an hour or until
-  switched off; others see the name set at the top. Every incoming transfer
-  asks first (sender, files, thumbnail; no answer in 60 s = declined). Files go
-  to the folder shown (default `Downloads/EspDrop`).
-- **Senden:** "Geräte suchen" (60 s, with the ESP's Bluetooth wake) lists the
-  receivers by name; drop files on one, or pick one and "Dateien senden …".
-- **Übertragungen:** progress, cancel and open via the context menu.
+- **AirDrop:** "Empfangen von: Aus / 10 Minuten / Für alle", as on the iPhone;
+  the name others see; where received files go (default `Downloads/EspDrop`).
+  Every incoming transfer asks first, in a floating card (picture, sender,
+  files; Ablehnen / Annehmen; no answer in 60 s = declined).
+- **Geräte in der Nähe:** "Suchen" (60 s, with the ESP's Bluetooth wake) shows
+  the devices as avatars with their names; drop files on one or click it. A
+  ring around the avatar shows the wait for Accept and the progress.
+- **Übertragungen:** progress, cancel, show in folder.
 - The ESP's radio is only on while receiving, searching or sending (firmware
-  with the sleep mode, docs/SPIKES.md); the label top right says which.
-- Closing the window keeps it in the tray; "Beenden" ends it. Unplugging the
-  ESP is fine: it reconnects when it comes back.
-- **Autostart:** menu EspDrop → "Beim Anmelden im Hintergrund starten"
-  (Windows: `HKCU\…\CurrentVersion\Run`; Linux: `~/.config/autostart`). It
-  then starts as `espdrop gui --background`: tray only, receiving until
-  switched off, and only an incoming transfer brings up its dialog; a
-  notification says when files arrived (click: open them).
-- **Sending from the file manager:** menu EspDrop → "Im Explorer-Menü
-  anbieten" adds "Senden an → EspDrop (AirDrop)" and "Mit EspDrop senden" to
-  the right-click menu (on Windows 11 under "Weitere Optionen anzeigen"); on
-  Linux "Öffnen mit → AirDrop (EspDrop)". Either opens "An wen senden?": the
-  devices a search finds, one click sends. Windows' own share sheet ("Teilen")
-  only lists packaged apps (MSIX); that comes with a packaged build.
+  with the sleep mode, docs/SPIKES.md); the line under the title says which.
+- Closing the window keeps it in the tray; "Beenden" (the "…" button or the
+  tray) ends it. Unplugging the ESP is fine: it reconnects when it comes back.
+- **Allgemein → "Beim Anmelden im Hintergrund starten"** (Windows:
+  `HKCU\…\CurrentVersion\Run`; Linux: `~/.config/autostart`). It then starts
+  as `espdrop gui --background`: tray only, visible to everyone until switched
+  off, and only an incoming transfer brings up its card; a notification says
+  when files arrived (click: open them).
+- **Allgemein → "Im Rechtsklickmenü des Explorers anbieten"** adds "Senden an →
+  EspDrop (AirDrop)" and "Mit EspDrop senden" (on Windows 11 under "Weitere
+  Optionen anzeigen"); on Linux "Öffnen mit → AirDrop (EspDrop)". Either opens
+  the AirDrop sheet: the devices a search finds, one click sends.
 - **One copy per user:** a second start (autostart, the file manager, the
   launcher) hands its files to the running app over a local socket and exits.
 
