@@ -95,7 +95,10 @@ once (it only adds what is missing) or `~/opendrop-venv/bin/pip install PySide6`
 The OpenDrop venv from `tools/opendrop_install.sh` (needs python3, git,
 openssl, libarchive). pyserial is optional; without it the app uses the tty
 directly. No root: only access to `/dev/ttyACM0` (group `dialout`, `uucp` on
-Arch).
+Arch). The window under X11 needs the xcb libraries Qt's X11 plugin uses
+(since Qt 6.5 `libxcb-cursor0` and a few more, missing on minimal installs);
+`check` names any missing package (`sudo apt install …`). Wayland does
+without; the compiled program carries them.
 
 ```sh
 ~/opendrop-venv/bin/python tools/espdrop.py check
@@ -149,7 +152,10 @@ root certificate, libarchive, esptool, Qt) and the window offscreen.
 The program finds its parts next to itself (the firmware as
 `espdrop/firmware/espdrop-esp32c5.bin`). On Linux it uses the system's
 libarchive and carries `libarchive.so.13` from the build machine as a
-fallback. At its first start it puts its entries where the desktop looks
+fallback, and it carries the xcb libraries Qt's X11 plugin needs (since Qt
+6.5 `libxcb-cursor0` and a few more, missing on minimal installs; the build
+refuses to run without them and names the packages; Wayland does without).
+`--smoke` on Linux also starts the window under Xvfb through that plugin. At its first start it puts its entries where the desktop looks
 (autostart, the right-click menu, on Linux also the application menu), all
 pointing at the program itself; a moved folder is followed at the next start.
 

@@ -199,6 +199,29 @@ class LibarchiveLookupTest(unittest.TestCase):
             self.assertTrue(detail.startswith("libarchive 3."), detail)
 
 
+class X11LibrariesTest(unittest.TestCase):
+    LDD = ("\tlibxcb.so.1 => /usr/lib/x86_64-linux-gnu/libxcb.so.1 (0x1)\n"
+           "\tlibxcb-cursor.so.0 => not found\n"
+           "\tlibxkbcommon-x11.so.0 => not found\n"
+           "\tlibxcb-cursor.so.0 => not found\n")
+
+    def test_package_names(self):
+        self.assertEqual([env.debian_package(s) for s in
+                          ("libxcb-cursor.so.0", "libxkbcommon-x11.so.0", "libxcb-util.so.1")],
+                         ["libxcb-cursor0", "libxkbcommon-x11-0", "libxcb-util1"])
+
+    def test_missing_from_ldd(self):
+        import subprocess
+        done = subprocess.CompletedProcess(["ldd"], 0, self.LDD, "")
+        with mock.patch.object(sys, "platform", "linux"), \
+                mock.patch("os.path.isfile", return_value=True), \
+                mock.patch("shutil.which", return_value="/usr/bin/ldd"), \
+                mock.patch("subprocess.run", return_value=done):
+            self.assertEqual(env.xcb_missing(), ["libxcb-cursor.so.0", "libxkbcommon-x11.so.0"])
+        with mock.patch.object(sys, "platform", "win32"):
+            self.assertIsNone(env.xcb_missing())
+
+
 class CheckTest(unittest.TestCase):
     def test_this_venv_is_ready(self):
         out = io.StringIO()

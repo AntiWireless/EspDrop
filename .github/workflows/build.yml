@@ -92,9 +92,13 @@ jobs:
           path: build/firmware
       - name: Libraries (Linux)
         if: runner.os == 'Linux'
+        # libarchive and Qt's X11 plugin's xcb libraries go into the program
+        # (users need not install them); xvfb for the start test under X11.
         run: |
           sudo apt-get update
-          sudo apt-get install -y libarchive13 libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+          sudo apt-get install -y libarchive13 libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
+            libxcb-xkb1 libxkbcommon-x11-0 libxcb-util1 xvfb
       - name: The venv with the patched OpenDrop, and Nuitka
         shell: bash
         run: |

@@ -120,6 +120,17 @@ def firmware(args, res):
     return source
 
 
+def check_x11_libraries():
+    """Linux: Qt's X11 plugin needs some xcb libraries; present here, Nuitka
+    puts them into the program, so users need not install them."""
+    from espdrop import env
+    missing = env.xcb_missing()
+    if missing:
+        sys.exit("error: Qt's X11 plugin lacks " + ", ".join(missing) + " on this machine; "
+                 "install them so the program carries them: sudo apt install "
+                 + " ".join(env.debian_package(m) for m in missing))
+
+
 def system_libarchive():
     """The libarchive the build machine's OpenDrop uses, as a file (Linux)."""
     from espdrop import env
@@ -219,8 +230,11 @@ def smoke(dist):
         sys.exit(f"smoke: --version said {v.stdout!r} {v.stderr!r}")
     c = subprocess.run([exe, "check"], capture_output=True, text=True, timeout=300)
     print(c.stdout, c.stderr, flush=True)
-    for need in ("ok   opendrop", "ok   root ca", "ok   libarchive", "ok   esptool",
-                 "ok   pyside6", "ok   program"):
+    needs = ["ok   opendrop", "ok   root ca", "ok   libarchive", "ok   esptool", "ok   pyside6",
+             "ok   program"]
+    if not IS_WINDOWS:
+        needs.append("ok   x11")               # the X11 plugin's libraries came along
+    for need in needs:
         if need not in c.stdout:
             sys.exit(f"smoke: `check` lacks {need!r}")
     # The path autostart and the menus will start must be this very file.
@@ -242,6 +256,16 @@ def smoke(dist):
     finally:
         p.kill()
         p.wait(10)
+    if not IS_WINDOWS and shutil.which("xvfb-run"):
+        # The window once more through Qt's X11 plugin, as on most desktops
+        # (offscreen does not load it): still running after 12 s is fine.
+        x11 = {k: v for k, v in env.items() if k != "QT_QPA_PLATFORM"}
+        r = subprocess.run(["xvfb-run", "-a", "-s", "-screen 0 1280x1000x24", "timeout", "12",
+                            exe, "-p", "none-such-port", "gui"], env=x11,
+                           capture_output=True, text=True, timeout=180)
+        if r.returncode != 124:
+            sys.exit(f"smoke: under X11 the window ended (rc {r.returncode}): "
+                     f"{r.stdout[-1500:]}{r.stderr[-1500:]}")
     print("smoke: --version, check and the window are fine", flush=True)
 
 
@@ -257,6 +281,8 @@ def main(argv=None):
 
     step("checking the build environment")
     check_build_env()
+    if not IS_WINDOWS:
+        check_x11_libraries()
     build = os.path.abspath(args.out)
     out, res = os.path.join(build, "app"), os.path.join(build, "app-res")
     icons = make_icons(res)

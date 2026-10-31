@@ -335,6 +335,41 @@ def _archive_selftest():
     return True, f"cpio+gzip pack/read/extract ok ({len(blob)} bytes)", warnings
 
 
+def xcb_missing():
+    """Libraries Qt's X11 plugin needs that this system lacks (Linux), [] if
+    none, None if that cannot be told. Wayland sessions do not need them; a
+    build carries them (tools/build_app.py)."""
+    if not sys.platform.startswith("linux"):
+        return None
+    import shutil
+    import subprocess
+    from .frozen import program_dir
+    base = program_dir()
+    if base:
+        plugin = os.path.join(base, "PySide6", "qt-plugins", "platforms", "libqxcb.so")
+    else:
+        try:
+            import PySide6
+        except ImportError:
+            return None
+        plugin = os.path.join(os.path.dirname(PySide6.__file__), "Qt", "plugins", "platforms",
+                              "libqxcb.so")
+    if not os.path.isfile(plugin) or not shutil.which("ldd"):
+        return None
+    try:
+        out = subprocess.run(["ldd", plugin], capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return sorted({ln.split()[0] for ln in out.splitlines() if "not found" in ln})
+
+
+def debian_package(soname):
+    """'libxcb-cursor.so.0' -> 'libxcb-cursor0' (Debian's naming)."""
+    name, _, version = soname.partition(".so.")
+    major = version.split(".")[0]
+    return name + ("-" if name[-1:].isdigit() else "") + major
+
+
 def check(out=print):
     """What `espdrop check` reports. Returns the number of problems."""
     import platform
@@ -372,6 +407,13 @@ def check(out=print):
     except ImportError:
         line(None, "pyside6", "not installed: the command line works, the desktop app "
                               "(espdrop gui) needs it")
+    missing = xcb_missing()
+    if missing:
+        line(None, "x11", f"Qt's X11 plugin lacks {', '.join(missing)}: under X11 (Wayland "
+                          f"does without) the window needs: sudo apt install "
+                          f"{' '.join(debian_package(m) for m in missing)}")
+    elif missing == []:
+        line(True, "x11", "Qt's X11 plugin has what it needs")
     try:
         import esptool
         line(True, "esptool", f"{esptool.__version__} (espdrop flash, firmware from the app)")
@@ -388,11 +430,17 @@ def check(out=print):
         load_opendrop()
         import opendrop
         import opendrop.server
-        with open(opendrop.server.__file__, encoding="utf-8") as f:
-            patched = "trailing CRLF of the final chunk" in f.read()
+        from .frozen import compiled
+        if compiled():
+            # No source to look into (the marker is a comment); the build
+            # refuses an OpenDrop without the patches (tools/build_app.py).
+            patched, where = True, "checked when this program was built"
+        else:
+            with open(opendrop.server.__file__, encoding="utf-8") as f:
+                patched = "trailing CRLF of the final chunk" in f.read()
+            where = os.path.dirname(opendrop.__file__)
         line(patched, "opendrop", f"{opendrop.__version__}, "
-                                  f"{'patched' if patched else 'NOT patched'} "
-                                  f"({os.path.dirname(opendrop.__file__)})")
+                                  f"{'patched' if patched else 'NOT patched'} ({where})")
     except ImportError as e:
         line(False, "opendrop", str(e))
         return problems
