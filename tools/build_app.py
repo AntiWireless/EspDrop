@@ -218,9 +218,16 @@ def smoke(dist):
     c = subprocess.run([exe, "check"], capture_output=True, text=True, timeout=300)
     print(c.stdout, c.stderr, flush=True)
     for need in ("ok   opendrop", "ok   root ca", "ok   libarchive", "ok   esptool",
-                 "ok   pyside6", f"ok   program     {os.path.realpath(exe)} "):
+                 "ok   pyside6", "ok   program"):
         if need not in c.stdout:
             sys.exit(f"smoke: `check` lacks {need!r}")
+    # The path autostart and the menus will start must be this very file.
+    said = c.stdout.split("ok   program", 1)[1].split("(Python", 1)[0].strip()
+
+    def same(p):
+        return os.path.normcase(os.path.realpath(p.replace("\\\\?\\", "", 1)))
+    if same(said) != same(exe):
+        sys.exit(f"smoke: the program calls itself {said!r}, but it is {exe!r}")
     # Hidden, no desktop entries for this test copy, beside a running EspDrop.
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", ESPDROP_NO_DESKTOP="1",
                ESPDROP_INSTANCE=f"espdrop-smoke-{os.getpid()}")
