@@ -73,6 +73,9 @@ def recorded_libarchive():
         return None
 
 
+BUNDLED_LIBARCHIVE = ("libarchive.so.13",)    # next to the compiled program (Linux)
+
+
 def libarchive_candidates():
     """Where to look, best first: a path, or None for the normal library search
     (PATH on Windows, ldconfig on Linux; what libarchive-c does by itself)."""
@@ -86,6 +89,11 @@ def libarchive_candidates():
     if os.name == "nt":
         out.append(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
                                 "System32", "archiveint.dll"))
+    from .frozen import program_dir
+    bundled = program_dir()
+    if bundled:                                 # the Linux build carries a copy
+        out += [os.path.join(bundled, n) for n in BUNDLED_LIBARCHIVE
+                if os.path.isfile(os.path.join(bundled, n))]
     return out
 
 
@@ -381,6 +389,11 @@ def check(out=print):
     except ImportError as e:
         line(False, "opendrop", str(e))
         return problems
+    try:                                        # what AirDropConfig needs (and looks up so)
+        ca = opendrop.config.resource_filename("opendrop", "certs/apple_root_ca.pem")
+        line(os.path.isfile(ca), "root ca", ca if os.path.isfile(ca) else f"missing: {ca}")
+    except Exception as e:                      # noqa: BLE001 - report, do not crash
+        line(False, "root ca", f"{type(e).__name__}: {e}")
     try:
         ok, detail, warnings = _archive_selftest()
         line(ok, "archive", detail)

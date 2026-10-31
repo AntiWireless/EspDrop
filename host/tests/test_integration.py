@@ -133,9 +133,50 @@ class LinuxTest(unittest.TestCase):
             self.assertEqual(entry["Icon"], "/x/espdrop.png")
         self.assertEqual(integration.data_dir(), os.path.join(self.tmp.name, "data", "espdrop"))
 
+    def test_launcher_in_the_application_menu(self):
+        with mock.patch.object(integration, "ICON", "/x/espdrop.png"):
+            integration.refresh()                  # every start, nothing switched on
+        entry = self.read(os.path.join(self.tmp.name, "data", "applications",
+                                       "espdrop.desktop"))
+        self.assertTrue(entry["Exec"].endswith(" gui"), entry["Exec"])
+        self.assertEqual((entry["Name"], entry["Icon"], entry["StartupWMClass"]),
+                         ("EspDrop", "/x/espdrop.png", "EspDrop"))
+        self.assertNotIn("NoDisplay", entry)
+        self.assertFalse(integration.autostart_enabled())
+
+    def test_compiled_program_starts_itself(self):
+        with mock.patch("espdrop.frozen.program", lambda: "/opt/EspDrop/EspDrop"):
+            self.assertEqual(integration.launch_command("--send"),
+                             ["/opt/EspDrop/EspDrop", "gui", "--send"])
+            integration.set_autostart(True)
+        entry = self.read(os.path.join(self.tmp.name, "config", "autostart", "espdrop.desktop"))
+        self.assertEqual(entry["Exec"], "/opt/EspDrop/EspDrop gui --background")
+
     def test_exec_quoting(self):
         line = integration._exec_line(["/opt/my venv/bin/python", "/x/50%.py", "gui"])
         self.assertEqual(line, '"/opt/my venv/bin/python" /x/50%%.py gui')
+
+
+class FrozenTest(unittest.TestCase):
+    def test_program_paths(self):
+        from espdrop import frozen
+        self.assertIsNone(frozen.program())               # from Python
+        self.assertFalse(frozen.compiled())
+
+        class Compiled:                                   # Nuitka's __compiled__
+            containing_dir = os.path.join(os.sep, "opt", "EspDrop")
+            original_argv0 = None
+        with mock.patch.dict(frozen.__dict__, {"__compiled__": Compiled}), \
+                mock.patch.object(sys, "executable", os.path.join(os.sep, "opt", "EspDrop",
+                                                                  "EspDrop")):
+            self.assertTrue(frozen.compiled())
+            self.assertEqual(frozen.program(), os.path.join(os.sep, "opt", "EspDrop", "EspDrop"))
+            # onefile: the binary the user started, not its unpacked copy
+            Compiled.containing_dir = os.path.join(os.sep, "home", "u", "Apps")
+            Compiled.original_argv0 = "EspDrop-x86_64"
+            self.assertEqual(frozen.program(),
+                             os.path.join(os.sep, "home", "u", "Apps", "EspDrop-x86_64"))
+            self.assertEqual(frozen.program_dir(), os.path.join(os.sep, "home", "u", "Apps"))
 
 
 class WindowsTest(unittest.TestCase):

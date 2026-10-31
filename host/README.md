@@ -117,6 +117,52 @@ at 0x8000, the app with its description (version, build date, IDF) at
 BUILD` makes the one-file image from a build (esptool's merge-bin, checked the
 same way).
 
+## The app as a program (Nuitka)
+
+`tools/build_app.py` makes the app a native program that needs no Python:
+Nuitka translates the Python code (ours, the patched OpenDrop and every
+library they use) to C, compiles it, and puts it with the Python runtime, Qt
+and the ESP firmware into one folder, `build/app/EspDrop/`, packed as
+`build/EspDrop-<version>-windows-x64.zip` or `-linux-x86_64.tar.gz`. The
+program `EspDrop(.exe)` is the whole app: without arguments the window, with
+arguments the command line (`EspDrop find`, `EspDrop flash`, ...; on Windows
+it uses the console it was started from and opens none of its own).
+
+```sh
+~/opendrop-venv/bin/pip install nuitka patchelf          # Linux
+~/opendrop-venv/bin/python tools/build_app.py --firmware espdrop-esp32c5.bin --smoke
+```
+```bat
+%USERPROFILE%\opendrop-venv\Scripts\pip install nuitka
+%USERPROFILE%\opendrop-venv\Scripts\python tools\build_app.py --zig --smoke
+```
+
+It must run with the venv of `opendrop_install.py` (it checks the OpenDrop is
+the patched one). Windows needs a C compiler: Visual Studio or its Build Tools
+with C++, or `--zig` (Nuitka downloads Zig). `--firmware` takes an image
+(`tools/firmware_image.py`), `--firmware-build` an ESP-IDF build folder;
+without either it takes what `espdrop flash` would, else it builds without
+firmware. `--smoke` starts the result: `--version`, `check` (OpenDrop, its
+root certificate, libarchive, esptool, Qt) and the window offscreen.
+
+The program finds its parts next to itself (the firmware as
+`espdrop/firmware/espdrop-esp32c5.bin`). On Linux it uses the system's
+libarchive and carries `libarchive.so.13` from the build machine as a
+fallback. At its first start it puts its entries where the desktop looks
+(autostart, the right-click menu, on Linux also the application menu), all
+pointing at the program itself; a moved folder is followed at the next start.
+
+**Builds on GitHub** (`.github/workflows/build.yml`), on every push that
+touches the code: the firmware with ESP-IDF 6.0.3 (container
+`espressif/idf:v6.0.3`) merged into one image; the app with Nuitka on Windows
+and on Ubuntu 22.04 (its glibc is the oldest the Linux build needs), the
+firmware inside, each started with `--smoke`; the host and firmware tests. The
+files are on the run's page (Artifacts). A tag `v*` drafts a release with
+them.
+
+The Windows program is not signed: SmartScreen asks once ("Weitere
+Informationen" → "Trotzdem ausführen").
+
 ## Windows 10/11
 
 Needs Python 3.9+ from python.org (64 bit, with the `py` launcher) and this

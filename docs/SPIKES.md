@@ -711,6 +711,46 @@ Build) sowie Erweiterungen in `test_session.py` (Version beim Verbinden,
 stummer ESP) und `test_gui.py` (Aktualisieren mit Neuverbinden, Fehlerfall,
 kein Schließen während des Schreibens).
 
+## Die App als Programm (Nuitka, Windows und Linux)
+
+Die App gibt es jetzt auch als eigenständiges Programm, ohne Python: Nuitka
+übersetzt den Python-Code (unseren, das gepatchte OpenDrop und alle
+Bibliotheken) nach C, kompiliert ihn und legt ihn mit Python-Laufzeit, Qt und
+der ESP-Firmware in einen Ordner (`tools/build_app.py`, host/README.md). Das
+Programm `EspDrop.exe` bzw. `EspDrop` ist die ganze App: ohne Argumente das
+Fenster, mit Argumenten die Kommandozeile (`EspDrop flash`, `EspDrop check`).
+
+GitHub baut es bei jedem Push (`.github/workflows/build.yml`): erst die
+Firmware mit ESP-IDF 6.0.3 als ein Image, dann das Programm für Windows und
+Linux mit dieser Firmware, jeweils mit einem Starttest; dazu die Tests. Die
+Dateien liegen auf der Seite des Laufs unter „Artifacts“
+(`EspDrop-Windows`, `EspDrop-Linux`, `firmware`). Ein Tag `v0.1.0` legt einen
+Release-Entwurf mit allen dreien an.
+
+Unter Linux bringt die App jetzt auch einen Eintrag im Anwendungsmenü mit
+(`~/.local/share/applications/espdrop.desktop`, mit Symbol); die Fenster sind
+ihm zugeordnet, so zeigen Dock und Taskleiste auch unter Wayland das Symbol.
+
+Test unter Windows:
+1. `EspDrop-0.1.0-windows-x64.zip` entpacken, z. B. nach
+   `%LOCALAPPDATA%\Programs\EspDrop`, `EspDrop.exe` starten (SmartScreen:
+   „Weitere Informationen“ → „Trotzdem ausführen“, das Programm ist nicht
+   signiert). Vorher die laufende App aus dem Checkout beenden.
+2. Das Fenster erscheint mit Symbol in der Taskleiste; Autostart und
+   Rechtsklickmenü zeigen jetzt auf `EspDrop.exe` (Rechtsklick auf eine Datei →
+   „Mit EspDrop senden“ öffnet das AirDrop-Blatt).
+3. Allgemein → „ESP-Firmware“ → „Aktualisieren …“: die Firmware aus dem
+   Programm aufspielen (Abschnitt oben), danach senden und empfangen.
+4. In einer Eingabeaufforderung im Ordner: `EspDrop.exe check` und
+   `EspDrop.exe status` geben ihre Ausgabe in diesem Fenster aus.
+
+Test unter Linux:
+1. `tar xzf EspDrop-0.1.0-linux-x86_64.tar.gz`, `EspDrop/EspDrop` starten
+   (Zugriff auf `/dev/ttyACM0` über die Gruppe `dialout` wie bisher).
+2. Im Anwendungsmenü steht danach „EspDrop“ mit Symbol; Autostart und
+   „Öffnen mit → AirDrop (EspDrop)“ zeigen auf das Programm.
+3. Firmware aktualisieren, senden, empfangen wie unter Windows.
+
 ## Danach
 
 Ergebnisse (auch Fehlschläge) in `docs/UEBERBLICK.md` unter „Offene Fragen"

@@ -444,6 +444,11 @@ def main(argv=None, transport=None):
                    help="tray only, receiving until switched off (what autostart runs)")
     g.add_argument("--send", nargs="*", metavar="FILE",
                    help="ask whom to send these files to (Explorer's \"Senden an\")")
+    if argv is None:
+        argv = sys.argv[1:]
+        from .frozen import compiled
+        if not argv and compiled():
+            argv = ["gui"]                     # double-clicked: the desktop app
     args = ap.parse_args(argv)
     # Our steps (connect, accept, upload rate) at INFO; OpenDrop's own only from
     # WARNING on, unless -v asks for everything, with milliseconds since start.

@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QF
 
 from . import flash, integration, ui
 from .session import Session
+from .version import __version__
 
 APP = "EspDrop"
 # Who may send to us, as AirDrop on the iPhone puts it: label, seconds (0: off,
@@ -111,7 +112,10 @@ def what_text(files, urls=()):
 # ---- one copy per user -------------------------------------------------------
 
 def instance_name():
-    """The local socket (a named pipe on Windows) of this user's running copy."""
+    """The local socket (a named pipe on Windows) of this user's running copy
+    (ESPDROP_INSTANCE: another one, for a test run beside the real app)."""
+    if os.environ.get("ESPDROP_INSTANCE"):
+        return re.sub(r"[^A-Za-z0-9_-]", "_", os.environ["ESPDROP_INSTANCE"])
     user = re.sub(r"[^A-Za-z0-9_-]", "_", getpass.getuser() or "user")
     return f"espdrop-{user}"
 
@@ -1504,7 +1508,10 @@ def _set_app_id():
 
 def _desktop_setup(settings):
     """Icon file for the desktop, then autostart and the file manager entry:
-    on by default at the very first start, kept pointing at this app after."""
+    on by default at the very first start, kept pointing at this app after.
+    ESPDROP_NO_DESKTOP leaves the desktop alone (a test run of a build)."""
+    if os.environ.get("ESPDROP_NO_DESKTOP"):
+        return
     try:
         integration.ICON = ui.write_icon_file(integration.data_dir())
     except OSError:
@@ -1521,6 +1528,9 @@ def main(port=None, background=False, send=None):
     _set_app_id()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP)
+    app.setApplicationVersion(__version__)
+    if sys.platform.startswith("linux"):
+        app.setDesktopFileName("espdrop")      # integration.set_launcher()
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(ui.app_icon())
     ui.apply(app)

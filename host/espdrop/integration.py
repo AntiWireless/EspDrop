@@ -11,6 +11,9 @@
 # Linux (XDG):
 #   - autostart: ~/.config/autostart/espdrop.desktop
 #   - "Öffnen mit": ~/.local/share/applications/espdrop-send.desktop
+#   - the application menu: ~/.local/share/applications/espdrop.desktop, always
+#     (gui.py names it as the windows' desktop file, so Wayland docks show our
+#     icon)
 #
 # Each entry starts the app as `espdrop gui ...` with the interpreter and
 # checkout it runs from now; the app forwards to an already running copy
@@ -40,9 +43,11 @@ MENU_TEXT = "Mit EspDrop senden"
 def launch_command(*args):
     """argv that starts the app with these arguments, as it runs now: the
     venv's pythonw on Windows (no console window), tools/espdrop.py of this
-    checkout; a frozen build starts itself."""
-    if getattr(sys, "frozen", False):
-        return [sys.executable, "gui", *args]
+    checkout; the compiled program starts itself."""
+    from .frozen import program
+    exe = program()
+    if exe:
+        return [exe, "gui", *args]
     exe = sys.executable
     if IS_WINDOWS:
         w = os.path.join(os.path.dirname(exe), "pythonw.exe")
@@ -173,10 +178,27 @@ def _sendto_path():
     return os.path.join(appdata, "Microsoft", "Windows", "SendTo", SENDTO_NAME)
 
 
+def set_launcher():
+    """Linux: the app in the desktop's application menu (not a choice: it is
+    how one starts an installed program there)."""
+    if IS_WINDOWS or not sys.platform.startswith("linux"):
+        return
+    path = _xdg_launcher()
+    if _write_desktop(path, {
+            "Type": "Application", "Name": APP, "GenericName": "AirDrop",
+            "Comment": "AirDrop mit iPhone, iPad und Mac über den ESP32-C5",
+            "Exec": _exec_line(launch_command()), "Icon": ICON or "document-send",
+            "Terminal": "false", "Categories": "Network;FileTransfer;",
+            "Keywords": "AirDrop;iPhone;iPad;Mac;teilen;senden;",
+            "StartupWMClass": APP}):
+        _refresh_desktop_db(os.path.dirname(path))
+
+
 def refresh():
     """Keep enabled entries pointing at the app as it runs now: a checkout or
     venv that moved, a new icon. Rewrites only what differs (on Windows the
     "Senden an" shortcut costs a PowerShell start)."""
+    set_launcher()
     cmd = launch_command("--background")
     if autostart_enabled():
         if IS_WINDOWS:
@@ -199,6 +221,10 @@ def apply_defaults():
     """First start: autostart and the file manager entry are on by default
     (the user can switch them off; this runs only once). Returns what failed."""
     errors = []
+    try:
+        set_launcher()
+    except OSError as e:
+        errors.append(f"set_launcher: {e}")
     caps = supported()
     for ok, fn in ((caps["autostart"], set_autostart), (caps["send"], set_send_menu)):
         if ok:
@@ -256,6 +282,11 @@ def _reg_delete_tree(key):
 def _xdg_autostart():
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     return os.path.join(base, "autostart", "espdrop.desktop")
+
+
+def _xdg_launcher():
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(base, "applications", "espdrop.desktop")
 
 
 def _xdg_send():
