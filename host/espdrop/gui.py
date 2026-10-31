@@ -35,12 +35,12 @@ import shiboken6
 from PySide6.QtCore import QObject, QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QFrame,
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFrame,
                                QGraphicsDropShadowEffect, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
                                QScrollArea, QSystemTrayIcon, QToolButton, QVBoxLayout, QWidget)
 
-from . import integration, ui
+from . import flash, integration, ui
 from .session import Session
 
 APP = "EspDrop"
@@ -513,6 +513,229 @@ class SendDialog(QDialog):
         super().done(result)
 
 
+# ---- the ESP's firmware ---------------------------------------------------------------
+
+MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+
+
+def built_text(built):
+    """The compiler's 'Oct 31 2026 12:34:56' as '31.10.2026, 12:34'."""
+    m = re.match(r"([A-Z][a-z]{2})\s+(\d{1,2}) (\d{4})(?: (\d{2}):(\d{2}))?", built or "")
+    if not m or m.group(1) not in MONTHS:
+        return built
+    text = f"{int(m.group(2))}.{MONTHS.index(m.group(1)) + 1}.{m.group(3)}"
+    return text + (f", {m.group(4)}:{m.group(5)}" if m.group(4) else "")
+
+
+FLASH_STAGES = {"connect": "Verbinde mit dem ESP …",
+                "write": "Schreibe die Firmware …",
+                "verify": "Prüfe, ob alles angekommen ist …",
+                "restart": "Starte den ESP neu …"}
+TRANSFER_DONE = ("done", "declined", "failed", "cancelled")
+
+
+class FlashSignals(QObject):
+    """From the flashing thread to the dialog."""
+    progress = Signal(str, object)             # stage, fraction
+    log = Signal(str)
+    finished = Signal(object)                  # None, or what went wrong
+
+
+class FirmwareDialog(QDialog):
+    """Put EspDrop's firmware on the ESP: what it runs now, what the app comes
+    with (or a file the user picks), one button. The app lets go of the port
+    while esptool writes, and connects again afterwards. No buttons on the ESP
+    are needed (its USB-Serial/JTAG resets it into the ROM bootloader)."""
+
+    def __init__(self, window, flasher=None, loader=None):
+        super().__init__(None)                 # top-level: the main window may be hidden
+        self.w = window
+        self.flasher = flasher or flash.flash
+        self.loader = loader or flash.load
+        self.fw = None
+        self.busy = False
+        self.setWindowTitle("ESP-Firmware")
+        self.setWindowIcon(ui.app_icon())
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setMinimumWidth(460)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 18)
+        lay.setSpacing(10)
+        title = QLabel("ESP-Firmware")
+        title.setFont(ui.font(15, QFont.Weight.DemiBold))
+        lay.addWidget(title)
+        lay.addWidget(ui.label("Die App bringt die Firmware für den ESP32-C5 mit und spielt sie "
+                               "über das USB-Kabel auf; Tasten am ESP braucht es dafür nicht.",
+                               "secondary", wrap=True))
+        card = ui.Card()
+        self.device_sub = card.add_row("Auf dem ESP", None, "")
+        self.file_btn = ui.button("Andere Datei …", "link")
+        self.file_btn.clicked.connect(self._choose)
+        self.fw_sub = card.add_row("Zum Installieren", self.file_btn, "")
+        self.port_box = QComboBox()
+        self.port_box.setMinimumWidth(130)
+        self.port_sub = card.add_row("Anschluss", self.port_box, "")
+        lay.addWidget(card)
+        self.status = ui.label("", "secondary", wrap=True)
+        lay.addWidget(self.status)
+        self.bar = ui.ThinProgress()
+        self.bar.hide()
+        lay.addWidget(self.bar)
+        lay.addStretch(1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.close_btn = ui.button("Schließen")
+        self.close_btn.clicked.connect(self.close)
+        self.install_btn = ui.button("Installieren", "primary")
+        self.install_btn.clicked.connect(self._install)
+        row.addWidget(self.close_btn)
+        row.addWidget(self.install_btn)
+        lay.addLayout(row)
+        self.sig = FlashSignals(self)
+        self.sig.progress.connect(self._on_progress)
+        self.sig.log.connect(self.w._log)
+        self.sig.finished.connect(self._on_finished)
+        self.w.bridge.event.connect(self._on_event)
+        self._load(flash.bundled())
+        self._fill_ports()
+        self._refresh()
+
+    # ---- what is where ---------------------------------------------------------
+
+    def _load(self, path):
+        self.fw = None
+        if not path:
+            self.fw_sub.setText("Keine Firmware dabei: eine Datei wählen (espdrop-esp32c5.bin "
+                                "aus einem Release).")
+            return
+        try:
+            self.fw = self.loader(path)
+        except flash.FirmwareError as e:
+            self.fw_sub.setText(str(e))
+            return
+        name = os.path.basename(self.fw.source.rstrip("/\\"))
+        self.fw_sub.setText(f"EspDrop {self.fw.version} für den {self.fw.chip}, gebaut "
+                            f"{built_text(self.fw.built)}\n{name}")
+        self._fit()
+
+    def _choose(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Firmware wählen", os.path.expanduser("~"),
+            "ESP-Firmware (*.bin flasher_args.json);;Alle Dateien (*)")
+        if path:
+            self._load(path)
+            self._refresh()
+
+    def _fill_ports(self):
+        found = _safe(flash.ports, [])
+        if self.w.port and self.w.port not in found:
+            found.insert(0, self.w.port)
+        self.port_box.clear()
+        self.port_box.addItems(found)
+        if self.w.port:
+            self.port_box.setCurrentText(self.w.port)
+        self.port_box.setVisible(len(found) > 1)
+        self.port_sub.setText(found[0] if len(found) == 1 else
+                              "Kein ESP gefunden: per USB anstecken." if not found else
+                              "Mehrere gefunden: den ESP wählen.")
+
+    def _refresh(self):
+        self.device_sub.setText(self.w.firmware_text())
+        if not self.busy:
+            self.install_btn.setEnabled(self.fw is not None and self.port_box.count() > 0)
+
+    def _on_event(self, kind, info):
+        if kind == "device":
+            if not self.busy and info.get("state") in ("connected", "lost"):
+                self._fill_ports()             # plugged in or out meanwhile
+            self._refresh()
+
+    # ---- installing ----------------------------------------------------------
+
+    def _install(self):
+        self._fill_ports()
+        port = self.port_box.currentText()
+        if not port or self.fw is None:
+            self._refresh()
+            return
+        if self.w.transfer_running():
+            self._say("Gerade läuft eine Übertragung; danach installieren.", "bad")
+            return
+        self.busy = True
+        for b in (self.install_btn, self.close_btn, self.file_btn, self.port_box):
+            b.setEnabled(False)
+        self.bar.set_value(None)
+        self.bar.show()
+        self._say(FLASH_STAGES["connect"])
+        self.w.set_flashing(True)
+        session, fw, sig, flasher = self.w.session, self.fw, self.sig, self.flasher
+
+        def work():
+            error = None
+            try:
+                session.stop()                 # let go of the port
+                flasher(fw, port, on_progress=sig.progress.emit, on_log=sig.log.emit)
+            except flash.FirmwareError as e:
+                error = str(e)
+            except Exception as e:             # noqa: BLE001 - shown to the user
+                error = f"Flashen fehlgeschlagen: {e}"
+            finally:
+                session.start()                # connect again, new firmware or old
+            sig.finished.emit(error)
+        threading.Thread(target=work, name="espdrop-flash", daemon=True).start()
+
+    def _on_progress(self, stage, fraction):
+        if stage == "write" and fraction is not None:
+            self.bar.set_value(fraction)
+            self._say(f"{FLASH_STAGES['write']} {fraction * 100:.0f} %")
+        elif stage in FLASH_STAGES:
+            if stage != "connect":
+                self.bar.set_value(1.0)
+            self._say(FLASH_STAGES[stage])
+
+    def _on_finished(self, error):
+        self.busy = False
+        self.w.set_flashing(False)
+        for b in (self.close_btn, self.file_btn, self.port_box):
+            b.setEnabled(True)
+        if error:
+            self.bar.hide()
+            self._say(error, "bad")
+            self.install_btn.setText("Erneut versuchen")
+        else:
+            self.bar.set_value(1.0)
+            self._say(f"Fertig: EspDrop {self.fw.version} ist auf dem ESP. Er startet neu und "
+                      "verbindet sich gleich wieder.", "good")
+            self.install_btn.setText("Erneut installieren")
+        self._refresh()
+
+    def _say(self, text, tone=None):
+        self.status.setText(text)
+        self.status.setProperty("tone", tone or "")
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
+        self._fit()
+
+    def _fit(self):
+        """Grow to fit longer text (wrapped lines need the height for this width)."""
+        lay = self.layout()
+        lay.activate()
+        need = (lay.totalHeightForWidth(self.width()) if lay.hasHeightForWidth()
+                else self.sizeHint().height())
+        if self.height() < need:
+            self.resize(self.width(), need)
+
+    def closeEvent(self, e):
+        if self.busy:                          # half a firmware helps nobody
+            e.ignore()
+            return
+        super().closeEvent(e)
+
+    def reject(self):                          # Esc
+        if not self.busy:
+            super().reject()
+
+
 # ---- the window -------------------------------------------------------------------
 
 class MainWindow(QMainWindow):
@@ -542,7 +765,13 @@ class MainWindow(QMainWindow):
         self._send_dialogs = []                # open AirDrop sheets
         self._ask_dialogs = []                 # open accept cards (may have no parent)
         self._notify_files = None              # what clicking the last notification opens
+        self.firmware = None                   # the ESP's `version` reply (dict), None: too old
+        self._silent = 0                       # HELLOs in a row an ESP did not answer
+        self._flashing = False
+        self._bundled = None                   # (path, Firmware or None), loaded when needed
+        self._fw_dialog = None
         self._build()
+        self._update_firmware_ui()
         self.tray = self._make_tray() if tray and QSystemTrayIcon.isSystemTrayAvailable() else None
         self.session = self._make_session()
         self.session.start()
@@ -591,6 +820,10 @@ class MainWindow(QMainWindow):
         self.power_label = ui.label("", "secondary")
         status.addWidget(self.device_label)
         status.addWidget(self.power_label)
+        self.fw_hint = ui.button("Firmware installieren …", "link")
+        self.fw_hint.clicked.connect(self.open_firmware_dialog)
+        self.fw_hint.hide()
+        status.addWidget(self.fw_hint)
         status.addStretch(1)
         titles.addLayout(status)
         titles.addStretch(1)
@@ -600,6 +833,7 @@ class MainWindow(QMainWindow):
         menu = QMenu(self.more_btn)
         self.log_action = menu.addAction("Protokoll anzeigen")
         self.log_action.setCheckable(True)
+        menu.addAction("ESP-Firmware …", self.open_firmware_dialog)
         menu.addAction("Serieller Port …", self._pick_port)
         menu.addSeparator()
         menu.addAction("Beenden", self.quit)
@@ -710,6 +944,9 @@ class MainWindow(QMainWindow):
             s.set_quiet(_safe(integration.send_menu_enabled, False))
             s.toggled.connect(lambda on, s=s: self._integrate(integration.set_send_menu, on, s))
             gcard.add_row(caps["send"], s, caps.get("send_hint"))
+        self.fw_btn = ui.button("Installieren …")
+        self.fw_btn.clicked.connect(self.open_firmware_dialog)
+        self.fw_sub = gcard.add_row("ESP-Firmware", self.fw_btn, "")
         col.addWidget(gcard)
 
         # the log, off unless asked for
@@ -830,10 +1067,16 @@ class MainWindow(QMainWindow):
             self.hide()
             self._notify("Läuft im Hintergrund weiter (Symbol im Infobereich).", None, 3000)
             return
+        if self._flashing:                     # no tray: wait for the firmware
+            e.ignore()
+            return
         self._shutdown()
         e.accept()
 
     def quit(self):
+        if self._flashing:                     # half a firmware: finish first
+            self._notify("Die Firmware wird gerade installiert; danach beenden.", None, 4000)
+            return
         self._quitting = True
         self._shutdown()
         QApplication.quit()
@@ -853,6 +1096,8 @@ class MainWindow(QMainWindow):
             state = info.get("state")
             if state == "connected":
                 self._connected = True
+                self._silent = 0
+                self.firmware = (info.get("info") or {}).get("firmware")
                 self.dot.set_state("green")
                 self.device_label.setText("ESP verbunden")
                 mac = (info.get("info") or {}).get("mac", "")
@@ -860,13 +1105,24 @@ class MainWindow(QMainWindow):
                 self._set_device_ui(True)       # the session restarts receiving itself
             elif state == "lost":
                 self._connected = False
+                self._silent = info.get("silent", 0)
                 self.dot.set_state("red")
-                self.device_label.setText("Kein ESP")
+                # An ESP that does not answer twice in a row (not just booting):
+                # other or no firmware, or one too old for this app.
+                self.device_label.setText("ESP antwortet nicht" if self._silent >= 2
+                                          else "Kein ESP")
                 self.device_label.setToolTip(info.get("error") or "")
                 self._set_device_ui(False)
             elif state == "stopped":
-                self.device_label.setText("Beendet")
-            if state in ("connected", "lost"):
+                self._connected = False
+                self._set_device_ui(False)
+                if self._flashing:             # the dialog has the port for esptool
+                    self.dot.set_state("orange")
+                    self.device_label.setText("Firmware wird installiert …")
+                else:
+                    self.device_label.setText("Beendet")
+            self._update_firmware_ui()
+            if state in ("connected", "lost", "stopped"):
                 for d in list(self._send_dialogs):
                     d.on_device(state == "connected")
         elif kind == "power":
@@ -905,6 +1161,65 @@ class MainWindow(QMainWindow):
         elif state in ("declined", "failed"):
             self._notify(f"Nicht gesendet an {t.receiver.label}: "
                          f"{'abgelehnt' if state == 'declined' else info.get('error')}")
+
+    # ---- the ESP's firmware ------------------------------------------------------
+
+    def bundled_firmware(self):
+        """The firmware the app comes with (flash.Firmware); None if there is none."""
+        path = flash.bundled()
+        if self._bundled is None or self._bundled[0] != path:
+            fw = None
+            if path:
+                try:
+                    fw = flash.load(path)
+                except flash.FirmwareError as e:
+                    self._log(f"Firmware {path}: {e}")
+            self._bundled = (path, fw)
+        return self._bundled[1]
+
+    def firmware_text(self):
+        """What the ESP runs, in words."""
+        if self._flashing:
+            return "Wird gerade installiert …"
+        if self._connected:
+            fw = self.firmware
+            if not fw:
+                return "EspDrop, eine ältere Firmware ohne Versionsangabe"
+            chip = {"esp32c5": "ESP32-C5", "esp32c3": "ESP32-C3"}.get(fw.get("chip"),
+                                                                     fw.get("chip"))
+            return f"EspDrop {fw['version']}" + (f" auf dem {chip}" if chip else "")
+        if self._silent >= 2:
+            return "Ein ESP steckt, antwortet aber nicht: keine oder eine andere Firmware"
+        return "Kein ESP verbunden"
+
+    def _update_firmware_ui(self):
+        bundled = self.bundled_firmware()
+        newer = (bundled is not None and self._connected
+                 and flash.is_newer(bundled.version, (self.firmware or {}).get("version")))
+        text = self.firmware_text()
+        if newer:
+            text += f" · neu in der App: {bundled.version}"
+        self.fw_sub.setText(text)
+        self.fw_btn.setText("Aktualisieren …" if newer else "Installieren …")
+        self.fw_hint.setVisible(self._silent >= 2 and not self._flashing)
+
+    def open_firmware_dialog(self):
+        d = self._fw_dialog
+        if d is not None and shiboken6.isValid(d):
+            d.raise_()
+            d.activateWindow()
+            return d
+        d = self._fw_dialog = FirmwareDialog(self)
+        d.show()
+        return d
+
+    def transfer_running(self):
+        return (self._recv_row is not None
+                or any(t.state not in TRANSFER_DONE for t in self.session.transfers()))
+
+    def set_flashing(self, on):
+        self._flashing = on
+        self._update_firmware_ui()
 
     def _log(self, text):
         self.log.appendPlainText(f"{time.strftime('%H:%M:%S')} {text}")

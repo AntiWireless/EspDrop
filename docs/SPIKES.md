@@ -659,6 +659,58 @@ laufende App, Erscheinungsbild, Zwischenablage, Symboldatei) und
 Temp-Ordnern, Windows-Registry und „Senden an“ nachgebildet, Voreinstellungen,
 Symbol). Zusammen 68 Host-Tests.
 
+## Firmware aus der App flashen
+
+Die App spielt die Firmware selbst auf, ohne ESP-IDF und ohne Tasten am ESP:
+esptool (als Bibliothek in der App) schaltet den C5 über dieselbe
+USB-Serial/JTAG-Verbindung in seinen ROM-Bootloader, schreibt, prüft (MD5)
+und startet ihn neu. Vorher gibt die App den Port frei, danach verbindet sie
+sich wieder. Den ROM-Bootloader kann nichts überschreiben: Geht etwas schief,
+hilft erneutes Flashen.
+
+- **Version:** Die Firmware hat jetzt die Version der App
+  (`host/espdrop/version.py`, 0.1.0) und den Befehl `version`
+  (`version 0.1.0 idf=v6.0.3 chip=esp32c5 rev=1.0 proto=1`). Ältere Firmware
+  kennt ihn nicht; die App zeigt dann „ältere Firmware ohne Versionsangabe“ und
+  bietet „Aktualisieren …“ an. `espdrop status` zeigt die Version in der ersten
+  Zeile.
+- **Welche Firmware:** `ESPDROP_FIRMWARE`, sonst die mitgelieferte
+  (`host/espdrop/firmware/espdrop-esp32c5.bin`, kommt mit den Release-Builds),
+  sonst der neueste Bridge-Build für den C5 unter `firmware/spikes/build*`
+  (ein Build der Test-Konsole wird abgelehnt). „Andere Datei …“ nimmt ein
+  Image oder einen Build-Ordner. Vor dem Schreiben prüft die App das Image
+  (Chip, Bootloader an 0x2000, Partitionstabelle, App mit Version) und den
+  angeschlossenen Chip.
+- **ESP antwortet nicht** (keine, eine andere oder zu alte Firmware): Nach zwei
+  erfolglosen Versuchen steht unter dem Titel „ESP antwortet nicht“ mit
+  „Firmware installieren …“.
+- `tools/firmware_image.py BUILD` macht aus einem Build das eine Image für
+  Releases (esptool merge-bin, danach genauso geprüft).
+
+Test auf der Hardware:
+1. Bridge-Firmware nur bauen, nicht flashen (`idf.py -B build_c5_bridge … build`,
+   siehe firmware/README.md), App starten: Allgemein → „ESP-Firmware“ zeigt
+   „EspDrop, eine ältere Firmware ohne Versionsangabe“ und „Aktualisieren …“.
+2. „Aktualisieren …“ → „Installieren“: „Verbinde mit dem ESP …“, der Balken
+   läuft, „Prüfe …“, „Starte den ESP neu …“, dann „Fertig“. Die App verbindet
+   sich wieder; „ESP-Firmware“ zeigt „EspDrop 0.1.0 auf dem ESP32-C5“, der
+   Knopf heißt „Installieren …“. Danach einmal senden und empfangen.
+3. Dasselbe ohne Fenster: `espdrop flash` (Linux
+   `~/opendrop-venv/bin/python tools/espdrop.py flash`, Windows
+   `.\tools\espdrop.cmd flash`), danach `espdrop status`: erste Zeile
+   `firmware: 0.1.0 (esp32c5, IDF v6.0.3)`.
+4. Fehlerfall: einen seriellen Monitor auf den Port legen (`idf.py monitor`) und
+   in der App installieren: die Meldung nennt den belegten Anschluss; Monitor
+   schließen, „Erneut versuchen“.
+5. Windows: dasselbe mit dem COM-Port (das Flashen braucht keinen Treiber).
+
+Tests ohne Hardware: `test_flash.py` (Images prüfen und ablehnen, Build-Ordner,
+Version, Fortschritt über mehrere Teile, falscher Chip, Fehler in Worten,
+Fortschritt über den Logger des installierten esptool, Release-Image aus einem
+Build) sowie Erweiterungen in `test_session.py` (Version beim Verbinden,
+stummer ESP) und `test_gui.py` (Aktualisieren mit Neuverbinden, Fehlerfall,
+kein Schließen während des Schreibens).
+
 ## Danach
 
 Ergebnisse (auch Fehlschläge) in `docs/UEBERBLICK.md` unter „Offene Fragen"

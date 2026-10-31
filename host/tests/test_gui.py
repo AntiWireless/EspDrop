@@ -353,6 +353,105 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(os.path.isabs(d))
         self.assertNotIn("EspDrop", d)                         # Downloads itself, no subfolder
 
+    # ---- the ESP's firmware ------------------------------------------------------
+
+    def firmware_window(self, devices):
+        """A window whose session takes the next of `devices` at each connect,
+        with a firmware image of this app's version shipped, one ESP port."""
+        from unittest import mock
+        from espdrop.session import Session
+        from espdrop.version import __version__
+        from test_flash import merged_image
+        image = self.file("espdrop-esp32c5.bin", merged_image(version=__version__))
+        for p in (mock.patch.dict(os.environ, {"ESPDROP_FIRMWARE": image}),
+                  mock.patch("espdrop.flash.ports", lambda: ["/dev/ttyFAKE"]),
+                  mock.patch("espdrop.session.RECONNECT_SECS", 0.05)):
+            p.start()
+            self.addCleanup(p.stop)
+        queue = list(devices)
+
+        def factory(w):
+            def transport():
+                if len(queue) > 1:
+                    return queue.pop(0)
+                return queue[0]
+            return Session(transport_factory=transport, name="MeinPC", receive=False,
+                           download_dir=self.dl, on_event=w.bridge.on_event,
+                           on_ask=w.bridge.on_ask, ask_timeout=w.bridge.ask_timeout)
+        self.w = self.gui.MainWindow(settings=self.settings, session_factory=factory,
+                                     ask_timeout=20.0, tray=False)
+        self.w.show()
+        return self.w
+
+    def test_firmware_update(self):
+        from espdrop.version import __version__
+        old = DuplexBridgeDevice(fw_version="0.0.9")
+        new = DuplexBridgeDevice(fw_version=__version__)
+        w = self.firmware_window([old, new])                   # new: after the restart
+        self.assertTrue(self.pump(lambda: w.firmware is not None))
+        self.assertEqual(w.fw_btn.text(), "Aktualisieren …")
+        self.assertIn(f"EspDrop 0.0.9 auf dem ESP32-C5 · neu in der App: {__version__}",
+                      w.fw_sub.text())
+        d = w.open_firmware_dialog()
+        self.assertIs(w.open_firmware_dialog(), d)             # one dialog at a time
+        self.assertTrue(d.install_btn.isEnabled())
+        self.assertIn(f"EspDrop {__version__} für den ESP32-C5", d.fw_sub.text())
+        self.assertEqual(d.port_sub.text(), "/dev/ttyFAKE")
+        seen = {}
+
+        def flasher(fw, port, on_progress, on_log):
+            seen["port"], seen["version"] = port, fw.version
+            seen["port_free"] = w.session._thread is None      # the app let go of it
+            for stage, fraction in (("connect", None), ("write", 0.0), ("write", 0.5),
+                                    ("write", 1.0), ("verify", None), ("restart", None)):
+                on_progress(stage, fraction)
+            on_log("Hash of data verified.")
+        d.flasher = flasher
+        d.install_btn.click()
+        self.assertTrue(self.pump(lambda: d.status.text().startswith("Fertig"), 10),
+                        d.status.text())
+        self.assertEqual(seen, {"port": "/dev/ttyFAKE", "version": __version__,
+                                "port_free": True})
+        self.assertTrue(self.pump(lambda: (w.firmware or {}).get("version") == __version__))
+        self.assertTrue(w.device_label.text().startswith("ESP verbunden"))
+        self.assertEqual(w.fw_btn.text(), "Installieren …")
+        self.assertIn("Hash of data verified.", w.log.toPlainText())
+        self.assertEqual(d.install_btn.text(), "Erneut installieren")
+        d.close()
+
+    def test_firmware_for_an_esp_that_does_not_answer(self):
+        from espdrop import flash
+        w = self.firmware_window([DuplexBridgeDevice(version=99)])  # another firmware
+        self.assertTrue(self.pump(lambda: not w.fw_hint.isHidden()), w.device_label.text())
+        self.assertEqual(w.device_label.text(), "ESP antwortet nicht")
+        d = w.open_firmware_dialog()
+        self.assertIn("antwortet aber nicht", d.device_sub.text())
+        gate = threading.Event()
+
+        def flasher(fw, port, on_progress, on_log):
+            on_progress("connect", None)
+            gate.wait(10)
+            raise flash.FirmwareError("Der ESP ließ sich nicht in den Bootloader schalten.")
+        d.flasher = flasher
+        d.install_btn.click()
+        self.assertTrue(self.pump(lambda: d.status.text() == "Verbinde mit dem ESP …", 5))
+        d.close()                                              # not while writing
+        self.pump(lambda: False, 0.2)
+        self.assertTrue(d.isVisible())
+        self.assertFalse(d.close_btn.isEnabled())
+        gate.set()
+        self.assertTrue(self.pump(lambda: "Bootloader" in d.status.text(), 10))
+        self.assertEqual(d.status.property("tone"), "bad")
+        self.assertEqual(d.install_btn.text(), "Erneut versuchen")
+        self.assertTrue(d.close_btn.isEnabled())
+        d.close()
+
+    def test_built_text(self):
+        b = self.gui.built_text
+        self.assertEqual(b("Oct 31 2026 12:34:56"), "31.10.2026, 12:34")
+        self.assertEqual(b("Jan  5 2027"), "5.1.2027")
+        self.assertEqual(b("gestern"), "gestern")
+
     def test_power_text(self):
         t = self.gui.power_text
         self.assertEqual(t("power auto asleep (none) hold=0s wake=0s"), "Funk aus (spart Strom)")

@@ -29,5 +29,5 @@ idf_component_register(
          "awdl_netif.c" "sockproxy.c" "power.c"
     INCLUDE_DIRS "."
     REQUIRES awdl esp_wifi esp_event esp_netif nvs_flash console esp_timer esp_hw_support
-             bt lwip ${ESPDROP_USJ_COMPONENT} ${ESPDROP_USJ_LL_COMPONENT}
+             esp_app_format bt lwip ${ESPDROP_USJ_COMPONENT} ${ESPDROP_USJ_LL_COMPONENT}
 )

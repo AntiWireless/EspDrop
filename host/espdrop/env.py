@@ -358,6 +358,12 @@ def check(out=print):
         line(None, "pyside6", "not installed: the command line works, the desktop app "
                               "(espdrop gui) needs it")
     try:
+        import esptool
+        line(True, "esptool", f"{esptool.__version__} (espdrop flash, firmware from the app)")
+    except ImportError:
+        line(None, "esptool", "not installed: everything works, but the ESP's firmware "
+                              "cannot be put on from here (pip install esptool)")
+    try:
         path, detail = prepare_libarchive()
         line(True, "libarchive", detail)
     except ImportError as e:

@@ -12,6 +12,9 @@
 #include <string.h>
 
 #include "driver/usb_serial_jtag.h"
+#include "esp_app_desc.h"   /* `version`: the app's own description */
+#include "esp_chip_info.h"
+#include "sdkconfig.h"     /* CONFIG_IDF_TARGET */
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_system.h"   /* esp_get_free_heap_size */
@@ -370,6 +373,17 @@ static void handle_cmd(const uint8_t *p, size_t n) {
 	char out[192];
 	if (strcmp(cmd, "ping") == 0) {
 		cmd_reply("pong");
+	} else if (strcmp(cmd, "version") == 0) {
+		/* The host app compares this with the firmware it ships (and can flash
+		 * it); older firmware answers "unknown cmd", which says as much. */
+		const esp_app_desc_t *app = esp_app_get_description();
+		esp_chip_info_t chip;
+		esp_chip_info(&chip);
+		snprintf(out, sizeof(out), "version %s idf=%s chip=%s rev=%u.%u proto=%u",
+		         app->version, app->idf_ver, CONFIG_IDF_TARGET,
+		         (unsigned)(chip.revision / 100), (unsigned)(chip.revision % 100),
+		         (unsigned)BRIDGE_PROTO_VERSION);
+		cmd_reply(out);
 	} else if (strcmp(cmd, "mac") == 0) {
 		uint8_t mac[6] = {0};
 		esp_read_mac(mac, ESP_MAC_WIFI_STA);

@@ -33,6 +33,15 @@ idf.py -B build_c5_bridge -DSDKCONFIG=build_c5_bridge/sdkconfig -DIDF_TARGET=esp
 
 `sdkconfig.defaults.esp32c5` is picked up automatically for the C5.
 
+The firmware's version is the host app's (`host/espdrop/version.py`, read by
+`CMakeLists.txt` as `PROJECT_VER`); the bridge answers `version` with
+`version 0.1.0 idf=v6.0.3 chip=esp32c5 rev=1.0 proto=1`, so the app knows
+whether the ESP runs the firmware it ships. The app can also flash it (no IDF
+needed, esptool over the same USB port): `espdrop flash` takes the newest
+`build*` of the bridge here, or one image made with
+`python tools/firmware_image.py spikes/build_c5_bridge` (bootloader,
+partition table and app merged, written from 0).
+
 The bridge firmware includes Bluetooth LE (NimBLE): the broadcaster role for
 the AirDrop wake (`wake`), and the observer role so it can listen for AirDrop
 adverts and let the Wi-Fi radio sleep until a device nearby wants to share

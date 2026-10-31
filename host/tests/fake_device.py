@@ -13,6 +13,7 @@ import struct
 import threading
 
 from espdrop import link
+from espdrop.version import __version__
 
 try:
     from apple_mdns import PAD_IP, response
@@ -24,12 +25,13 @@ class FakeDevice:
     """A transport (read/write/close) with a device behind it."""
 
     def __init__(self, answers=None, caps=link.CAP_BLE | link.CAP_IP, version=link.PROTO_VERSION,
-                 ip_ok=True, mac=bytes.fromhex("020000000001")):
+                 ip_ok=True, mac=bytes.fromhex("020000000001"), fw_version=__version__):
         # answers: {n: [kind, ...]} - after the n-th AirDrop query (1-based) the
         # device delivers these apple_mdns.response() kinds from the iPad.
         self.answers = answers or {}
         self.mdns_port = 8770          # SRV port in the canned iPad answers
         self.caps, self.version, self.ip_ok, self.mac = caps, version, ip_ok, mac
+        self.fw_version = fw_version   # None: firmware from before the `version` command
         self.mode = link.MODE_L2
         self.udp_ports = set()
         self.commands = []
@@ -78,6 +80,9 @@ class FakeDevice:
                 reply = "wake off" if arg == "off" else f"wake on {arg} s left"
             elif text == "wake":
                 reply = "wake off"
+            elif text == "version":
+                reply = (f"version {self.fw_version} idf=v6.0.3 chip=esp32c5 rev=1.0 proto=1"
+                         if self.fw_version else "unknown cmd 'version'")
             elif text.startswith("power"):
                 listen = "on" if "listen on" in text else "off"
                 reply = (f"power auto awake (hold) hold=90s wake=0s listen={listen} "

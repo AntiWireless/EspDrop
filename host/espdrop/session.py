@@ -7,7 +7,9 @@
 # shape and reports everything as events:
 #
 #   on_event(kind, **info), from worker threads (a GUI hands it to its own):
-#     "device"    state="connecting"|"connected"|"lost"|"stopped", info, error
+#     "device"    state="connecting"|"connected"|"lost"|"stopped", info (HELLO reply
+#                 plus firmware: the `version` reply as a dict, None if too old),
+#                 error, silent (lost: HELLOs in a row an ESP did not answer)
 #     "power"     text=<the device's `power` reply>
 #     "browse"    on=True|False
 #     "receiving" on=True|False, until=<time.monotonic() deadline or None>
@@ -113,6 +115,7 @@ class Session:
         self._held = None                     # last hold request sent: True hold, False release
         self._listening = None                # last listen request sent
         self._scan_ok = False                 # the ESP can wake itself on AirDrop adverts
+        self._silent = 0                      # HELLOs in a row an ESP did not answer
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = None
@@ -292,13 +295,19 @@ class Session:
                 dev = Device(self._open(), on_log=lambda text: self._emit("log", text=text))
                 try:
                     info = dev.hello(link.MODE_IP)
+                    info["firmware"] = self._firmware(dev)
                 except Exception:
                     dev.close()
                     raise
             except Exception as e:             # noqa: BLE001 - not there yet: try again
-                self._set_state("lost", error=str(e))
+                # An ESP is there but does not speak our protocol (other or no
+                # firmware, or too old): `silent` counts it, the app offers to
+                # flash ours. Just plugged in, it may also still be booting.
+                self._silent = self._silent + 1 if isinstance(e, DeviceError) else 0
+                self._set_state("lost", error=str(e), silent=self._silent)
                 self._stop.wait(RECONNECT_SECS)
                 continue
+            self._silent = 0
             with self._lock:
                 self.dev = dev
                 self._scan_ok = bool(info.get("caps", 0) & link.CAP_SCAN)
@@ -318,6 +327,15 @@ class Session:
                 self._set_state("lost", error=str(dev.error or "closed"))
                 self._stop.wait(RECONNECT_SECS)
         self._set_state("stopped")
+
+    @staticmethod
+    def _firmware(dev):
+        """The firmware's version (flash.parse_version), None if too old to say."""
+        from .flash import parse_version
+        try:
+            return parse_version(dev.cmd("version", timeout=1.5))
+        except DeviceError:
+            return None
 
     def _serve(self, dev):
         next_keepalive = time.monotonic() + KEEPALIVE_SECS

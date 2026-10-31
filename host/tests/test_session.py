@@ -394,5 +394,44 @@ class ReconnectTest(SessionCase):
         self.assertEqual(made[1].listening, 8771, "receiving should restart on the new device")
 
 
+class FirmwareTest(SessionCase):
+    def connected_info(self, fake):
+        events = Events()
+        s = Session(transport_factory=lambda: fake, receive=False, on_event=events)
+        s.start()
+        try:
+            events.wait(device_state("connected"))
+            return [i for i in events.kinds("device") if i["state"] == "connected"][0]["info"]
+        finally:
+            s.stop()
+
+    def test_version_on_connect(self):
+        from espdrop.version import __version__
+        fw = self.connected_info(DuplexBridgeDevice())["firmware"]
+        self.assertEqual((fw["version"], fw["chip"]), (__version__, "esp32c5"))
+        # Firmware from before the command: connected all the same, version unknown.
+        self.assertIsNone(self.connected_info(DuplexBridgeDevice(fw_version=None))["firmware"])
+
+    def test_an_esp_that_does_not_answer(self):
+        # Another firmware (here: another protocol) fails every HELLO; `silent`
+        # counts them, so the app can offer to flash ours. No ESP at all: 0.
+        with mock.patch("espdrop.session.RECONNECT_SECS", 0.05):
+            self.session = s = Session(transport_factory=lambda: DuplexBridgeDevice(version=99),
+                                       receive=False, on_event=self.events)
+            s.start()
+            self.events.wait(lambda k, i: k == "device" and i.get("silent", 0) >= 3)
+            s.stop()
+
+            def absent():
+                raise OSError("no ESP found")
+            events = Events()
+            self.session = s = Session(transport_factory=absent, receive=False, on_event=events)
+            s.start()
+            events.wait(lambda k, i: len([x for x in events.kinds("device")
+                                          if x["state"] == "lost"]) >= 3)
+            s.stop()
+        self.assertEqual({i["silent"] for i in events.kinds("device") if i["state"] == "lost"}, {0})
+
+
 if __name__ == "__main__":
     unittest.main()

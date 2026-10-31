@@ -307,9 +307,13 @@ def cmd_receive(args, transport=None):
 
 
 def cmd_status(args, transport=None):
+    from .flash import parse_version
     dev = _open(args, transport)
     try:
         _hello(dev)
+        fw = parse_version(dev.cmd("version"))
+        print(f"firmware: {fw['version']} ({fw.get('chip', '?')}, IDF {fw.get('idf', '?')})"
+              if fw else "firmware: from before 0.1.0 (no `version` command)", flush=True)
         for c in ("node", "ip", "stats", "wake", "power"):
             print(f"{c}: {dev.cmd(c)}", flush=True)
         return 0
@@ -327,6 +331,50 @@ def cmd_cmd(args, transport=None):
         return 0
     finally:
         dev.close()
+
+
+def cmd_flash(args, transport=None):
+    """Put the EspDrop firmware on the ESP (esptool, no IDF needed)."""
+    from . import flash
+    path = args.image or flash.bundled()
+    if not path:
+        print("error: no firmware here: name an image (espdrop-esp32c5.bin from a release) "
+              "or an ESP-IDF build folder of the bridge", file=sys.stderr)
+        return 1
+    try:
+        fw = flash.load(path)
+        port = args.port
+        if not port:
+            found = flash.ports()
+            if len(found) != 1:
+                print("error: " + ("no ESP found; plug it in" if not found else
+                                   f"several ports ({', '.join(found)}); pick one: "
+                                   f"espdrop -p PORT flash"), file=sys.stderr)
+                return 1
+            port = found[0]
+        print(f"firmware {fw.version} for the {fw.chip} (built {fw.built}, IDF {fw.idf}, "
+              f"{fw.size // 1024} KiB)\n  from {fw.source}\nport {port}", flush=True)
+        state = {"bar": False}
+
+        def progress(stage, fraction=None):
+            if stage == "write":
+                print(f"\r  writing {fraction * 100:5.1f} %", end="", flush=True)
+                state["bar"] = True
+                return
+            if state["bar"]:
+                print(flush=True)
+                state["bar"] = False
+            text = {"connect": "connecting to the ESP's ROM bootloader ...",
+                    "verify": "verifying ...", "restart": "restarting the ESP ...",
+                    "done": "done: the ESP runs the new firmware."}.get(stage)
+            if text:
+                print(text, flush=True)
+        flash.flash(fw, port, on_progress=progress,
+                    on_log=(lambda text: print(f"  {text}", flush=True)) if args.verbose else None)
+        return 0
+    except flash.FirmwareError as e:
+        print(f"\nerror: {e}", file=sys.stderr)
+        return 1
 
 
 def cmd_check(args, transport=None):
@@ -352,7 +400,9 @@ def main(argv=None, transport=None):
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
+    from .version import __version__
     ap = argparse.ArgumentParser(prog="espdrop", description="EspDrop host app (M4)")
+    ap.add_argument("--version", action="version", version=f"espdrop {__version__}")
     ap.add_argument("-p", "--port", help="serial port (default: the only ESP found; "
                                          "Linux /dev/ttyACM0, Windows COM5)")
     sub = ap.add_subparsers(dest="action", required=True)
@@ -385,6 +435,10 @@ def main(argv=None, transport=None):
     c.add_argument("--wait", type=float, default=12.0, help="ping6: seconds to show replies")
     c.set_defaults(verbose=True)
     sub.add_parser("check", help="is this PC ready: Python, pyserial, OpenDrop, libarchive, TLS")
+    fl = sub.add_parser("flash", help="put the EspDrop firmware on the ESP (esptool)")
+    fl.add_argument("image", nargs="?", help="firmware image (espdrop-esp32c5.bin) or ESP-IDF "
+                                              "build folder (default: the one this app ships)")
+    fl.add_argument("-v", "--verbose", action="store_true", help="show esptool's messages")
     g = sub.add_parser("gui", help="the desktop app (PySide6)")
     g.add_argument("--background", action="store_true",
                    help="tray only, receiving until switched off (what autostart runs)")
@@ -401,7 +455,7 @@ def main(argv=None, transport=None):
         logging.getLogger("opendrop").setLevel(logging.WARNING)
     handlers = {"find": cmd_find, "send": cmd_send, "receive": cmd_receive,
                 "status": cmd_status, "cmd": cmd_cmd, "check": cmd_check,
-                "gui": cmd_gui}
+                "flash": cmd_flash, "gui": cmd_gui}
     try:
         return handlers[args.action](args, transport)
     except ImportError as e:            # OpenDrop or libarchive (env.py says what to do)

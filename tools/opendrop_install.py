@@ -7,7 +7,8 @@
 # The patches and every resulting file are checked against pinned digests (those
 # of the install the bash script makes), so Windows and Linux run byte-identical
 # OpenDrop code. On top come pyserial (COM ports), cryptography (the TLS
-# certificate, in place of the openssl command) and PySide6 (the desktop app).
+# certificate, in place of the openssl command), PySide6 (the desktop app) and
+# esptool (putting the firmware on the ESP from the app).
 #
 #   py tools\opendrop_install.py            Windows (Python 3.9+ from python.org)
 #   python3 tools/opendrop_install.py       works on Linux too
@@ -79,7 +80,7 @@ RESULT = {
     "opendrop/server.py": "be731940c314f2b2409c263d6585c407cb935c93c00de805affd602693d76503",
     "opendrop/util.py": "390ee35c01c3d332e57be49266610a44bd658dbe1fe16084a5e5bfeccb30fe2c",
 }
-EXTRAS = ["pyserial", "cryptography", "PySide6"]
+EXTRAS = ["pyserial", "cryptography", "PySide6", "esptool"]
 # Markers in the venv, shared with the bash script: WIP while one of us builds
 # it, OK (holding the series signature) once every patch landed and was checked.
 STAMP_WIP = ".espdrop-installing"
@@ -379,10 +380,10 @@ def main():
 
     if up_to_date(venv):
         print(f"\nalready installed and up to date: {venv}")
-        extras = [m for m in ("serial", "cryptography", "PySide6")
+        extras = [m for m in ("serial", "cryptography", "PySide6", "esptool")
                   if subprocess.run([py, "-c", f"import {m}"], capture_output=True).returncode]
         if extras:      # a venv the bash script made, or one from before the GUI
-            step("adding pyserial, cryptography and PySide6")
+            step("adding pyserial, cryptography, PySide6 and esptool")
             run([py, "-m", "pip", "install", "-q"] + EXTRAS, "pip install")
     else:
         step(f"fetching the patch series (rev {REV})")

@@ -16,7 +16,9 @@ how to test each stage: [`docs/SPIKES.md`](../docs/SPIKES.md).
 | `espdrop/env.py` | platform setup: libarchive, TLS certificate, Windows fixes, `check` |
 | `espdrop/session.py` | one long-running link for a GUI: receive windows, sends alongside, events, reconnect |
 | `espdrop/gui.py` | the desktop app (PySide6) on the session |
-| `espdrop/cli.py` | `find`, `send`, `receive`, `status`, `cmd`, `check`, `gui` |
+| `espdrop/flash.py` | the ESP's firmware from the app: images checked, then esptool |
+| `espdrop/version.py` | the version of the app and of the firmware it ships |
+| `espdrop/cli.py` | `find`, `send`, `receive`, `status`, `cmd`, `check`, `flash`, `gui` |
 | `tests/` | simulated devices with iPad-shaped mDNS answers, end-to-end via OpenDrop |
 
 `receive` asks before each transfer (`y`/`n` within 60 s, else declined;
@@ -74,6 +76,15 @@ Linux), the icon is drawn in code.
   taskbar shows our icon instead of Python's.
 - **One copy per user:** a second start (autostart, the file manager, the
   launcher) hands its files to the running app over a local socket and exits.
+- **Allgemein → "ESP-Firmware"** shows what the ESP runs (the firmware's
+  `version` command) and offers "Aktualisieren …" when the app ships a newer
+  one; an ESP that does not answer (no or other firmware) gets "Firmware
+  installieren …" under the title. The dialog writes the firmware over the
+  same USB cable, no buttons on the ESP: the app lets go of the port, esptool
+  resets the C5 into its ROM bootloader, writes, verifies (MD5) and restarts
+  it, and the app connects again. "Andere Datei …" takes an image or an
+  ESP-IDF build folder. The same from the command line: `espdrop flash
+  [IMAGE]`.
 
 It needs PySide6 in the venv: `tools/opendrop_install.py` installs it; for a
 venv made by `opendrop_install.sh`, run `python3 tools/opendrop_install.py`
@@ -89,8 +100,22 @@ Arch).
 ```sh
 ~/opendrop-venv/bin/python tools/espdrop.py check
 ~/opendrop-venv/bin/python tools/espdrop.py find
+~/opendrop-venv/bin/python tools/espdrop.py flash      # the firmware onto the ESP
 ~/opendrop-venv/bin/python -m unittest discover -s host/tests
 ```
+
+## The firmware the app ships
+
+`espdrop flash` and the app take, in this order: `ESPDROP_FIRMWARE` (an
+image or a build folder), `espdrop/firmware/espdrop-esp32c5.bin` (what
+release builds ship), or the newest ESP-IDF build of the bridge for the C5 in
+`firmware/spikes/build*` (a build of the test console is refused). Before
+anything is written the image is checked: ESP image headers for one chip, the
+bootloader where that chip's ROM looks (0x2000 on the C5), the partition table
+at 0x8000, the app with its description (version, build date, IDF) at
+0x10000; the ESP must turn out to be that chip. `tools/firmware_image.py
+BUILD` makes the one-file image from a build (esptool's merge-bin, checked the
+same way).
 
 ## Windows 10/11
 
@@ -112,8 +137,8 @@ py tools\opendrop_install.py
 PyPI, the 17 airdrop-mt7921 patches (downloaded at the pinned revision; every
 patch and every resulting file is checked against pinned digests, so the code
 is byte-identical to the Linux install), pyserial, cryptography (the TLS
-certificate, which OpenDrop would otherwise make with openssl) and PySide6
-(the desktop app). It ends with
+certificate, which OpenDrop would otherwise make with openssl), PySide6
+(the desktop app) and esptool (the ESP's firmware from the app). It ends with
 `espdrop check`. `espdrop.cmd` runs the app with that venv (`OPENDROP_VENV`
 picks another) and works in cmd and PowerShell. Received files land in the
 current folder. The port is found by its Espressif USB id, else `-p COM5`.

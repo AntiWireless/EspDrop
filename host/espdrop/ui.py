@@ -33,7 +33,7 @@ LIGHT = {
     "field": "#FFFFFF", "field_border": "#D2D2D7",
     "segment": "#E8E8ED", "control": "#FFFFFF", "switch_off": "#E2E2E7",
     "track": "#E5E5EA", "scroll": "#C7C7CC", "hover": "#EDEDF2",
-    "green": "#34C759", "orange": "#FF9500", "red": "#FF3B30",
+    "green": "#34C759", "orange": "#FF9500", "red": "#FF3B30", "red_text": "#D70015",
     "avatar_top": "#A9AEBA", "avatar_bottom": "#858A96", "shadow_alpha": 40,
 }
 DARK = {
@@ -45,7 +45,7 @@ DARK = {
     "field": "#1C1C1E", "field_border": "#48484A",
     "segment": "#1C1C1E", "control": "#636366", "switch_off": "#48484A",
     "track": "#3A3A3C", "scroll": "#5A5A5E", "hover": "#38383A",
-    "green": "#30D158", "orange": "#FF9F0A", "red": "#FF453A",
+    "green": "#30D158", "orange": "#FF9F0A", "red": "#FF453A", "red_text": "#FF6961",
     "avatar_top": "#8E8E93", "avatar_bottom": "#636366", "shadow_alpha": 90,
 }
 T = dict(LIGHT)                                # the colours in use; widgets read them when painting
@@ -179,6 +179,7 @@ QPushButton:focus {{ outline: none; }}
 QPushButton[kind="primary"] {{ background: {t['accent']}; color: white; font-weight: 600; }}
 QPushButton[kind="primary"]:hover {{ background: {t['accent_hover']}; }}
 QPushButton[kind="primary"]:pressed {{ background: {t['accent_pressed']}; }}
+QPushButton[kind="primary"]:disabled {{ background: {t['fill']}; color: {t['tertiary']}; }}
 QPushButton[kind="link"] {{ background: transparent; color: {t['accent']}; padding: 2px 4px;
                            min-height: 0; }}
 QPushButton[kind="link"]:hover {{ color: {t['accent_hover']}; }}
@@ -191,6 +192,13 @@ QLineEdit {{ background: {t['field']}; border: 1px solid {t['field_border']};
             border-radius: 7px; padding: 4px 8px; selection-background-color: {t['accent']};
             selection-color: white; }}
 QLineEdit:focus {{ border: 2px solid {t['focus']}; padding: 3px 7px; }}
+QComboBox {{ background: {t['field']}; border: 1px solid {t['field_border']};
+            border-radius: 7px; padding: 3px 8px; }}
+QComboBox:focus {{ border: 2px solid {t['focus']}; padding: 2px 7px; }}
+QComboBox QAbstractItemView {{ background: {t['card']}; border: 1px solid {t['separator']};
+                              selection-background-color: {t['accent']};
+                              selection-color: white; }}
+QLabel[tone="bad"] {{ color: {t['red_text']}; }}
 QPlainTextEdit {{ background: {t['card']}; border: 1px solid {t['card_border']};
                  border-radius: 10px; padding: 6px; }}
 QMenu {{ background: {t['card']}; border: 1px solid {t['separator']}; border-radius: 9px;
