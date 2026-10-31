@@ -50,7 +50,9 @@ IS_WINDOWS = os.name == "nt"
 NAME = "EspDrop"
 # What the compiled program carries besides its code (and what it is built from).
 PACKAGES = ["espdrop", "opendrop", "esptool"]
-DATA_PACKAGES = ["opendrop", "esptool"]       # Apple's root certificate; the flasher stubs
+# Their data files: Apple's root certificate, the flasher stubs, the file types
+# OpenDrop looks up (fleep/data.json, read at import).
+DATA_PACKAGES = ["opendrop", "esptool", "fleep"]
 
 
 def step(text):

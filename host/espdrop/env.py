@@ -139,6 +139,9 @@ def load_opendrop():
     except ImportError as e:
         raise ImportError(f"cannot import OpenDrop ({e}); {INSTALL_HINT}") from e
     except (OSError, AttributeError, TypeError) as e:     # libarchive-c binding it
+        missing = getattr(e, "filename", None)
+        if isinstance(e, FileNotFoundError) and missing and "archive" not in str(missing):
+            raise ImportError(f"OpenDrop lacks a file of its own ({e})") from e
         raise ImportError(f"libarchive does not work with OpenDrop ({e}); "
                           f"{LIBARCHIVE_HINT}") from e
     if os.name == "nt":
