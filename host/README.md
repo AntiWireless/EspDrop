@@ -122,7 +122,7 @@ same way).
 `tools/build_app.py` makes the app a native program that needs no Python:
 Nuitka translates the Python code (ours, the patched OpenDrop and every
 library they use) to C, compiles it, and puts it with the Python runtime, Qt
-and the ESP firmware into one folder, `build/app/EspDrop/`, packed as
+and the ESP firmware into one folder, `build/app/EspDrop.dist/`, packed as
 `build/EspDrop-<version>-windows-x64.zip` or `-linux-x86_64.tar.gz`. The
 program `EspDrop(.exe)` is the whole app: without arguments the window, with
 arguments the command line (`EspDrop find`, `EspDrop flash`, ...; on Windows

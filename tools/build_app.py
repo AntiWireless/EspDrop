@@ -5,7 +5,7 @@ Nuitka translates the Python code (ours, the patched OpenDrop and every
 library they use) to C, compiles it, and puts it together with the Python
 runtime, Qt and the ESP's firmware into one folder:
 
-  build/app/EspDrop/EspDrop(.exe)                 the program
+  build/app/EspDrop.dist/EspDrop(.exe)            the program
   build/EspDrop-<version>-windows-x64.zip         what a release ships
   build/EspDrop-<version>-linux-x86_64.tar.gz
 
@@ -154,7 +154,7 @@ def nuitka_command(args, out, icons, fw):
             cmd.append("--zig")
     if args.jobs:
         cmd.append(f"--jobs={args.jobs}")
-    cmd.append(os.path.join(HERE, "espdrop.py"))
+    cmd.append(os.path.join(HOST, "espdrop_app.py"))   # beside the package: see that file
     return cmd
 
 
@@ -261,7 +261,7 @@ def main(argv=None):
     fw = firmware(args, res)
 
     step(f"compiling {NAME} {__version__} with Nuitka (takes a while)")
-    dist = os.path.join(out, NAME)
+    dist = os.path.join(out, NAME + ".dist")    # Nuitka adds .dist to the folder name
     if os.path.isdir(dist):
         shutil.rmtree(dist)
     env = dict(os.environ, PYTHONPATH=os.pathsep.join(
