@@ -32,10 +32,21 @@ from .device import Device, DeviceError
 
 logger = logging.getLogger(__name__)
 
+STAGING = ".espdrop-incoming"     # inside the download folder: OpenDrop unpacks here first
 RECONNECT_SECS = 2.0
 KEEPALIVE_SECS = 30.0
 BROWSE_SECS = 60.0
 HOLD_SECS = 90             # `power hold` per keepalive: the radio stays on while needed
+
+
+def _hide(path):
+    """Hidden on Windows too (a leading dot only hides it on Linux and macOS)."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetFileAttributesW(str(path), 0x02)   # FILE_ATTRIBUTE_HIDDEN
+        except Exception:                      # noqa: BLE001 - cosmetic only
+            pass
 
 
 class ReceiverInfo:
@@ -120,8 +131,7 @@ class Session:
         if self._thread:
             return
         if self.download_dir:
-            os.makedirs(self.download_dir, exist_ok=True)
-            os.chdir(self.download_dir)       # OpenDrop's server writes into cwd
+            self.set_download_dir(self.download_dir)
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="espdrop-session", daemon=True)
         self._thread.start()
@@ -164,11 +174,23 @@ class Session:
                 self._start_receiver()
 
     def set_download_dir(self, path):
-        """Where received files go (OpenDrop's server writes into the current
-        directory, so this changes it for the whole process)."""
+        """Where received files go. OpenDrop's server unpacks into the current
+        directory (for the whole process) and would replace files of the same
+        name, so it unpacks into a hidden staging folder inside `path`, and
+        the receiver moves each transfer out under free names (receive.py).
+        Anything a crash left in the staging folder moves out now."""
+        from .receive import move_out
         os.makedirs(path, exist_ok=True)
-        os.chdir(path)
+        staging = os.path.join(path, STAGING)
+        os.makedirs(staging, exist_ok=True)
+        _hide(staging)
+        leftovers = sorted(os.listdir(staging))
+        if leftovers:
+            move_out(staging, leftovers, path)
+        os.chdir(staging)
         self.download_dir = path
+        if self._receiver:
+            self._receiver.dest_dir = path
 
     def receivers(self):
         with self._lock:
@@ -349,7 +371,8 @@ class Session:
         # an AirDrop advert, the phone should discover us within its share-sheet
         # window (it also answers the phone's own queries once awake).
         self._receiver = Receiver(self.dev, name=self.name, on_ask=self._ask,
-                                  on_event=self._on_receive, announce_interval=2.5)
+                                  on_event=self._on_receive, announce_interval=2.5,
+                                  dest_dir=self.download_dir)
         self._receiver.start()
 
     def _stop_receiver(self):

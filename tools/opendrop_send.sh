@@ -8,11 +8,10 @@
 #   tools/opendrop_send.sh -n MyPC file1.pdf file2.png
 #   tools/opendrop_send.sh -r "Anna's iPhone" clip.mov   # pick the receiver
 #
-# On the iPhone/iPad: AirDrop "Everyone for 10 Minutes", unlock, open the share
-# sheet and LEAVE IT OPEN: it keeps the device's AWDL awake. With the sheet
-# closed it never advertises a receiver, BLE wake or not; airdrop-mt7921's
-# working sends (FINDINGS §27, §37) had the sheet open plus the BLE wake. This
-# script broadcasts that wake, browses for the receiver on awdl0, and sends.
+# On the iPhone/iPad: AirDrop "Everyone for 10 Minutes", unlock. It answers as
+# a receiver while a BLE wake runs nearby (airdrop-mt7921 FINDINGS §27, §37;
+# its share sheet need not be open, as later tests with the ESP's wake showed).
+# This script broadcasts that wake, browses for the receiver on awdl0, and sends.
 # The device shows an Accept prompt; tap Accept.
 #
 # The wake comes from the ESP's own Bluetooth when its firmware has it (bridge
@@ -152,14 +151,14 @@ wake_secs=$((BROWSE + 60))
 [ "$wake_secs" -gt 600 ] && wake_secs=600
 case "$WAKE_MODE" in
   esp)
-    echo "broadcasting the AirDrop BLE wake from the ESP (device: AirDrop Everyone, unlocked, share sheet OPEN) ..."
+    echo "broadcasting the AirDrop BLE wake from the ESP (device: AirDrop Everyone, unlocked) ..."
     if esp_wake "$wake_secs"; then
       wake_esp=1
     else
       echo "warning: the ESP did not start the BLE wake ($(esp_cmd wake 2>&1)); browsing anyway" >&2
     fi ;;
   pc)
-    echo "broadcasting the AirDrop BLE wake from the PC (device: AirDrop Everyone, unlocked, share sheet OPEN) ..."
+    echo "broadcasting the AirDrop BLE wake from the PC (device: AirDrop Everyone, unlocked) ..."
     # shellcheck disable=SC2086
     "$HERE/airdrop_wake.py" ${ESPDROP_WAKE_ARGS:-} >/dev/null 2>&1 &
     wake_pid=$!
@@ -213,9 +212,9 @@ if [ -z "$recv_id" ] && [ -z "$RECV" ]; then
     esac
     echo "     Watch it with  sudo tcpdump -i $IFACE -n 'tcp port 8770 or icmp6'" >&2
   fi
-  echo "  - the iPhone/iPad must be on AirDrop -> Everyone, unlocked, with its share" >&2
-  echo "    sheet OPEN, and in range on the channel awdl0 is parked on (check 'node'" >&2
-  echo "    in the bridge: auto=on and chan= the device's 5 GHz channel)." >&2
+  echo "  - the iPhone/iPad must be on AirDrop -> Everyone, unlocked, and in range on" >&2
+  echo "    the channel awdl0 is parked on (check 'node' in the bridge: auto=on and" >&2
+  echo "    chan= the device's 5 GHz channel)." >&2
   echo "  - 'Everyone for 10 Minutes' falls back to Contacts Only after 10 minutes;" >&2
   echo "    select it again right before sending." >&2
   echo "  - the BLE wake (this run: $WAKE_MODE) comes from the ESP's Bluetooth (bridge" >&2

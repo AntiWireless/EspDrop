@@ -103,7 +103,7 @@ def cmd_find(args, transport=None):
         b = Browser(dev, on_found=found, on_gone=gone,
                     on_packet=packet if args.verbose else None)
         print(f"browsing {AIRDROP} on the ESP's AWDL link for {args.time:.0f}s "
-              f"(target: AirDrop Everyone, unlocked, share sheet OPEN) ...", flush=True)
+              f"(target: AirDrop Everyone, unlocked) ...", flush=True)
         b.start()
         try:
             end = time.monotonic() + args.time
@@ -118,7 +118,7 @@ def cmd_find(args, transport=None):
         print(f"{len(rs)} receiver(s); {b.queries_sent} queries sent, "
               f"{b.packets} mDNS messages received, {b.invalid} unreadable", flush=True)
         if not rs:
-            print("  - nothing: is the target on AirDrop Everyone with its share sheet open?\n"
+            print("  - nothing: is the target unlocked and on AirDrop Everyone?\n"
                   "    `espdrop status` shows whether the ESP hears it at all (peers, rx).",
                   flush=True)
         return 0 if rs else 1
@@ -181,7 +181,7 @@ def cmd_send(args, transport=None):
 
         t0 = time.monotonic()
         print(f"looking for {args.receiver or 'receivers'} "
-              f"(target: AirDrop Everyone, unlocked, share sheet OPEN) ...", flush=True)
+              f"(target: AirDrop Everyone, unlocked) ...", flush=True)
         hits = find_receivers(dev, timeout=args.time, want=args.receiver, name=args.name,
                               on_packet=packet if args.verbose else None)
         if not hits:

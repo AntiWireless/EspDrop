@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
@@ -21,8 +22,13 @@ sys.path.insert(0, HERE)
 
 from apple_mdns import PAD_ID  # noqa: E402
 from espdrop import link  # noqa: E402
-from espdrop.session import Session  # noqa: E402
+from espdrop.session import STAGING, Session  # noqa: E402
 from fake_device import DuplexBridgeDevice  # noqa: E402
+
+
+def listing(folder):
+    """What the user sees in a download folder (not the staging folder)."""
+    return sorted(f for f in os.listdir(folder) if f != STAGING)
 
 
 class Events:
@@ -233,10 +239,62 @@ class ReceiveTest(SessionCase):
             time.sleep(0.05)
         self.assertIn("power listen off", fake.commands)
 
+    def test_nothing_is_overwritten(self):
+        # The download folder already has a file of that name, and the same
+        # photo comes twice: the user's file stays, the new ones get numbers.
+        fake, dl = self.start(lambda ask: True)
+        with open(os.path.join(dl, "IMG_1.jpg"), "wb") as f:
+            f.write(b"the user's own")
+        for k in range(2):
+            self.assertTrue(self.incoming(fake, "IMG_1.jpg", b"from the phone %d" % k * 100))
+            self.events.wait(lambda kind, i, k=k: kind == "receive" and i["phase"] == "received"
+                             and len([x for x in self.events.kinds("receive")
+                                      if x["phase"] == "received"]) == k + 1)
+        self.assertEqual(listing(dl), ["IMG_1 (1).jpg", "IMG_1 (2).jpg", "IMG_1.jpg"])
+        with open(os.path.join(dl, "IMG_1.jpg"), "rb") as f:
+            self.assertEqual(f.read(), b"the user's own")
+        done = [i for i in self.events.kinds("receive") if i["phase"] == "received"]
+        self.assertEqual([os.path.basename(i["files"][0]) for i in done],
+                         ["IMG_1 (1).jpg", "IMG_1 (2).jpg"])
+        self.assertEqual(os.listdir(os.path.join(dl, STAGING)), [])
+
+    def test_move_out_keeps_what_cannot_move(self):
+        from espdrop import receive
+        staging = os.path.join(self.tmp.name, "staging")
+        dest = os.path.join(self.tmp.name, "dest")
+        os.makedirs(staging)
+        os.makedirs(dest)
+        for n in ("a.jpg", "locked.jpg"):
+            open(os.path.join(staging, n), "wb").close()
+        real = receive.shutil.move
+
+        def move(src, dst):
+            if src.endswith("locked.jpg"):
+                raise PermissionError("in use")
+            return real(src, dst)
+        with mock.patch.object(receive.shutil, "move", move), \
+                self.assertLogs("espdrop.receive", "WARNING"):
+            got = receive.move_out(staging, ["a.jpg", "locked.jpg"], dest)
+        self.assertEqual(got, [os.path.join(dest, "a.jpg"), os.path.join(staging, "locked.jpg")])
+        self.assertEqual(os.listdir(staging), ["locked.jpg"])
+
+    def test_leftovers_move_out_at_start(self):
+        dl = os.path.join(self.tmp.name, "downloads")
+        os.makedirs(os.path.join(dl, STAGING))
+        with open(os.path.join(dl, STAGING, "halb.jpg"), "wb") as f:
+            f.write(b"left by a crash")
+        s = Session(transport_factory=lambda: DuplexBridgeDevice(), receive=False,
+                    on_event=self.events, download_dir=dl)
+        self.session = s
+        s.start()
+        self.assertEqual(listing(dl), ["halb.jpg"])
+        self.assertEqual(os.path.realpath(os.getcwd()),
+                         os.path.realpath(os.path.join(dl, STAGING)))
+
     def test_declined_and_unanswered(self):
         fake, dl = self.start(lambda ask: False)
         self.assertFalse(self.incoming(fake, "nein.txt", b"no"))
-        self.assertEqual(os.listdir(dl), [])
+        self.assertEqual(listing(dl), [])
         asked = [i for i in self.events.kinds("receive") if i["phase"] == "asked"]
         self.assertEqual([i["accepted"] for i in asked], [False])
 
@@ -245,7 +303,7 @@ class ReceiveTest(SessionCase):
         t = time.monotonic()
         self.assertFalse(self.incoming(fake, "spaet.txt", b"late"))
         self.assertLess(time.monotonic() - t, 4)
-        self.assertEqual(os.listdir(dl), [])
+        self.assertEqual(listing(dl), [])
 
 
 class ChoiceTest(SessionCase):

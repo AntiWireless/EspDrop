@@ -19,6 +19,7 @@
 import logging
 import os
 import plistlib
+import shutil
 import socket
 import threading
 import time
@@ -97,22 +98,57 @@ class _Counting:
         return getattr(self._f, name)
 
 
+def unique_path(folder, name):
+    """folder/name, or 'name (1).ext', 'name (2).ext' … if that is taken."""
+    path = os.path.join(folder, name)
+    stem, ext = os.path.splitext(name)
+    n = 1
+    while os.path.lexists(path):
+        path = os.path.join(folder, f"{stem} ({n}){ext}")
+        n += 1
+    return path
+
+
+def move_out(staging, names, dest):
+    """Move staging/name for each name into dest under a free name; returns
+    the new paths. Nothing in dest is ever replaced. What cannot move (a file
+    still locked on Windows) stays in staging, under its staging path, and
+    moves out at the next start."""
+    moved = []
+    for name in names:
+        src = os.path.join(staging, name)
+        target = unique_path(dest, name)
+        try:
+            shutil.move(src, target)           # a rename; copy + remove across volumes
+        except OSError as e:
+            logger.warning("could not move %s to %s: %s", name, dest, e)
+            target = src
+        moved.append(target)
+    return moved
+
+
 class Receiver:
     """Receive over the device: mDNS responder, listener, local OpenDrop server.
 
     on_ask(IncomingAsk) -> bool decides each transfer (None accepts all, as
     OpenDrop does); it runs on the server thread, which the sender waits on.
     on_event(kind, **info) gets "asked" (ask, accepted), "receiving" (ask,
-    received, total) and "received" (ask, files, ok, raw, size, secs). Files
-    land in the current directory."""
+    received, total) and "received" (ask, files, ok, raw, size, secs).
+
+    OpenDrop unpacks into the current directory and replaces what is there.
+    With dest_dir set, the current directory is only a staging area: each
+    transfer's files then move to dest_dir under free names ('IMG_1.JPG',
+    'IMG_1 (1).JPG'), so nothing the user has gets overwritten. Without it,
+    files stay in the current directory (the command line's -d)."""
 
     def __init__(self, dev, name="EspDrop", flags=0x3fb, on_ask=None, on_event=None,
-                 announce_interval=5.0):
+                 announce_interval=5.0, dest_dir=None):
         self.dev = dev
         env.ensure_identity(name)      # before OpenDrop would call openssl
         self.config = AirDropConfig(computer_name=name)
         self.config.flags = flags
         self.announce_interval = announce_interval
+        self.dest_dir = dest_dir
         self.on_ask = on_ask
         self.on_event = on_event or (lambda kind, **info: None)
         self.httpd = None
@@ -185,11 +221,18 @@ class Receiver:
         finally:
             handler.rfile = rfile
             new = sorted(set(os.listdir(here)) - before)
-            raw = [n for n in new if n.startswith(RAW_PREFIX)]
-            files = [os.path.join(here, n) for n in new if not n.startswith(RAW_PREFIX)]
+            raw_names = [n for n in new if n.startswith(RAW_PREFIX)]
+            names = [n for n in new if not n.startswith(RAW_PREFIX)]
+            dest = self.dest_dir
+            if dest and os.path.realpath(dest) != os.path.realpath(here):
+                files = move_out(here, names, dest)
+                raw = move_out(here, raw_names, dest)
+            else:
+                files = [os.path.join(here, n) for n in names]
+                raw = [os.path.join(here, n) for n in raw_names]
             ok = bool(files) and not raw and not any(f.endswith(".partial") for f in files)
             self.on_event("received", ask=ask, files=files, ok=ok,
-                          raw=os.path.join(here, raw[0]) if raw else None,
+                          raw=raw[0] if raw else None,
                           size=got[0], secs=time.monotonic() - start)
 
     # ---- one accepted AWDL connection --------------------------------------

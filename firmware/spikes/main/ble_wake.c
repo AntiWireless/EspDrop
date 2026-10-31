@@ -18,10 +18,10 @@
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 
-/* 200-250 ms: often enough that a phone scanning with its share sheet open sees
- * the advert within a second, rare enough that BLE costs AWDL little: it shares
- * the radio with Wi-Fi and, on the C5 parked on 5 GHz, needs a band switch for
- * every advertising event. */
+/* 200-250 ms: often enough that a phone nearby sees the advert within a
+ * second, rare enough that BLE costs AWDL little: it shares the radio with
+ * Wi-Fi and, on the C5 parked on 5 GHz, needs a band switch for every
+ * advertising event. */
 #define WAKE_ITVL_MIN BLE_GAP_ADV_ITVL_MS(200)
 #define WAKE_ITVL_MAX BLE_GAP_ADV_ITVL_MS(250)
 #define WAKE_ADV_LEN  24

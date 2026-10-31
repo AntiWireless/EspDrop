@@ -62,10 +62,13 @@ Bekannte Schwächen von Upstream-OWL, die im Fork von jedbillyb behoben sind:
 
 - Das iPhone muss auf **„Jeder für 10 Minuten“** stehen. „Nur Kontakte“ braucht ein
   Apple-signiertes Validation Record, das man nur von einem echten Mac extrahieren kann.
-- **Empfangen** (iPhone → PC): Das Share-Sheet muss offen sein, dann ist AWDL wach.
+- **Empfangen** (iPhone → PC): Das iPhone hält AWDL wach, solange sein Teilen-Menü
+  offen ist, also während man dort den PC als Ziel wählt.
 - **Senden** (PC → iPhone): Das iPhone annonciert `_airdrop._tcp` nur, solange ein
   BLE-Continuity-AirDrop-Advertisement läuft (§27, nachgewiesen). Bei „Jeder“ dürfen die
   Hash-Felder Nullen sein.
+  Das Teilen-Menü des iPhones muss dafür nicht offen sein (mit dem Wecksignal vom
+  ESP getestet: AirDrop „Für alle“ und entsperrt genügt).
 - Nötige OpenDrop-Änderungen: Chunked Requests ohne `Content-Length`, Container
   `application/x-dvzip` (Blöcke mit 4-Byte-BE-Header, Bit 31 = stored, sonst zlib,
   128-KiB-Blöcke → ODC-cpio), `TransferID` + `TransferType` schon im `/Ask`.

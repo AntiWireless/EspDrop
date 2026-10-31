@@ -49,6 +49,7 @@ DARK = {
     "avatar_top": "#8E8E93", "avatar_bottom": "#636366", "shadow_alpha": 90,
 }
 T = dict(LIGHT)                                # the colours in use; widgets read them when painting
+MODE = "auto"                                  # the app's choice: "auto" (system), "light", "dark"
 
 
 def color(key, alpha=None):
@@ -59,6 +60,8 @@ def color(key, alpha=None):
 
 
 def is_dark():
+    if MODE in ("light", "dark"):
+        return MODE == "dark"
     forced = os.environ.get("ESPDROP_THEME", "").lower()
     if forced in ("dark", "light"):
         return forced == "dark"
@@ -106,8 +109,27 @@ def refresh(app):
     app.setFont(font(13))
     app.setPalette(palette())
     app.setStyleSheet(qss())
+    for w in app.allWidgets():
+        glyph = w.property("glyph") if isinstance(w, QToolButton) else None
+        if glyph:                              # line icons are drawn in the text colour
+            w.setIcon(glyph_icon(glyph, T["secondary"], 18))
     for w in app.topLevelWidgets():
         w.update()
+
+
+def set_mode(app, mode):
+    """Hell, Dunkel or Automatisch (the system's), from now on. Also tells Qt,
+    which then gives Windows windows a matching title bar (Qt 6.8+)."""
+    global MODE
+    MODE = mode if mode in ("light", "dark") else "auto"
+    try:
+        scheme = {"light": Qt.ColorScheme.Light, "dark": Qt.ColorScheme.Dark}.get(
+            MODE, Qt.ColorScheme.Unknown)
+        app.styleHints().setColorScheme(scheme)
+    except AttributeError:                     # Qt before 6.8
+        pass
+    if app.property("espdrop_theme"):
+        refresh(app)
 
 
 def palette():
@@ -335,6 +357,88 @@ def app_icon():
     for px in (16, 24, 32, 48, 64, 128, 256):
         icon.addPixmap(app_pixmap(px))
     return icon
+
+
+def _icon_image(px):
+    """Our mark, exactly px x px, straight (not premultiplied) alpha."""
+    from PySide6.QtGui import QImage
+    img = QImage(px, px, QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(Qt.GlobalColor.transparent)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    paint_app_icon(p, QRectF(px * 0.04, px * 0.04, px * 0.92, px * 0.92))
+    p.end()
+    return img.convertToFormat(QImage.Format.Format_ARGB32)
+
+
+def _png_bytes(px):
+    """Our mark as PNG data (icon files)."""
+    from PySide6.QtCore import QBuffer, QIODevice
+    buf = QBuffer()
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    _icon_image(px).save(buf, "PNG")
+    return bytes(buf.data())
+
+
+def _dib_bytes(px):
+    """Our mark as an icon's classic bitmap: a BITMAPINFOHEADER of double
+    height, 32-bit BGRA rows bottom-up, then the 1-bit AND mask (set where
+    fully transparent). Every Windows icon loader reads this; PNG data is
+    only safe in the 256 px entry."""
+    import struct
+    img = _icon_image(px)
+    stride = img.bytesPerLine()
+    bits = bytes(img.constBits())[:stride * px]  # B G R A per pixel (little endian)
+    rows = [bits[y * stride:y * stride + 4 * px] for y in range(px)]
+    mask_stride = (px + 31) // 32 * 4
+    mask = bytearray()
+    for row in reversed(rows):
+        line = bytearray(mask_stride)
+        for x in range(px):
+            if row[4 * x + 3] == 0:
+                line[x // 8] |= 0x80 >> (x % 8)
+        mask += line
+    xor = b"".join(reversed(rows))
+    header = struct.pack("<IiiHHIIiiII", 40, px, 2 * px, 1, 32, 0,
+                         len(xor) + len(mask), 0, 0, 0, 0)
+    return header + xor + bytes(mask)
+
+
+ICO_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
+
+
+def ico_bytes(sizes=ICO_SIZES):
+    """A Windows .ico: classic bitmaps up to 128 px, PNG data at 256 px."""
+    import struct
+    images = [_png_bytes(s) if s >= 256 else _dib_bytes(s) for s in sizes]
+    out = struct.pack("<HHH", 0, 1, len(images))
+    offset = 6 + 16 * len(images)
+    for s, data in zip(sizes, images):
+        side = 0 if s >= 256 else s            # 0 means 256 in an icon directory
+        out += struct.pack("<BBBBHHII", side, side, 0, 0, 1, 32, len(data), offset)
+        offset += len(data)
+    return out + b"".join(images)
+
+
+def write_icon_file(folder):
+    """Our mark as a file the desktop can show (the right-click menu, "Senden
+    an", desktop entries): .ico on Windows, a 256 px .png elsewhere. Written
+    only when missing or different; returns its path."""
+    windows = os.name == "nt"
+    path = os.path.join(folder, "espdrop.ico" if windows else "espdrop.png")
+    data = ico_bytes() if windows else _png_bytes(256)
+    try:
+        with open(path, "rb") as f:
+            if f.read() == data:
+                return path
+    except OSError:
+        pass
+    os.makedirs(folder, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+    return path
 
 
 # ---- devices ---------------------------------------------------------------------
@@ -909,6 +1013,7 @@ def button(text, kind=None):
 
 def tool_button(glyph, tip):
     b = QToolButton()
+    b.setProperty("glyph", glyph)              # refresh() redraws it in a new theme
     b.setIcon(glyph_icon(glyph, T["secondary"], 18))
     b.setIconSize(QSize(18, 18))
     b.setToolTip(tip)

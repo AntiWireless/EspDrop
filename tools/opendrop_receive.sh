@@ -6,9 +6,9 @@
 #   tools/opendrop_receive.sh                 # files land in ~/Downloads/airdrop
 #   tools/opendrop_receive.sh -n MyPC -d /tmp/in
 #
-# On the iPhone: AirDrop "Everyone for 10 Minutes", unlock, open the share sheet
-# and keep it open, pick the receiver name. Every transfer is accepted
-# automatically while this runs (anyone in range can send you files).
+# On the iPhone: share the file over AirDrop and pick the receiver name. Every
+# transfer is accepted automatically while this runs (anyone in range can send
+# you files).
 #
 # The script waits until awdl0 has a usable link-local address (OpenDrop binds
 # its mDNS socket once at startup and never retries), and restarts OpenDrop when

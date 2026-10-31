@@ -30,6 +30,7 @@ except ImportError:
     winreg = None
 
 APP = "EspDrop"
+ICON = None              # our icon file, .ico on Windows (gui.py writes it at start)
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 MENU_KEY = r"Software\Classes\*\shell\EspDrop"
 SENDTO_NAME = "EspDrop (AirDrop).lnk"
@@ -49,6 +50,15 @@ def launch_command(*args):
             exe = w
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     return [exe, os.path.join(root, "tools", "espdrop.py"), "gui", *args]
+
+
+def data_dir():
+    """Per-user folder for files the desktop needs from us (the icon)."""
+    if IS_WINDOWS:
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
+        return os.path.join(base, APP)
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(base, "espdrop")
 
 
 def supported():
@@ -86,7 +96,7 @@ def set_autostart(on):
         _write_desktop(path, {
             "Type": "Application", "Name": APP,
             "Comment": "AirDrop über den ESP32 – empfangsbereit im Hintergrund",
-            "Exec": _exec_line(cmd), "Terminal": "false",
+            "Exec": _exec_line(cmd), "Icon": ICON or "document-send", "Terminal": "false",
             "X-GNOME-Autostart-enabled": "true"})
     elif os.path.exists(path):
         os.remove(path)
@@ -106,8 +116,8 @@ def set_send_menu(on):
         return
     path = _xdg_send()
     if on:
-        _write_desktop(path, {
-            "Type": "Application", "Name": "AirDrop (EspDrop)", "Icon": "document-send",
+        changed = _write_desktop(path, {
+            "Type": "Application", "Name": "AirDrop (EspDrop)", "Icon": ICON or "document-send",
             "Comment": "Dateien per AirDrop an ein iPhone/iPad senden",
             "Exec": _exec_line(launch_command("--send")) + " %F",
             "Terminal": "false", "NoDisplay": "true",
@@ -115,7 +125,11 @@ def set_send_menu(on):
             "MimeType": ";".join(LINUX_MIME) + ";"})
     elif os.path.exists(path):
         os.remove(path)
-    _refresh_desktop_db(os.path.dirname(path))
+        changed = True
+    else:
+        changed = False
+    if changed:
+        _refresh_desktop_db(os.path.dirname(path))
 
 
 LINUX_MIME = ["application/octet-stream", "application/pdf", "application/zip",
@@ -127,23 +141,27 @@ def _set_windows_send(on):
     cmd = launch_command("--send")
     lnk = _sendto_path()
     if on:
+        # The right-click entry first: plain registry values, it works even
+        # where PowerShell below is blocked (the error still reaches the caller).
+        _reg_set(MENU_KEY, "", MENU_TEXT)
+        _reg_set(MENU_KEY, "Icon", ICON or cmd[0])
+        _reg_set(MENU_KEY + r"\command", "", subprocess.list2cmdline(cmd) + ' "%1"')
         # Explorer appends the selected files to the shortcut's arguments.
         # WScript.Shell writes the .lnk; the values go in through the
         # environment, so no quoting of paths inside PowerShell code.
         env = dict(os.environ, ESPDROP_LNK=lnk, ESPDROP_EXE=cmd[0],
                    ESPDROP_ARGS=subprocess.list2cmdline(cmd[1:]),
-                   ESPDROP_DIR=os.path.dirname(cmd[1]) if len(cmd) > 1 else "")
+                   ESPDROP_DIR=os.path.dirname(cmd[1]) if len(cmd) > 1 else "",
+                   ESPDROP_ICON=ICON or "")
         script = ("$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:ESPDROP_LNK);"
                   "$s.TargetPath = $env:ESPDROP_EXE; $s.Arguments = $env:ESPDROP_ARGS;"
                   "$s.WorkingDirectory = $env:ESPDROP_DIR;"
+                  "if ($env:ESPDROP_ICON) { $s.IconLocation = $env:ESPDROP_ICON + ',0' };"
                   "$s.Description = 'Per AirDrop senden (EspDrop)'; $s.Save()")
         os.makedirs(os.path.dirname(lnk), exist_ok=True)
         subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
                        env=env, check=True, capture_output=True,
                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        _reg_set(MENU_KEY, "", MENU_TEXT)
-        _reg_set(MENU_KEY, "Icon", cmd[0])
-        _reg_set(MENU_KEY + r"\command", "", subprocess.list2cmdline(cmd) + ' "%1"')
     else:
         if os.path.exists(lnk):
             os.remove(lnk)
@@ -153,6 +171,42 @@ def _set_windows_send(on):
 def _sendto_path():
     appdata = os.environ.get("APPDATA") or os.path.expanduser(r"~\AppData\Roaming")
     return os.path.join(appdata, "Microsoft", "Windows", "SendTo", SENDTO_NAME)
+
+
+def refresh():
+    """Keep enabled entries pointing at the app as it runs now: a checkout or
+    venv that moved, a new icon. Rewrites only what differs (on Windows the
+    "Senden an" shortcut costs a PowerShell start)."""
+    cmd = launch_command("--background")
+    if autostart_enabled():
+        if IS_WINDOWS:
+            if _reg_get(RUN_KEY, APP) != subprocess.list2cmdline(cmd):
+                set_autostart(True)
+        else:
+            set_autostart(True)
+    if send_menu_enabled():
+        if IS_WINDOWS:
+            want = subprocess.list2cmdline(launch_command("--send")) + ' "%1"'
+            if (_reg_get(MENU_KEY + r"\command", "") != want
+                    or _reg_get(MENU_KEY, "Icon") != (ICON or launch_command()[0])
+                    or not os.path.isfile(_sendto_path())):
+                set_send_menu(True)
+        else:
+            set_send_menu(True)
+
+
+def apply_defaults():
+    """First start: autostart and the file manager entry are on by default
+    (the user can switch them off; this runs only once). Returns what failed."""
+    errors = []
+    caps = supported()
+    for ok, fn in ((caps["autostart"], set_autostart), (caps["send"], set_send_menu)):
+        if ok:
+            try:
+                fn(True)
+            except Exception as e:             # noqa: BLE001 - reported, not fatal
+                errors.append(f"{fn.__name__}: {e}")
+    return errors
 
 
 # ---- registry (HKCU only) ------------------------------------------------------
@@ -221,13 +275,20 @@ def _exec_line(argv):
 
 
 def _write_desktop(path, fields):
+    """Write a desktop entry; False when it already had this content."""
+    text = "[Desktop Entry]\n" + "".join(f"{k}={v}\n" for k, v in fields.items())
+    try:
+        with open(path, encoding="utf-8") as f:
+            if f.read() == text:
+                return False
+    except OSError:
+        pass
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        f.write("[Desktop Entry]\n")
-        for k, v in fields.items():
-            f.write(f"{k}={v}\n")
+        f.write(text)
     os.replace(tmp, path)
+    return True
 
 
 def _refresh_desktop_db(directory):

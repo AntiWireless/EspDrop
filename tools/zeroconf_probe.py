@@ -15,7 +15,7 @@
 # can take unicast answers meant for this one.
 #
 # Run it with the venv's python while the bridge is up and the target is ready
-# (AirDrop Everyone, unlocked, share sheet OPEN, tools/airdrop_wake.py running):
+# (AirDrop Everyone, unlocked, tools/airdrop_wake.py running):
 #
 #   ~/opendrop-venv/bin/python tools/zeroconf_probe.py
 #   ~/opendrop-venv/bin/python tools/zeroconf_probe.py -t 60 -i awdl0
@@ -351,8 +351,8 @@ def main() -> int:
             print("no AirDrop answer arrived: the device did not answer this run.\n"
                   f"  zeroconf did receive from {len(heard)} other host(s), so reception works.\n"
                   "  Check the device: AirDrop 'Everyone for 10 Minutes' falls back to\n"
-                  "  Contacts Only after 10 minutes (select it again), unlocked, share sheet\n"
-                  "  open, and the BLE wake running.")
+                  "  Contacts Only after 10 minutes (select it again), unlocked, and the\n"
+                  "  BLE wake running.")
 
     # zeroconf.close() can hang on this link (see opendrop find); do not wait for it.
     threading.Thread(target=lambda: (browser.cancel(), zc.close()), daemon=True).start()

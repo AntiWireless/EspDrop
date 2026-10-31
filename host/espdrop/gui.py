@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 
+import shiboken6
 from PySide6.QtCore import QObject, QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -46,6 +47,9 @@ APP = "EspDrop"
 # Who may send to us, as AirDrop on the iPhone puts it: label, seconds (0: off,
 # None: until switched off).
 VISIBILITY = [("Aus", 0), ("10 Minuten", 600), ("Für alle", None)]
+
+THEMES = [("Automatisch", "auto"), ("Hell", "light"), ("Dunkel", "dark")]
+THEME_KEYS = [key for _, key in THEMES]
 
 SEND_STATES = {"new": "Warten …", "asking": "Warten auf Annahme …", "uploading": "Senden …",
                "done": "Gesendet", "declined": "Abgelehnt", "failed": "Fehlgeschlagen",
@@ -128,12 +132,17 @@ def send_to_running(message, name=None, timeout_ms=1000):
 
 
 class InstanceServer(QObject):
-    """The running copy's end: each later start sends one JSON line."""
+    """The running copy's end: each later start sends one JSON line.
+
+    The sockets of finished starts are deleted here, explicitly, at the next
+    start and in close(), never with deleteLater: a deferred delete still
+    queued when the server goes (quit) deletes the socket a second time."""
     message = Signal(object)
 
     def __init__(self, name=None):
         super().__init__()
         self.name = name or instance_name()
+        self._conns = []                       # [socket, bytes so far] per later start
         self.server = QLocalServer(self)
         self.server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
         if not self.server.listen(self.name):
@@ -144,28 +153,44 @@ class InstanceServer(QObject):
         self.server.newConnection.connect(self._accept)
 
     def _accept(self):
+        self._prune()
         while self.server.hasPendingConnections():
             sock = self.server.nextPendingConnection()
-            buf = bytearray()
+            self._conns.append([sock, bytearray()])
+            sock.readyRead.connect(self._read)  # a method: no closure per socket
+        self._read()                           # what came in before the connect
 
-            def read(sock=sock, buf=buf):
-                buf.extend(bytes(sock.readAll()))
-                if b"\n" not in buf:
-                    return
-                line = bytes(buf).split(b"\n", 1)[0]
-                buf.clear()
+    def _read(self):
+        for sock, buf in list(self._conns):    # a handler may start a nested loop
+            if not shiboken6.isValid(sock):
+                continue
+            buf.extend(bytes(sock.readAll()))
+            while b"\n" in buf:
+                line, _, rest = bytes(buf).partition(b"\n")
+                buf[:] = rest
                 try:
                     msg = json.loads(line.decode("utf-8"))
                 except ValueError:
-                    return
+                    continue
                 if isinstance(msg, dict):
                     self.message.emit(msg)
-            sock.readyRead.connect(read)
-            sock.disconnected.connect(sock.deleteLater)
-            read()
+
+    def _prune(self, everything=False):
+        keep = []
+        for conn in self._conns:
+            sock = conn[0]
+            if not shiboken6.isValid(sock):
+                continue
+            if everything or sock.state() == QLocalSocket.LocalSocketState.UnconnectedState:
+                shiboken6.delete(sock)
+            else:
+                keep.append(conn)
+        self._conns = keep
 
     def close(self):
         self.server.close()
+        self._read()
+        self._prune(everything=True)
 
 
 class Bridge(QObject):
@@ -418,7 +443,7 @@ class SendDialog(QDialog):
         if not self._browsing and self.transfer_id is None:
             self._browsing = True
             self.status.setText("Suche nach Geräten in der Nähe …\nAm iPhone oder iPad: "
-                                "AirDrop „Für alle“, entsperrt, Teilen-Menü offen.")
+                                "AirDrop „Für alle“, entsperrt.")
             run_bg(self.w.session.browse, 60, on_error=self.w._log)
         self._update_view()
 
@@ -496,6 +521,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         ui.ensure(QApplication.instance())
         self.settings = settings or QSettings(APP, APP)
+        ui.set_mode(QApplication.instance(), self._theme_key())
         self.setWindowTitle(APP)
         self.setWindowIcon(ui.app_icon())
         self.resize(560, 800)
@@ -621,6 +647,13 @@ class MainWindow(QMainWindow):
         fh.addWidget(change)
         fh.addWidget(show)
         card.add(folder, margins=(16, 9, 12, 9))
+        self.clipboard_switch = ui.Switch()
+        self.clipboard_switch.set_quiet(self.settings.value("clipboard", False, type=bool))
+        self.clipboard_switch.toggled.connect(
+            lambda on: self.settings.setValue("clipboard", bool(on)))
+        card.add_row("In die Zwischenablage kopieren", self.clipboard_switch,
+                     "Empfangenes zusätzlich zum Einfügen bereithalten: Bilder, Dateien "
+                     "und Links.")
         col.addWidget(card)
 
         # devices nearby
@@ -635,8 +668,8 @@ class MainWindow(QMainWindow):
         self.radar = ui.Radar()
         self.radar_text = ui.label("Suche nach Geräten in der Nähe …", "secondary", center=True)
         self.devices_note = ui.label("„Suchen“ findet AirDrop-Geräte in der Nähe. Am iPhone "
-                                     "oder iPad: AirDrop „Für alle“, entsperrt, Teilen-Menü "
-                                     "offen.", "secondary", wrap=True, center=True)
+                                     "oder iPad: AirDrop „Für alle“, entsperrt.",
+                                     "secondary", wrap=True, center=True)
         self.devices_note.setContentsMargins(12, 10, 12, 10)
         self.devices = ui.DeviceGrid()
         self.devices.clicked.connect(self._tile_clicked)
@@ -659,22 +692,25 @@ class MainWindow(QMainWindow):
         # general
         caps = integration.supported()
         self.autostart_switch = self.send_menu_switch = None
-        if caps["autostart"] or caps["send"]:
-            col.addWidget(ui.section("Allgemein"))
-            gcard = ui.Card()
-            if caps["autostart"]:
-                s = self.autostart_switch = ui.Switch()
-                s.set_quiet(_safe(integration.autostart_enabled, False))
-                s.toggled.connect(lambda on, s=s: self._integrate(integration.set_autostart, on, s))
-                gcard.add_row("Beim Anmelden im Hintergrund starten", s,
-                              "Unsichtbar im Infobereich und für alle sichtbar; nur eingehende "
-                              "Dateien melden sich.")
-            if caps["send"]:
-                s = self.send_menu_switch = ui.Switch()
-                s.set_quiet(_safe(integration.send_menu_enabled, False))
-                s.toggled.connect(lambda on, s=s: self._integrate(integration.set_send_menu, on, s))
-                gcard.add_row(caps["send"], s, caps.get("send_hint"))
-            col.addWidget(gcard)
+        col.addWidget(ui.section("Allgemein"))
+        gcard = ui.Card()
+        self.theme = ui.Segmented([lbl for lbl, _ in THEMES])
+        self.theme.set_index(THEME_KEYS.index(self._theme_key()), animate=False)
+        self.theme.changed.connect(self._theme_picked)
+        gcard.add_row("Erscheinungsbild", self.theme)
+        if caps["autostart"]:
+            s = self.autostart_switch = ui.Switch()
+            s.set_quiet(_safe(integration.autostart_enabled, False))
+            s.toggled.connect(lambda on, s=s: self._integrate(integration.set_autostart, on, s))
+            gcard.add_row("Beim Anmelden im Hintergrund starten", s,
+                          "Unsichtbar im Infobereich und für alle sichtbar; nur eingehende "
+                          "Dateien melden sich.")
+        if caps["send"]:
+            s = self.send_menu_switch = ui.Switch()
+            s.set_quiet(_safe(integration.send_menu_enabled, False))
+            s.toggled.connect(lambda on, s=s: self._integrate(integration.set_send_menu, on, s))
+            gcard.add_row(caps["send"], s, caps.get("send_hint"))
+        col.addWidget(gcard)
 
         # the log, off unless asked for
         self.log = QPlainTextEdit()
@@ -905,6 +941,41 @@ class MainWindow(QMainWindow):
         if self.receive_left.text() != text:
             self.receive_left.setText(text)
 
+    # ---- appearance and the clipboard ------------------------------------------
+
+    def _theme_key(self):
+        key = self.settings.value("theme", "auto")
+        return key if key in THEME_KEYS else "auto"
+
+    def _theme_picked(self, index):
+        key = THEME_KEYS[index]
+        self.settings.setValue("theme", key)
+        ui.set_mode(QApplication.instance(), key)
+
+    def _to_clipboard(self, files=(), urls=()):
+        """Put what arrived on the clipboard, if the user wants that: files as
+        files (paste in Explorer or a file manager), a single picture also as
+        an image (paste in a chat or a document), links as text."""
+        if not self.clipboard_switch.isChecked() or not (files or urls):
+            return False
+        from PySide6.QtCore import QMimeData
+        from PySide6.QtGui import QImage
+        mime = QMimeData()
+        if files:
+            qurls = [QUrl.fromLocalFile(f) for f in files]
+            mime.setUrls(qurls)
+            # GNOME's file manager pastes files only from its own format.
+            mime.setData("x-special/gnome-copied-files",
+                         ("copy\n" + "\n".join(u.toString() for u in qurls)).encode("utf-8"))
+            if len(files) == 1 and _kind(files[0]) == "photo":
+                img = QImage(files[0])
+                if not img.isNull():
+                    mime.setImageData(img)
+        else:
+            mime.setText("\n".join(urls))
+        QApplication.clipboard().setMimeData(mime)
+        return True
+
     # ---- receiving -------------------------------------------------------------
 
     def _visibility_picked(self, index):
@@ -947,6 +1018,10 @@ class MainWindow(QMainWindow):
             if not info.get("accepted"):
                 self._log(f"abgelehnt: {ask.summary() if ask else '?'}")
                 return
+            if ask and ask.urls and not ask.files:    # a link: no upload follows
+                copied = self._to_clipboard(urls=ask.urls)
+                self._notify(f"Link von {ask.sender}" + (" – in der Zwischenablage"
+                                                         if copied else ""))
             self._recv_n += 1
             row = ui.TransferRow("receive", ", ".join(ask.files or ask.urls) if ask else "?",
                                  ask.sender if ask else "?")
@@ -971,7 +1046,10 @@ class MainWindow(QMainWindow):
                 row.set_title(names)
                 row.set_state(f"Empfangen · {human(info.get('size', 0))}", files=files,
                               tone="done")
-                self._notify(f"Empfangen: {names} – klicken zum Öffnen", files)
+                copied = self._to_clipboard(files=files)
+                self._notify(f"Empfangen: {names}" + (" – in der Zwischenablage"
+                                                      if copied else " – klicken zum Öffnen"),
+                             files)
             else:
                 row.set_state("Unvollständig",
                               files=files + ([info["raw"]] if info.get("raw") else []),
@@ -1088,16 +1166,48 @@ def power_text(reply):
 
 
 def default_download_dir():
+    """The user's Downloads folder itself (Windows' known folder, XDG on Linux)."""
+    from PySide6.QtCore import QStandardPaths
+    d = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
+    if d:
+        return os.path.normpath(d)
     home = os.path.expanduser("~")
     downloads = os.path.join(home, "Downloads")
-    return os.path.join(downloads if os.path.isdir(downloads) else home, "EspDrop")
+    return downloads if os.path.isdir(downloads) else home
+
+
+def _set_app_id():
+    """Windows groups windows by app id; without our own the taskbar shows them
+    as pythonw.exe with Python's icon instead of ours."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EspDrop.EspDrop")
+        except Exception:                      # noqa: BLE001 - cosmetic only
+            pass
+
+
+def _desktop_setup(settings):
+    """Icon file for the desktop, then autostart and the file manager entry:
+    on by default at the very first start, kept pointing at this app after."""
+    try:
+        integration.ICON = ui.write_icon_file(integration.data_dir())
+    except OSError:
+        integration.ICON = None
+    if not settings.value("defaults_applied", False, type=bool):
+        integration.apply_defaults()           # synchronous: the switches show the result
+        settings.setValue("defaults_applied", True)
+    else:
+        run_bg(integration.refresh)
 
 
 def main(port=None, background=False, send=None):
     """send: None (normal start) or the files of --send (may be empty)."""
+    _set_app_id()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP)
     app.setQuitOnLastWindowClosed(False)
+    app.setWindowIcon(ui.app_icon())
     ui.apply(app)
     files = [os.path.abspath(f) for f in (send or [])]
     # Already running (autostart, an earlier start)? Hand over and leave.
@@ -1105,7 +1215,9 @@ def main(port=None, background=False, send=None):
                         "show": send is None and not background}):
         return 0
     server = InstanceServer()
-    w = MainWindow(port=port, background=background)
+    settings = QSettings(APP, APP)
+    _desktop_setup(settings)
+    w = MainWindow(port=port, settings=settings, background=background)
     server.message.connect(w.handle_message)
     if send is not None:
         w.open_send_dialog(files)

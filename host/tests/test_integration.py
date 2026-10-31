@@ -122,6 +122,17 @@ class LinuxTest(unittest.TestCase):
         integration.set_send_menu(False)
         self.assertFalse(integration.send_menu_enabled())
 
+    def test_defaults_and_icon(self):
+        # First start: both on; the entries carry our icon file.
+        with mock.patch.object(integration, "ICON", "/x/espdrop.png"):
+            self.assertEqual(integration.apply_defaults(), [])
+            self.assertTrue(integration.autostart_enabled())
+            self.assertTrue(integration.send_menu_enabled())
+            entry = self.read(os.path.join(self.tmp.name, "data", "applications",
+                                           "espdrop-send.desktop"))
+            self.assertEqual(entry["Icon"], "/x/espdrop.png")
+        self.assertEqual(integration.data_dir(), os.path.join(self.tmp.name, "data", "espdrop"))
+
     def test_exec_quoting(self):
         line = integration._exec_line(["/opt/my venv/bin/python", "/x/50%.py", "gui"])
         self.assertEqual(line, '"/opt/my venv/bin/python" /x/50%%.py gui')
@@ -157,6 +168,37 @@ class WindowsTest(unittest.TestCase):
         integration.set_autostart(False)
         self.assertNotIn("EspDrop", self.reg.keys[integration.RUN_KEY])
         self.assertFalse(integration.autostart_enabled())
+
+    def test_icon_and_refresh(self):
+        ico = os.path.join(self.tmp.name, "EspDrop", "espdrop.ico")
+        with mock.patch.object(integration, "ICON", ico):
+            integration.set_send_menu(True)
+            (argv, kw), = self.runs
+            self.assertEqual(kw["env"]["ESPDROP_ICON"], ico)
+            self.assertIn("IconLocation", argv[-1])
+            self.assertEqual(self.reg.keys[integration.MENU_KEY]["Icon"], ico)
+            integration.set_autostart(True)
+            # Nothing changed (and the shortcut exists): refresh leaves it alone.
+            os.makedirs(os.path.dirname(integration._sendto_path()), exist_ok=True)
+            open(integration._sendto_path(), "wb").close()
+            integration.refresh()
+            self.assertEqual(len(self.runs), 1)
+        # A new icon (or a moved checkout): refresh rewrites the entries.
+        with mock.patch.object(integration, "ICON", ico + "2"):
+            integration.refresh()
+            self.assertEqual(len(self.runs), 2)
+            self.assertEqual(self.reg.keys[integration.MENU_KEY]["Icon"], ico + "2")
+
+    def test_context_menu_without_powershell(self):
+        # PowerShell blocked (policy): the right-click entry is there anyway,
+        # the error still reaches the caller.
+        def fail(argv, **kw):
+            raise subprocess.CalledProcessError(1, argv)
+        with mock.patch.object(integration.subprocess, "run", fail):
+            self.assertEqual(len(integration.apply_defaults()), 1)
+        self.assertEqual(self.reg.keys[integration.MENU_KEY][""], "Mit EspDrop senden")
+        self.assertTrue(integration.send_menu_enabled())
+        self.assertTrue(integration.autostart_enabled())
 
     def test_send_to_and_context_menu(self):
         integration.set_send_menu(True)

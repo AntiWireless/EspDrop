@@ -6,6 +6,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026  EspDrop contributors
 
+import gc
 import ipaddress
 import os
 import sys
@@ -134,9 +135,10 @@ class GuiTest(unittest.TestCase):
             rx.stop()
         self.assertIn("foto.jpg", os.listdir(pad))
 
-    def answer_incoming(self, accept):
+    def answer_incoming(self, accept, clipboard=False):
         fake = DuplexBridgeDevice()
         w = self.window(fake)
+        w.clipboard_switch.setChecked(clipboard)
         w.visibility.select(1)                 # "10 Minuten", as a click
         self.assertTrue(self.pump(lambda: fake.listening == 8771))
         self.assertTrue(w.session.receiving)
@@ -166,7 +168,7 @@ class GuiTest(unittest.TestCase):
     def test_declined_in_the_dialog(self):
         w, ok = self.answer_incoming(False)
         self.assertFalse(ok)
-        self.assertEqual(os.listdir(self.dl), [])
+        self.assertEqual([f for f in os.listdir(self.dl) if not f.startswith(".")], [])
         self.assertEqual(w.transfers.count(), 0)
         self.assertTrue(w.transfers.placeholder.isVisibleTo(w))
 
@@ -242,8 +244,18 @@ class GuiTest(unittest.TestCase):
             self.assertTrue(self.gui.send_to_running(msg, name=name))
             self.assertTrue(self.pump(lambda: got, 5))
             self.assertEqual(got, [msg])
+            for i in range(5):                 # several starts in a row
+                self.assertTrue(self.gui.send_to_running({"show": True, "n": i}, name=name))
+            self.assertTrue(self.pump(lambda: len(got) == 6, 5), got)
+            self.assertEqual([m.get("n") for m in got[1:]], list(range(5)))
         finally:
             server.close()
+        self.assertEqual(server._conns, [])
+        # Gone with sockets of finished starts around: no second delete later
+        # (a deferred one used to crash the next event loop pass).
+        del server
+        gc.collect()
+        self.pump(lambda: False, 0.3)
 
     def test_what_text(self):
         w = self.gui.what_text
@@ -278,6 +290,68 @@ class GuiTest(unittest.TestCase):
             ui.T.update(ui.DARK if dark else ui.LIGHT)
             self.assertIn(ui.T["accent"], ui.qss())
         ui.refresh(self.app)
+
+    def test_theme_switch(self):
+        from espdrop import ui
+        w = self.window(DuplexBridgeDevice())
+        self.assertEqual(w.theme.index(), 0)                   # Automatisch
+        w.theme.select(2)                                      # Dunkel
+        self.assertEqual((ui.T["window"], self.settings.value("theme")),
+                         (ui.DARK["window"], "dark"))
+        w.theme.select(1)                                      # Hell
+        self.assertEqual(ui.T["window"], ui.LIGHT["window"])
+        w.theme.select(0)
+        self.assertEqual(self.settings.value("theme"), "auto")
+
+    def test_received_files_on_the_clipboard(self):
+        # The offscreen platform keeps the clipboard in a C++ static that is
+        # freed after Python is gone (a crash at exit); real platforms free it
+        # with the QApplication. Empty it while Python still runs.
+        self.addCleanup(self.app.clipboard().clear)
+        w, ok = self.answer_incoming(True, clipboard=True)
+        self.assertTrue(ok)
+        self.assertTrue(self.pump(lambda: self.app.clipboard().mimeData().hasUrls()))
+        mime = self.app.clipboard().mimeData()
+        self.assertEqual([os.path.basename(u.toLocalFile()) for u in mime.urls()], ["bild.jpg"])
+        self.assertIn(b"copy\nfile://", bytes(mime.data("x-special/gnome-copied-files")))
+
+    def test_icon_files_and_downloads(self):
+        from espdrop import ui
+        import struct
+        data = ui.ico_bytes()
+        reserved, kind, count = struct.unpack_from("<HHH", data)
+        self.assertEqual((reserved, kind, count), (0, 1, len(ui.ICO_SIZES)))
+        side = struct.unpack_from("<B", data, 6 + 16 * (count - 1))[0]
+        self.assertEqual(side, 0)                              # the 256 px entry
+        # Qt's own ICO reader decodes every entry: the classic bitmaps (up to
+        # 128 px) and the PNG one, see-through corners, an opaque middle.
+        from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+        from PySide6.QtGui import QImageReader
+        if b"ico" in [bytes(f) for f in QImageReader.supportedImageFormats()]:
+            buf = QBuffer()
+            buf.setData(QByteArray(data))
+            buf.open(QIODevice.OpenModeFlag.ReadOnly)
+            reader = QImageReader(buf, b"ico")
+            self.assertEqual(reader.imageCount(), count)
+            for i, px in enumerate(ui.ICO_SIZES):
+                self.assertTrue(reader.jumpToImage(i), i)
+                img = reader.read()
+                self.assertEqual((img.width(), img.height()), (px, px), reader.errorString())
+                self.assertEqual(img.pixelColor(0, 0).alpha(), 0, px)
+                self.assertEqual(img.pixelColor(px // 2, px // 2).alpha(), 255, px)
+                src = ui._icon_image(px)               # colour order and row direction
+                for x, y in ((px // 2, px // 5), (px // 2, px - 1 - px // 5), (px // 3, px // 2)):
+                    self.assertEqual(img.pixelColor(x, y).rgba(), src.pixelColor(x, y).rgba(),
+                                     (px, x, y))
+        path = ui.write_icon_file(self.tmp.name)
+        self.assertTrue(os.path.getsize(path) > 1000)
+        before = os.path.getmtime(path)
+        time.sleep(0.01)
+        self.assertEqual(ui.write_icon_file(self.tmp.name), path)
+        self.assertEqual(os.path.getmtime(path), before)       # unchanged: not rewritten
+        d = self.gui.default_download_dir()
+        self.assertTrue(os.path.isabs(d))
+        self.assertNotIn("EspDrop", d)                         # Downloads itself, no subfolder
 
     def test_power_text(self):
         t = self.gui.power_text

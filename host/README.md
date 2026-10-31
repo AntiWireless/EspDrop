@@ -31,14 +31,20 @@ Only one program can own the serial port: stop `tools/awdl_bridge.py` first.
 `espdrop gui` (Windows: `.\tools\espdrop-gui.cmd`, no console window) opens
 one window that owns the ESP for as long as it runs. It is drawn in the look of
 Apple's own apps (`espdrop/ui.py`: rounded cards, switches, segmented
-controls, round device avatars; light and dark follow the system), with no
-image or font files: text uses the system face (Segoe UI Variable on Windows
-11, Inter or the desktop font on Linux).
+controls, round device avatars), with no image or font files: text uses the
+system face (Segoe UI Variable on Windows 11, Inter or the desktop font on
+Linux), the icon is drawn in code.
 
 - **AirDrop:** "Empfangen von: Aus / 10 Minuten / Für alle", as on the iPhone;
-  the name others see; where received files go (default `Downloads/EspDrop`).
-  Every incoming transfer asks first, in a floating card (picture, sender,
-  files; Ablehnen / Annehmen; no answer in 60 s = declined).
+  the name others see; where received files go (default: the Downloads folder
+  itself). Every incoming transfer asks first, in a floating card (picture,
+  sender, files; Ablehnen / Annehmen; no answer in 60 s = declined). Nothing
+  gets overwritten: OpenDrop unpacks into a hidden folder
+  (`Downloads/.espdrop-incoming`), and each file then moves next to the others
+  under a free name (`IMG_1.JPG`, `IMG_1 (1).JPG`). "In die Zwischenablage
+  kopieren" (off by default) also puts what arrived on the clipboard: files to
+  paste in Explorer or the file manager, a single photo also as a picture, a
+  link as text.
 - **Geräte in der Nähe:** "Suchen" (60 s, with the ESP's Bluetooth wake) shows
   the devices as avatars with their names; drop files on one or click it. A
   ring around the avatar shows the wait for Accept and the progress.
@@ -47,15 +53,25 @@ image or font files: text uses the system face (Segoe UI Variable on Windows
   with the sleep mode, docs/SPIKES.md); the line under the title says which.
 - Closing the window keeps it in the tray; "Beenden" (the "…" button or the
   tray) ends it. Unplugging the ESP is fine: it reconnects when it comes back.
+- **Allgemein → "Erscheinungsbild": Automatisch / Hell / Dunkel.** Automatisch
+  follows the system; the choice also sets the title bar on Windows (Qt 6.8+).
 - **Allgemein → "Beim Anmelden im Hintergrund starten"** (Windows:
-  `HKCU\…\CurrentVersion\Run`; Linux: `~/.config/autostart`). It then starts
-  as `espdrop gui --background`: tray only, visible to everyone until switched
-  off, and only an incoming transfer brings up its card; a notification says
-  when files arrived (click: open them).
-- **Allgemein → "Im Rechtsklickmenü des Explorers anbieten"** adds "Senden an →
-  EspDrop (AirDrop)" and "Mit EspDrop senden" (on Windows 11 under "Weitere
-  Optionen anzeigen"); on Linux "Öffnen mit → AirDrop (EspDrop)". Either opens
-  the AirDrop sheet: the devices a search finds, one click sends.
+  `HKCU\…\CurrentVersion\Run`; Linux: `~/.config/autostart`), on by default.
+  It then starts as `espdrop gui --background`: tray only, visible to everyone
+  until switched off, and only an incoming transfer brings up its card; a
+  notification says when files arrived (click: open them).
+- **Allgemein → "Im Rechtsklickmenü des Explorers anbieten"**, on by default,
+  adds "Mit EspDrop senden" and "Senden an → EspDrop (AirDrop)" (on Windows 11
+  under "Weitere Optionen anzeigen"); on Linux "Öffnen mit → AirDrop
+  (EspDrop)". Either opens the AirDrop sheet: the devices a search finds, one
+  click sends.
+- **Defaults and the icon:** the very first start switches both entries on
+  (once; switched off they stay off). Every start writes the icon to
+  `%LOCALAPPDATA%\EspDrop\espdrop.ico` (Linux:
+  `~/.local/share/espdrop/espdrop.png`) for the menu entries and points them
+  at this copy of the app again, should it have moved. On Windows the app
+  sets its own taskbar identity (AppUserModelID `EspDrop.EspDrop`), so the
+  taskbar shows our icon instead of Python's.
 - **One copy per user:** a second start (autostart, the file manager, the
   launcher) hands its files to the running app over a local socket and exits.
 

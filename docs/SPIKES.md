@@ -205,10 +205,11 @@ Radarerkennung).
 ## Senden an ein iPhone (M3, PC -> iPhone)
 
 Empfangen ist damit fertig. Für die Gegenrichtung muss das iPhone oder iPad als
-Empfänger über AWDL antworten. Das tut es nur, wenn sein AWDL wach ist (offenes
-Teilen-Menü) **und** ein Bluetooth-LE-Signal in der Nähe meldet, dass jemand
-senden will. (Nachgewiesen im Referenzprojekt airdrop-mt7921, FINDINGS §27
-und §37: gleiche Verbindung, gleiches offenes Menü, gefunden nur mit BLE.)
+Empfänger über AWDL antworten. Das tut es nur, solange ein Bluetooth-LE-Signal
+in der Nähe meldet, dass jemand senden will. (Nachgewiesen im Referenzprojekt
+airdrop-mt7921, FINDINGS §27 und §37: gleiche Verbindung, gefunden nur mit BLE;
+dort lief es mit offenem Teilen-Menü. Mit dem Wecksignal des ESP zeigte sich
+später, dass das Menü des Empfängers nicht offen sein muss.)
 
 Das Wecksignal kommt vom Bluetooth des ESP selbst (Bridge-Firmware, Befehl
 `wake`) oder vom Bluetooth des PCs (`tools/airdrop_wake.py`, braucht
@@ -250,7 +251,8 @@ bereit (gehört dem Benutzer, der sie mit `sudo` gestartet hat).
    auf „Nur Kontakte“ zurück, also kurz vor dem Senden neu wählen), entsperrt,
    **Teilen-Menü öffnen und offen lassen** (es hält AWDL wach; bei geschlossenem
    Menü meldet sich das Gerät nie als Empfänger). Bei der Abfrage „Annehmen“
-   tippen.
+   tippen. *Später überholt:* Mit dem BLE-Wecksignal des ESP (M4) muss das
+   Teilen-Menü des Empfängers nicht offen sein.
 
 Mehrere Apple-Geräte in Reichweite: mit `-r "Annas iPhone"` das Ziel am Namen
 wählen. „Nur Kontakte“ statt „Jeder“: Identifikator über
@@ -301,7 +303,7 @@ derselben Adresse senden):
 1. `mode ip`: Antwort `mode ip`.
 2. `ip`: `up fe80::…` (unsere Link-Local, wie bisher auf `awdl0`), Zähler und
    die aus dem Verkehr gelernten Peers (`peers: fe80::…=mac(Alter)`).
-   iPhone/iPad dafür wach halten (Teilen-Menü offen, gegebenenfalls `wake 60`).
+   iPhone/iPad dafür wecken (`wake 60`).
 3. `ping6 <adresse des iPads> 10`: zehn Echo-Requests vom ESP selbst; die
    Antworten erscheinen als `[device] ping6: reply …`, am Ende die Bilanz.
 4. `ip` und `stats` noch einmal: Zähler, `heap=`.
@@ -334,7 +336,7 @@ In der IP-Betriebsart gibt die Firmware die L2-Warteschlange frei (`stats`:
 `rxq=0`, `heap=` entsprechend höher); `awdl_bridge.py` legt sie beim Start
 wieder an.
 
-Test (Bridge beenden, Teilen-Menü am iPhone/iPad offen):
+Test (Bridge beenden, iPhone/iPad auf AirDrop „Für alle“, entsperrt):
 ```sh
 ~/opendrop-venv/bin/python tools/espdrop.py status
 ~/opendrop-venv/bin/python tools/espdrop.py find -t 30
@@ -372,7 +374,8 @@ Verbindungsschicht.
 ```
 `send` startet das BLE-Wecksignal des ESP, sucht den Empfänger, baut die
 Verbindung auf und überträgt; am iPad „Annehmen“ tippen. Bedingungen wie
-immer: AirDrop „Für alle“, entsperrt, Teilen-Menü offen.
+immer: AirDrop „Für alle“, entsperrt. Das Teilen-Menü des Empfängers muss nicht
+offen sein (mit dem BLE-Wecksignal des ESP auf der Hardware bestätigt).
 
 Ergebnis (2026-10-23, C5): Senden an ein iPad erfolgreich über `espdrop send`,
 ohne `awdl0`/root/Firewall. `ip` danach: `tcp: opened=1 to_host=1137
@@ -456,7 +459,7 @@ Checkout oder ZIP):
    .\tools\espdrop.cmd receive -n MeinPC
    ```
    Bedingungen am iPad wie gewohnt (AirDrop „Für alle“, entsperrt,
-   Teilen-Menü offen). Empfangene Dateien landen im aktuellen Ordner.
+   ohne offenes Teilen-Menü). Empfangene Dateien landen im aktuellen Ordner.
 3. Zusätzlich einmal eine Datei mit Umlaut im Namen senden und empfangen
    (z. B. `Prüfung.txt`): ob libarchive unter Windows Nicht-ASCII-Namen richtig
    umsetzt, ist noch offen.
@@ -573,26 +576,26 @@ ergänzt `python3 tools/opendrop_install.py` (nur was fehlt) oder
 
 Test auf der Hardware (Firmware mit Schlafmodus geflasht):
 1. App starten: unter dem Titel „ESP verbunden · Funk aus (spart Strom)“.
-2. „Suchen“, am iPad Teilen-Menü öffnen: das iPad erscheint als rundes Bild mit
-   Namen.
+2. „Suchen“ (iPad auf AirDrop „Für alle“, entsperrt): das iPad erscheint als
+   rundes Bild mit Namen.
    Eine Datei darauf ziehen, am iPad annehmen: der Ring um das Bild zeigt das
    Warten und den Fortschritt, danach „Gesendet“.
 3. „Empfangen von: 10 Minuten“: unter dem Titel „Funk schläft (empfangsbereit)“ (der
    ESP lauscht per Bluetooth). Am iPad etwas teilen: der ESP wacht von selbst
    auf, „MeinPC“ erscheint am iPad, wählen; die Annehmen-Karte fragt, „Annehmen“, die
-   Datei liegt in `Downloads/EspDrop`. Einmal „Ablehnen“: das iPad meldet die
+   Datei liegt direkt in `Downloads`. Einmal „Ablehnen“: das iPad meldet die
    Ablehnung.
 4. Fenster schließen (läuft im Tray weiter), ESP ab- und anstecken: die App
    verbindet sich wieder.
 5. Nach dem Ende des Empfangsfensters und ohne Suche: „Funk aus“, der ESP
    bleibt kühl.
-6. Allgemein → „Beim Anmelden im Hintergrund starten“, abmelden und wieder
-   anmelden: kein Fenster, nur das Tray-Symbol; die App ist dauerhaft
+6. Allgemein → „Beim Anmelden im Hintergrund starten“ (ab dem ersten Start
+   an), abmelden und wieder anmelden: kein Fenster, nur das Tray-Symbol; die App ist dauerhaft
    empfangsbereit (bei Firmware mit `power listen` schläft der Funk dabei).
    Vom iPad etwas senden: nur die Annehmen-Karte erscheint, danach eine
    Benachrichtigung „Empfangen: …“ (Klick öffnet die Datei).
-7. Allgemein → „Im Rechtsklickmenü des Explorers anbieten“. Im Explorer
-   Dateien markieren, Rechtsklick → „Senden an“ → „EspDrop (AirDrop)“
+7. Allgemein → „Im Rechtsklickmenü des Explorers anbieten“ (ab dem ersten
+   Start an). Im Explorer Dateien markieren, Rechtsklick → „Senden an“ → „EspDrop (AirDrop)“
    (Windows 11: erst „Weitere Optionen anzeigen“) oder „Mit EspDrop senden“:
    das AirDrop-Blatt öffnet sich, das iPad erscheint, anklicken, am iPad
    annehmen; das Blatt schließt sich nach „Gesendet an …“.
@@ -609,14 +612,52 @@ während der Suche, eine schwebende Karte zum Annehmen und ein AirDrop-Blatt
 zum Senden. Ohne Bild- oder Schriftdateien; die Schrift ist die des Systems
 (Windows 11: Segoe UI Variable).
 
+### Vor dem ersten Release
+
+- Das Teilen-Menü des Empfängers muss beim Senden nicht offen sein (mit dem
+  Wecksignal des ESP bestätigt); alle Hinweise darauf sind entfernt.
+- Autostart und Rechtsklickmenü sind ab dem ersten Start an (einmalig; wer
+  sie ausschaltet, behält sie aus).
+- Empfangene Dateien landen direkt in `Downloads`. OpenDrop entpackt in einen
+  versteckten Ordner `Downloads/.espdrop-incoming` und würde dort gleichnamige
+  Dateien ersetzen; die App verschiebt jede Übertragung danach unter einem
+  freien Namen heraus (`IMG_1.JPG`, `IMG_1 (1).JPG`), es wird nichts
+  überschrieben. Was ein Absturz dort liegen lässt, kommt beim nächsten Start
+  heraus.
+- Symbol: Die App schreibt ihr Symbol bei jedem Start nach
+  `%LOCALAPPDATA%\EspDrop\espdrop.ico` (Linux:
+  `~/.local/share/espdrop/espdrop.png`); Rechtsklickmenü, „Senden an“ und die
+  Linux-Einträge zeigen darauf. In der Taskleiste erscheint es über eine eigene
+  AppUserModelID (`EspDrop.EspDrop`), statt als `pythonw.exe` mit dem
+  Python-Symbol.
+- Allgemein → „Erscheinungsbild: Automatisch / Hell / Dunkel“.
+- AirDrop → „In die Zwischenablage kopieren“ (aus, wenn nicht eingeschaltet):
+  Empfangene Dateien liegen danach auch in der Zwischenablage (im Explorer
+  einfügen), ein einzelnes Foto zusätzlich als Bild (in einen Chat einfügen),
+  ein Link als Text.
+
+Test unter Windows:
+1. Einmal starten: Allgemein zeigt beide Schalter an. Rechtsklick auf eine
+   Datei → „Weitere Optionen anzeigen“: „Mit EspDrop senden“ und „Senden an →
+   EspDrop (AirDrop)“ tragen den blauen Tropfen. Die Taskleiste zeigt ihn
+   ebenso (nicht das Python-Symbol).
+2. Dasselbe Foto zweimal vom iPhone senden: in `Downloads` liegen `IMG_….JPG`
+   und `IMG_… (1).JPG`, keine Datei wurde ersetzt.
+3. „In die Zwischenablage kopieren“ an, ein Foto empfangen: im Explorer
+   Strg+V fügt die Datei ein, in Paint oder einem Chat das Bild.
+4. Erscheinungsbild „Dunkel“ und „Hell“ umschalten: das Fenster wechselt
+   sofort, auch die Titelleiste.
+
 Tests ohne Hardware: `test_session.py` (Suche mit Namen, Senden mit
 Fortschritt und Abbrechen, Empfangen mit Annehmen/Ablehnen/Zeitüberschreitung,
-Empfangsfenster, `power listen` bei scan-fähiger Firmware, Neuverbinden) und
-`test_gui.py` (das Fenster offscreen: suchen und senden, Dialog annehmen und
-ablehnen, Hintergrundbetrieb, AirDrop-Blatt mit Dateien aus zwei Aufrufen,
-nur eine laufende App) und `test_integration.py` (Autostart und
-Dateimanager-Menü: Linux echt in Temp-Ordnern, Windows-Registry und
-„Senden an“ nachgebildet). Zusammen 59 Host-Tests.
+Empfangsfenster, `power listen` bei scan-fähiger Firmware, Neuverbinden,
+nichts überschreiben, Reste aus dem Zwischenordner) und `test_gui.py` (das
+Fenster offscreen: suchen und senden, Dialog annehmen und ablehnen,
+Hintergrundbetrieb, AirDrop-Blatt mit Dateien aus zwei Aufrufen, nur eine
+laufende App, Erscheinungsbild, Zwischenablage, Symboldatei) und
+`test_integration.py` (Autostart und Dateimanager-Menü: Linux echt in
+Temp-Ordnern, Windows-Registry und „Senden an“ nachgebildet, Voreinstellungen,
+Symbol). Zusammen 68 Host-Tests.
 
 ## Danach
 

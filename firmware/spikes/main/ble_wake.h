@@ -2,9 +2,10 @@
  * EspDrop - AirDrop wake over the chip's own Bluetooth LE.
  *
  * To be found as a SENDER's target, an iPhone/iPad must hear a Continuity
- * "AirDrop" advertisement (Apple manufacturer data, type 0x05) while its share
- * sheet is open; only then does it answer for _airdrop._tcp over AWDL
- * (airdrop-mt7921 FINDINGS §27). This sends that advert from the ESP itself,
+ * "AirDrop" advertisement (Apple manufacturer data, type 0x05); only then does
+ * it answer for _airdrop._tcp over AWDL (airdrop-mt7921 FINDINGS §27). Its own
+ * share sheet need not be open (tested with this advert from the ESP: AirDrop
+ * "Everyone" and unlocked is enough). This sends that advert from the ESP itself,
  * the same bytes as tools/airdrop_wake.py sends from the PC's Bluetooth.
  *
  * The advert is always timed: it stops by itself after the requested time, so
