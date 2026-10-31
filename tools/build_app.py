@@ -168,7 +168,9 @@ def third_party(dist):
         if name.lower() in ("nuitka", "pip", "patchelf", "ordered-set", "zstandard", "wheel"):
             continue
         lic = (d.metadata.get("License-Expression") or d.metadata.get("License") or "").strip()
-        if not lic or len(lic) > 80:           # a whole license text: name the classifier
+        if lic.upper() == "UNKNOWN":
+            lic = ""
+        if not lic or len(lic) > 80:           # none, or a whole license text: the classifier
             lic = next((c.split(" :: ")[-1] for c in d.metadata.get_all("Classifier") or []
                         if c.startswith("License ::")), lic.splitlines()[0] if lic else "?")
         rows.append(f"{name} {d.version}: {lic}")
@@ -179,6 +181,15 @@ def third_party(dist):
                 + "\n\nQt (in PySide6) is used under the LGPL-3.0; its libraries are the "
                   "separate files in this folder.\nlibarchive (Linux, libarchive.so.13): "
                   "BSD-2-Clause.\n")
+
+
+CONSOLE_CMD = """@echo off
+rem EspDrop on the command line (espdrop status, espdrop flash, ...).
+rem EspDrop.exe opens no console of its own and writes into this one; this
+rem makes cmd and PowerShell wait for it and pass on its exit code.
+start "" /b /wait "%~dp0EspDrop.exe" %*
+exit /b %errorlevel%
+"""
 
 
 def package(dist, build):
@@ -207,7 +218,7 @@ def smoke(dist):
     c = subprocess.run([exe, "check"], capture_output=True, text=True, timeout=300)
     print(c.stdout, c.stderr, flush=True)
     for need in ("ok   opendrop", "ok   root ca", "ok   libarchive", "ok   esptool",
-                 "ok   pyside6"):
+                 "ok   pyside6", f"ok   program     {os.path.realpath(exe)} "):
         if need not in c.stdout:
             sys.exit(f"smoke: `check` lacks {need!r}")
     # Hidden, no desktop entries for this test copy, beside a running EspDrop.
@@ -258,6 +269,9 @@ def main(argv=None):
         shutil.copy2(lib, os.path.join(dist, "libarchive.so.13"))
         print(f"libarchive: {lib} (a fallback; the system's comes first)")
     shutil.copy2(icons["espdrop.png"], os.path.join(dist, "espdrop.png"))
+    if IS_WINDOWS:
+        with open(os.path.join(dist, "espdrop.cmd"), "w", newline="\r\n") as f:
+            f.write(CONSOLE_CMD)
     third_party(dist)
     if args.smoke:
         step("starting the built program")

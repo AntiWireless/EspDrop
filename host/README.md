@@ -126,7 +126,8 @@ and the ESP firmware into one folder, `build/app/EspDrop/`, packed as
 `build/EspDrop-<version>-windows-x64.zip` or `-linux-x86_64.tar.gz`. The
 program `EspDrop(.exe)` is the whole app: without arguments the window, with
 arguments the command line (`EspDrop find`, `EspDrop flash`, ...; on Windows
-it uses the console it was started from and opens none of its own).
+it uses the console it was started from and opens none of its own, and
+`espdrop.cmd` next to it makes cmd and PowerShell wait for it).
 
 ```sh
 ~/opendrop-venv/bin/pip install nuitka patchelf          # Linux

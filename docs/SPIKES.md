@@ -741,8 +741,9 @@ Test unter Windows:
    „Mit EspDrop senden“ öffnet das AirDrop-Blatt).
 3. Allgemein → „ESP-Firmware“ → „Aktualisieren …“: die Firmware aus dem
    Programm aufspielen (Abschnitt oben), danach senden und empfangen.
-4. In einer Eingabeaufforderung im Ordner: `EspDrop.exe check` und
-   `EspDrop.exe status` geben ihre Ausgabe in diesem Fenster aus.
+4. In einer Eingabeaufforderung im Ordner: `espdrop check` und
+   `espdrop status` (über `espdrop.cmd`, das auf das Programm wartet) geben ihre
+   Ausgabe in diesem Fenster aus.
 
 Test unter Linux:
 1. `tar xzf EspDrop-0.1.0-linux-x86_64.tar.gz`, `EspDrop/EspDrop` starten

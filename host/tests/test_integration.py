@@ -162,21 +162,27 @@ class FrozenTest(unittest.TestCase):
         from espdrop import frozen
         self.assertIsNone(frozen.program())               # from Python
         self.assertFalse(frozen.compiled())
+        apps = os.path.join(os.sep, "home", "u", "Apps")
 
         class Compiled:                                   # Nuitka's __compiled__
+            onefile = False
             containing_dir = os.path.join(os.sep, "opt", "EspDrop")
-            original_argv0 = None
+            original_argv0 = "./EspDrop"                  # as typed, even in a folder build
+            process_exe = os.path.join(os.sep, "opt", "EspDrop", "EspDrop")
         with mock.patch.dict(frozen.__dict__, {"__compiled__": Compiled}), \
                 mock.patch.object(sys, "executable", os.path.join(os.sep, "opt", "EspDrop",
-                                                                  "EspDrop")):
+                                                                  "python")):
             self.assertTrue(frozen.compiled())
+            # The program file itself, not sys.executable (the build Python's name).
             self.assertEqual(frozen.program(), os.path.join(os.sep, "opt", "EspDrop", "EspDrop"))
             # onefile: the binary the user started, not its unpacked copy
-            Compiled.containing_dir = os.path.join(os.sep, "home", "u", "Apps")
+            Compiled.onefile = True
+            Compiled.containing_dir = apps
             Compiled.original_argv0 = "EspDrop-x86_64"
-            self.assertEqual(frozen.program(),
-                             os.path.join(os.sep, "home", "u", "Apps", "EspDrop-x86_64"))
-            self.assertEqual(frozen.program_dir(), os.path.join(os.sep, "home", "u", "Apps"))
+            Compiled.process_exe = os.path.join(os.sep, "tmp", "onefile_1", "EspDrop-x86_64")
+            want = "EspDrop-x86_64.exe" if os.name == "nt" else "EspDrop-x86_64"
+            self.assertEqual(frozen.program(), os.path.join(apps, want))
+            self.assertEqual(frozen.program_dir(), apps)
 
 
 class WindowsTest(unittest.TestCase):

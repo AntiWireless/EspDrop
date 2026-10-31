@@ -343,9 +343,13 @@ def check(out=print):
         problems += ok is False
         out(f"  {tag} {what:<11} {detail}")
 
+    from .frozen import compiled, program
     v = sys.version_info
-    line(v >= (3, 9), "python", f"{platform.python_version()} {platform.architecture()[0]} "
-                                f"({sys.executable})")
+    if compiled():                               # what autostart and the menus start
+        line(True, "program", f"{program()} (Python {platform.python_version()} inside)")
+    else:
+        line(v >= (3, 9), "python", f"{platform.python_version()} {platform.architecture()[0]} "
+                                    f"({sys.executable})")
     try:
         import serial
         from .transport import candidates
