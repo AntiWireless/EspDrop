@@ -44,3 +44,33 @@ def program_dir():
     """The compiled program's folder (bundled libraries sit there), else None."""
     p = program()
     return os.path.dirname(p) if p else None
+
+
+def bundle_dir():
+    """Where the compiled program's own files are (Qt, the bundled
+    libraries): its folder, or for a onefile build the folder it unpacked
+    itself into. None from Python."""
+    if not compiled():
+        return None
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+UNPACK_PARENT = ("EspDrop", "app")   # tools/build_app.py: {CACHE_DIR}/EspDrop/app/<build>
+
+
+def clean_old_unpacked():
+    """A onefile build unpacks once per build into the cache; remove what
+    older builds left there (one that still runs keeps its files: deleting
+    them fails, they go next time)."""
+    import shutil
+    here = bundle_dir()
+    if not here:
+        return
+    parent = os.path.dirname(here)
+    if (os.path.basename(parent), os.path.basename(os.path.dirname(parent))) != \
+            tuple(reversed(UNPACK_PARENT)):
+        return                                 # not our cache folder: leave it alone
+    for name in os.listdir(parent):
+        path = os.path.join(parent, name)
+        if path != here and os.path.isdir(path) and name.startswith("v"):
+            shutil.rmtree(path, ignore_errors=True)

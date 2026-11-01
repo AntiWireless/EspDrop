@@ -3,11 +3,17 @@
 
 Nuitka translates the Python code (ours, the patched OpenDrop and every
 library they use) to C, compiles it, and puts it together with the Python
-runtime, Qt and the ESP's firmware into one folder:
+runtime, Qt and the ESP's firmware into one file:
 
-  build/app/EspDrop.dist/EspDrop(.exe)            the program
-  build/EspDrop-<version>-windows-x64.zip         what a release ships
-  build/EspDrop-<version>-linux-x86_64.tar.gz
+  build/EspDrop-<version>-windows-x64.exe         what a release ships
+  build/EspDrop-<version>-linux-x86_64
+  build/THIRD_PARTY-<platform>.txt                what is inside, with licenses
+
+The single file unpacks itself once per build into the user's cache folder
+(Windows %LOCALAPPDATA%\\EspDrop\\app, Linux ~/.cache/EspDrop/app) and starts
+from there; later starts reuse it, and the app removes older builds' copies.
+--folder makes the folder build instead (build/app/EspDrop.dist/, packed as
+.zip or .tar.gz), which starts without unpacking.
 
 The program is the whole app: started without arguments it is the window,
 with arguments the command line (EspDrop find, EspDrop flash, ...; on Windows
@@ -145,9 +151,11 @@ def system_libarchive():
     sys.exit("error: libarchive.so.13 not found on this machine (apt install libarchive13)")
 
 
-def nuitka_command(args, out, icons, fw):
+def nuitka_command(args, out, icons, fw, extra):
+    """extra: {file: path in the program} besides the code (licenses, ...)."""
     version4 = ".".join((__version__.split(".") + ["0", "0", "0"])[:4])
-    cmd = [sys.executable, "-m", "nuitka", "--mode=standalone",
+    mode = "standalone" if args.folder else "onefile"
+    cmd = [sys.executable, "-m", "nuitka", f"--mode={mode}",
            f"--output-dir={out}", f"--output-folder-name={NAME}", f"--output-filename={NAME}",
            "--enable-plugin=pyside6", "--include-qt-plugins=platforminputcontexts",
            "--noinclude-qt-translations", "--nofollow-import-to=tkinter",
@@ -161,6 +169,13 @@ def nuitka_command(args, out, icons, fw):
     cmd += [f"--include-package-data={p}" for p in DATA_PACKAGES]
     if fw:
         cmd.append(f"--include-data-files={fw}=espdrop/firmware/{flash.FIRMWARE_NAME}")
+    cmd += [f"--include-data-files={src}={dst}" for src, dst in extra.items()]
+    if not args.folder:
+        # Unpacked once per build into the cache, reused at every later start
+        # (frozen.clean_old_unpacked removes older builds' folders there).
+        build_id = time.strftime("%Y%m%d%H%M%S", time.gmtime())
+        cmd.append("--onefile-tempdir-spec={CACHE_DIR}/EspDrop/app/"
+                   f"v{__version__}-{build_id}")
     if IS_WINDOWS:
         cmd += ["--windows-console-mode=attach", f"--windows-icon-from-ico={icons['espdrop.ico']}"]
         if args.zig:
@@ -191,8 +206,10 @@ def glibc_needed(dist):
 
 
 def third_party(dist):
-    """LICENSE and a list of what the program carries, with each license."""
+    """LICENSE and a list of what the program carries, with each license
+    (into folder `dist`)."""
     from importlib import metadata
+    os.makedirs(dist, exist_ok=True)
     shutil.copy2(os.path.join(ROOT, "LICENSE"), os.path.join(dist, "LICENSE.txt"))
     rows = []
     for d in metadata.distributions():
@@ -210,8 +227,9 @@ def third_party(dist):
         f.write(f"{NAME} {__version__} (GPL-3.0-or-later, LICENSE.txt; source code: "
                 "https://github.com/antiwireless/espdrop) is built with Python and these "
                 "packages, each under its own license:\n\n" + "\n".join(sorted(rows, key=str.lower))
-                + "\n\nQt (in PySide6) is used under the LGPL-3.0; its libraries are the "
-                  "separate files in this folder.\nlibarchive (Linux, libarchive.so.13): "
+                + "\n\nQt (in PySide6) is used under the LGPL-3.0; its libraries stay "
+                  "separate files (in the program folder, or in the folder the single-file "
+                  "program unpacks itself into).\nlibarchive (Linux, libarchive.so.13): "
                   "BSD-2-Clause.\n")
 
 
@@ -222,6 +240,18 @@ rem makes cmd and PowerShell wait for it and pass on its exit code.
 start "" /b /wait "%~dp0EspDrop.exe" %*
 exit /b %errorlevel%
 """
+
+
+def package_onefile(exe, build):
+    """The single file under its release name."""
+    machine = platform.machine().lower()
+    if IS_WINDOWS:
+        arch = {"amd64": "x64", "x86_64": "x64", "arm64": "arm64"}.get(machine, machine)
+        path = os.path.join(build, f"{NAME}-{__version__}-windows-{arch}.exe")
+    else:
+        path = os.path.join(build, f"{NAME}-{__version__}-linux-{machine}")
+    shutil.copy2(exe, path)
+    return path
 
 
 def package(dist, build):
@@ -241,9 +271,8 @@ def package(dist, build):
     return path
 
 
-def smoke(dist):
+def smoke(exe):
     """The built program starts: --version, check, and the window (offscreen)."""
-    exe = os.path.join(dist, NAME + (".exe" if IS_WINDOWS else ""))
     v = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=120)
     if v.stdout.strip() != f"espdrop {__version__}":
         sys.exit(f"smoke: --version said {v.stdout!r} {v.stderr!r}")
@@ -273,8 +302,12 @@ def smoke(dist):
         if p.poll() is not None:
             sys.exit(f"smoke: the window ended (rc {p.returncode}): {p.stdout.read()}")
     finally:
-        p.kill()
-        p.wait(10)
+        p.terminate()                          # a single file passes it on to the app
+        try:
+            p.wait(15)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait(10)
     if not IS_WINDOWS and shutil.which("xvfb-run"):
         # The window once more through Qt's X11 plugin, as on most desktops
         # (offscreen does not load it): still running after 12 s is fine.
@@ -295,6 +328,8 @@ def main(argv=None):
     ap.add_argument("--zig", action="store_true", help="Windows: compile with Zig, not MSVC")
     ap.add_argument("--jobs", type=int, help="parallel C compilations (default: CPUs)")
     ap.add_argument("--smoke", action="store_true", help="start the built program to check it")
+    ap.add_argument("--folder", action="store_true",
+                    help="a program folder (zip/tar.gz) instead of one file")
     ap.add_argument("--out", default=os.path.join(ROOT, "build"), help="build folder")
     args = ap.parse_args(argv)
 
@@ -307,36 +342,47 @@ def main(argv=None):
     icons = make_icons(res)
     fw = firmware(args, res)
 
+    step("what the program carries besides its code")
+    third_party(res)
+    extra = {os.path.join(res, n): n for n in ("LICENSE.txt", "THIRD_PARTY.txt")}
+    extra[icons["espdrop.png"]] = "espdrop.png"
+    if not IS_WINDOWS:
+        lib = system_libarchive()
+        extra[lib] = "libarchive.so.13"
+        print(f"libarchive: {lib} (a fallback; the system's comes first)")
+    elif args.folder:
+        cmd_file = os.path.join(res, "espdrop.cmd")
+        with open(cmd_file, "w", newline="\r\n") as f:
+            f.write(CONSOLE_CMD)
+        extra[cmd_file] = "espdrop.cmd"
+
     step(f"compiling {NAME} {__version__} with Nuitka (takes a while)")
     dist = os.path.join(out, NAME + ".dist")    # Nuitka adds .dist to the folder name
-    if os.path.isdir(dist):
-        shutil.rmtree(dist)
+    exe_name = NAME + (".exe" if IS_WINDOWS else "")
+    exe = os.path.join(dist, exe_name) if args.folder else os.path.join(out, exe_name)
+    for old in (dist, exe):
+        if os.path.isdir(old):
+            shutil.rmtree(old)
+        elif os.path.isfile(old):
+            os.remove(old)
     env = dict(os.environ, PYTHONPATH=os.pathsep.join(
         p for p in (HOST, os.environ.get("PYTHONPATH")) if p))
-    r = subprocess.run(nuitka_command(args, out, icons, fw), env=env)
-    if r.returncode or not os.path.isdir(dist):
+    r = subprocess.run(nuitka_command(args, out, icons, fw, extra), env=env)
+    if r.returncode or not os.path.isfile(exe):
         sys.exit(f"error: Nuitka failed (rc {r.returncode})")
-
-    step("adding what the program needs beside its code")
-    if not IS_WINDOWS:
+    if not IS_WINDOWS and os.path.isdir(dist):
         need = glibc_needed(dist)
         print(f"runs on Linux with glibc {need} or newer (x86_64)" if need
               else "glibc needed: unknown (no objdump)", flush=True)
-        lib = system_libarchive()
-        shutil.copy2(lib, os.path.join(dist, "libarchive.so.13"))
-        print(f"libarchive: {lib} (a fallback; the system's comes first)")
-    shutil.copy2(icons["espdrop.png"], os.path.join(dist, "espdrop.png"))
-    if IS_WINDOWS:
-        with open(os.path.join(dist, "espdrop.cmd"), "w", newline="\r\n") as f:
-            f.write(CONSOLE_CMD)
-    third_party(dist)
     if args.smoke:
         step("starting the built program")
-        smoke(dist)
+        smoke(exe)
     step("packing")
-    path = package(dist, build)
-    print(f"{path} ({os.path.getsize(path) / 1e6:.0f} MB)\nthe program: "
-          f"{os.path.join(dist, NAME + ('.exe' if IS_WINDOWS else ''))}")
+    path = package(dist, build) if args.folder else package_onefile(exe, build)
+    platform_name = "windows" if IS_WINDOWS else "linux"
+    shutil.copy2(os.path.join(res, "THIRD_PARTY.txt"),
+                 os.path.join(build, f"THIRD_PARTY-{platform_name}.txt"))
+    print(f"{path} ({os.path.getsize(path) / 1e6:.0f} MB)", flush=True)
     return 0
 
 

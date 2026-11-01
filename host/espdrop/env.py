@@ -110,8 +110,8 @@ def libarchive_candidates():
     if os.name == "nt":
         out.append(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
                                 "System32", "archiveint.dll"))
-    from .frozen import program_dir
-    bundled = program_dir()
+    from .frozen import bundle_dir
+    bundled = bundle_dir()
     if bundled:                                 # the Linux build carries a copy
         out += [os.path.join(bundled, n) for n in BUNDLED_LIBARCHIVE
                 if os.path.isfile(os.path.join(bundled, n))]
@@ -364,8 +364,8 @@ def xcb_missing():
         return None
     import shutil
     import subprocess
-    from .frozen import program_dir
-    base = program_dir()
+    from .frozen import bundle_dir
+    base = bundle_dir()
     if base:
         plugin = os.path.join(base, "PySide6", "qt-plugins", "platforms", "libqxcb.so")
     else:

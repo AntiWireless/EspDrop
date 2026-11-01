@@ -104,7 +104,7 @@ jobs:
         run: |
           python tools/opendrop_install.py --venv "$RUNNER_TEMP/venv"
           if [ "$RUNNER_OS" = Windows ]; then PY="$RUNNER_TEMP/venv/Scripts/python.exe"; else PY="$RUNNER_TEMP/venv/bin/python"; fi
-          "$PY" -m pip install -q nuitka
+          "$PY" -m pip install -q nuitka zstandard   # zstandard: the single file's packing
           if [ "$RUNNER_OS" = Linux ]; then "$PY" -m pip install -q patchelf; fi
           echo "PY=$PY" >> "$GITHUB_ENV"
       - name: Compile (Nuitka) and check the program
@@ -116,8 +116,8 @@ jobs:
         with:
           name: EspDrop-${{ matrix.name }}
           path: |
-            build/EspDrop-*.zip
-            build/EspDrop-*.tar.gz
+            build/EspDrop-*
+            build/THIRD_PARTY-*.txt
           if-no-files-found: error
 
   release:
@@ -128,11 +128,14 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4             # the release text (first: it cleans the folder)
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          draft: true                         # published by hand, after a look
+          name: EspDrop ${{ github.ref_name }}
+          body_path: docs/RELEASE.md
           files: dist/*

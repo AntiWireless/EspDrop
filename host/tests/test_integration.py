@@ -185,6 +185,33 @@ class FrozenTest(unittest.TestCase):
             self.assertEqual(frozen.program_dir(), apps)
 
 
+class UnpackedCopiesTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def run_in(self, here):
+        from espdrop import frozen
+        with mock.patch.object(frozen, "bundle_dir", lambda: here):
+            frozen.clean_old_unpacked()
+
+    def test_older_builds_go(self):
+        app = os.path.join(self.tmp.name, "cache", "EspDrop", "app")
+        for name in ("v0.1.0-20261031", "v0.1.0-20261101", "notes"):
+            os.makedirs(os.path.join(app, name))
+        self.run_in(os.path.join(app, "v0.1.0-20261101"))
+        self.assertEqual(sorted(os.listdir(app)), ["notes", "v0.1.0-20261101"])
+
+    def test_anything_else_is_left_alone(self):
+        # A folder build, or a cache path we did not choose: nothing is removed.
+        other = os.path.join(self.tmp.name, "Programs", "EspDrop")
+        os.makedirs(os.path.join(self.tmp.name, "Programs", "vOld"))
+        os.makedirs(other)
+        self.run_in(other)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.tmp.name, "Programs"))),
+                         ["EspDrop", "vOld"])
+
+
 class WindowsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

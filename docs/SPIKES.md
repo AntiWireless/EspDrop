@@ -732,8 +732,9 @@ Unter Linux bringt die App jetzt auch einen Eintrag im Anwendungsmenü mit
 ihm zugeordnet, so zeigen Dock und Taskleiste auch unter Wayland das Symbol.
 
 Test unter Windows:
-1. `EspDrop-0.1.0-windows-x64.zip` entpacken, z. B. nach
-   `%LOCALAPPDATA%\Programs\EspDrop`, `EspDrop.exe` starten (SmartScreen:
+1. `EspDrop-0.1.0-windows-x64.exe` (eine einzige Datei) an einen festen Ort
+   legen, z. B. `%LOCALAPPDATA%\Programs\EspDrop`, und starten; der erste Start
+   entpackt sie einmal in den Cache (einige Sekunden). (SmartScreen:
    „Weitere Informationen“ → „Trotzdem ausführen“, das Programm ist nicht
    signiert). Vorher die laufende App aus dem Checkout beenden.
 2. Das Fenster erscheint mit Symbol in der Taskleiste; Autostart und
@@ -741,9 +742,9 @@ Test unter Windows:
    „Mit EspDrop senden“ öffnet das AirDrop-Blatt).
 3. Allgemein → „ESP-Firmware“ → „Aktualisieren …“: die Firmware aus dem
    Programm aufspielen (Abschnitt oben), danach senden und empfangen.
-4. In einer Eingabeaufforderung im Ordner: `espdrop check` und
-   `espdrop status` (über `espdrop.cmd`, das auf das Programm wartet) geben ihre
-   Ausgabe in diesem Fenster aus.
+4. In einer Eingabeaufforderung im Ordner:
+   `start "" /b /wait EspDrop-0.1.0-windows-x64.exe check` gibt die Ausgabe in
+   diesem Fenster aus (ohne `start /wait` kommt die Eingabe schon vorher zurück).
 
 Für welche Linux-Versionen: 64-Bit-PCs (x86_64, kein ARM/Raspberry Pi) mit
 glibc 2.35 oder neuer (beim Build gemessen; `ldd --version` zeigt sie). Das
@@ -757,8 +758,10 @@ Cinnamon, Ubuntus GNOME; reines GNOME wie bei Fedora nur mit der Erweiterung
 X11-Bibliotheken) bringt das Programm mit.
 
 Test unter Linux:
-1. `tar xzf EspDrop-0.1.0-linux-x86_64.tar.gz`, `EspDrop/EspDrop` starten
-   (Zugriff auf `/dev/ttyACM0` über die Gruppe `dialout` wie bisher).
+1. `chmod +x EspDrop-0.1.0-linux-x86_64` (Downloads verlieren das
+   Ausführrecht), dann starten; der erste Start entpackt sich einmal nach
+   `~/.cache/EspDrop/app`. Zugriff auf `/dev/ttyACM0` über die Gruppe `dialout`
+   wie bisher.
 2. Im Anwendungsmenü steht danach „EspDrop“ mit Symbol; Autostart und
    „Öffnen mit → AirDrop (EspDrop)“ zeigen auf das Programm.
 3. Firmware aktualisieren, senden, empfangen wie unter Windows.

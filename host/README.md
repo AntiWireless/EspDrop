@@ -125,12 +125,17 @@ same way).
 `tools/build_app.py` makes the app a native program that needs no Python:
 Nuitka translates the Python code (ours, the patched OpenDrop and every
 library they use) to C, compiles it, and puts it with the Python runtime, Qt
-and the ESP firmware into one folder, `build/app/EspDrop.dist/`, packed as
-`build/EspDrop-<version>-windows-x64.zip` or `-linux-x86_64.tar.gz`. The
-program `EspDrop(.exe)` is the whole app: without arguments the window, with
-arguments the command line (`EspDrop find`, `EspDrop flash`, ...; on Windows
-it uses the console it was started from and opens none of its own, and
-`espdrop.cmd` next to it makes cmd and PowerShell wait for it).
+and the ESP firmware into one file: `build/EspDrop-<version>-windows-x64.exe`
+or `build/EspDrop-<version>-linux-x86_64`. It unpacks itself once per build
+into the user's cache (`%LOCALAPPDATA%\EspDrop\app`, `~/.cache/EspDrop/app`)
+and starts from there, so only the first start of a build takes a few
+seconds; the app removes older builds' copies there. `--folder` builds the
+folder instead (`build/app/EspDrop.dist/`, packed as .zip or .tar.gz, with
+`espdrop.cmd` beside the program on Windows), which starts without unpacking.
+The program is the whole app: without arguments the window, with arguments
+the command line (`EspDrop find`, `EspDrop flash`, ...; on Windows it uses the
+console it was started from and opens none of its own: cmd and PowerShell do
+not wait for it, `start "" /b /wait EspDrop.exe status` does).
 
 ```sh
 ~/opendrop-venv/bin/pip install nuitka patchelf          # Linux
@@ -149,7 +154,7 @@ without either it takes what `espdrop flash` would, else it builds without
 firmware. `--smoke` starts the result: `--version`, `check` (OpenDrop, its
 root certificate, libarchive, esptool, Qt) and the window offscreen.
 
-The program finds its parts next to itself (the firmware as
+The program finds its parts in its own (unpacked) folder (the firmware as
 `espdrop/firmware/espdrop-esp32c5.bin`). On Linux it uses the system's
 libarchive and carries `libarchive.so.13` from the build machine as a
 fallback, and it carries the xcb libraries Qt's X11 plugin needs (since Qt
@@ -157,15 +162,16 @@ fallback, and it carries the xcb libraries Qt's X11 plugin needs (since Qt
 refuses to run without them and names the packages; Wayland does without).
 `--smoke` on Linux also starts the window under Xvfb through that plugin. At its first start it puts its entries where the desktop looks
 (autostart, the right-click menu, on Linux also the application menu), all
-pointing at the program itself; a moved folder is followed at the next start.
+pointing at the program file itself; a moved file is followed at the next start.
 
 **Builds on GitHub** (`.github/workflows/build.yml`), on every push that
 touches the code: the firmware with ESP-IDF 6.0.3 (container
 `espressif/idf:v6.0.3`) merged into one image; the app with Nuitka on Windows
 and on Ubuntu 22.04 (built there, the program needs glibc 2.35, see below),
 the firmware inside, each started with `--smoke`; the host and firmware tests. The
-files are on the run's page (Artifacts). A tag `v*` drafts a release with
-them.
+files are on the run's page (Artifacts). A tag `v*` (e.g. `v0.1.0`) also
+drafts a release with them, titled "EspDrop v0.1.0", its text from
+`docs/RELEASE.md`; it stays a draft until published by hand on GitHub.
 
 The Windows program is not signed: SmartScreen asks once ("Weitere
 Informationen" → "Trotzdem ausführen"). It runs on Windows 10 and 11, 64 bit.
