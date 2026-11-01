@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QF
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
                                QScrollArea, QSystemTrayIcon, QToolButton, QVBoxLayout, QWidget)
 
-from . import env, flash, i18n, integration, ui
+from . import env, flash, frozen, i18n, install, integration, ui
 from .i18n import N_, _
 from .session import Session
 from .version import __version__
@@ -121,6 +121,25 @@ def instance_name():
         return re.sub(r"[^A-Za-z0-9_-]", "_", os.environ["ESPDROP_INSTANCE"])
     user = re.sub(r"[^A-Za-z0-9_-]", "_", getpass.getuser() or "user")
     return f"espdrop-{user}"
+
+
+def instance_running(name=None):
+    """A copy of the app runs for this user."""
+    sock = QLocalSocket()
+    sock.connectToServer(name or instance_name())
+    ok = sock.waitForConnected(300)
+    sock.abort()
+    return ok
+
+
+def quit_running(wait=20.0, name=None):
+    """Ask a running copy to quit and wait for it to go; False if it stays."""
+    if not send_to_running({"quit": True}, name=name):
+        return True
+    end = time.monotonic() + wait
+    while instance_running(name) and time.monotonic() < end:
+        time.sleep(0.25)
+    return not instance_running(name)
 
 
 def send_to_running(message, name=None, timeout_ms=1000):
@@ -853,6 +872,8 @@ class MainWindow(QMainWindow):
         self.log_action.setCheckable(True)
         menu.addAction(_("ESP-Firmware …"), self.open_firmware_dialog)
         menu.addAction(_("Serieller Port …"), self._pick_port)
+        if install.installed():
+            menu.addAction(_("Deinstallieren …"), self.uninstall)
         menu.addSeparator()
         menu.addAction(_("Beenden"), self.quit)
         self.more_btn.setMenu(menu)
@@ -1058,6 +1079,9 @@ class MainWindow(QMainWindow):
 
     def handle_message(self, msg):
         """From a later start (InstanceServer): files to send, or show."""
+        if msg.get("quit"):                    # a newer copy installs itself
+            self.quit()
+            return
         files = msg.get("files") or []
         if files or msg.get("send"):
             self.open_send_dialog(files)
@@ -1312,6 +1336,23 @@ class MainWindow(QMainWindow):
         self.language_sub.setVisible(wanted != now)
         self.restart_btn.setVisible(wanted != now)
 
+    def installed(self, download):
+        """Just installed from `download`: say so, and remove the download
+        once it has quit (only from the Downloads folder)."""
+        where = (_("EspDrop ist installiert und im Startmenü.") if os.name == "nt"
+                 else _("EspDrop ist installiert und im Anwendungsmenü."))
+        self._notify(where, None, 6000)
+        self._log(where)
+        run_bg(install.remove_download, download, default_download_dir(), on_error=self._log)
+
+    def uninstall(self):
+        if not confirm_uninstall(self):
+            return
+        errors = install.uninstall(frozen.program())
+        self.settings.clear()
+        uninstalled_message(self, errors)
+        self.quit()
+
     def restart(self):
         """Quit, and have main() start the app again (the new language)."""
         if not self._flashing:                 # quit() says why it waits
@@ -1560,8 +1601,9 @@ def default_download_dir():
 
 def _set_app_id():
     """Windows groups windows by app id; without our own the taskbar shows them
-    as pythonw.exe with Python's icon instead of ours."""
-    if os.name == "nt":
+    as pythonw.exe with Python's icon instead of ours. The compiled program is
+    its own app (and its start menu entry and pins belong to it as it is)."""
+    if os.name == "nt" and not frozen.compiled():
         try:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EspDrop.EspDrop")
@@ -1586,8 +1628,69 @@ def _desktop_setup(settings):
         run_bg(integration.refresh)
 
 
-def main(port=None, background=False, send=None):
-    """send: None (normal start) or the files of --send (may be empty)."""
+def install_and_restart(background, send):
+    """The downloaded single file: install it (an older copy that runs quits
+    first) and start the installed one. Returns the exit code, or None to go
+    on from here when installing failed."""
+    src = frozen.program()
+    if not quit_running():
+        QMessageBox.warning(None, APP, _("Eine laufende EspDrop-App ließ sich nicht beenden. "
+                                         "Bitte beenden und erneut starten."))
+        return 1
+    try:
+        dst = install.install(src)
+    except OSError as e:
+        QMessageBox.warning(None, APP, _("EspDrop ließ sich nicht installieren ({error}); es "
+                                         "läuft jetzt von hier.").format(error=e))
+        return None
+    args = ["gui"] + (["--background"] if background else [])
+    if send is not None:
+        args += ["--send", *send]
+    install.start(dst, args + ["--installed-from", src])
+    return 0
+
+
+def uninstall_main():
+    """`EspDrop uninstall` ("Installed apps" -> Uninstall): ask, then remove."""
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setWindowIcon(ui.app_icon())
+    ui.apply(app)
+    settings = QSettings(APP, APP)
+    i18n.set_language(settings.value("language", "auto"))
+    if not confirm_uninstall(None):
+        return 1
+    if not quit_running():
+        QMessageBox.warning(None, APP, _("Eine laufende EspDrop-App ließ sich nicht beenden. "
+                                         "Bitte beenden und erneut starten."))
+        return 1
+    errors = install.uninstall(frozen.program())
+    settings.clear()
+    uninstalled_message(None, errors)
+    return 0
+
+
+def confirm_uninstall(parent):
+    box = QMessageBox(parent)
+    box.setWindowTitle(APP)
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setText(_("EspDrop von diesem PC entfernen? Empfangene Dateien bleiben erhalten."))
+    remove = box.addButton(_("Entfernen"), QMessageBox.ButtonRole.DestructiveRole)
+    box.addButton(_("Abbrechen"), QMessageBox.ButtonRole.RejectRole)
+    box.exec()
+    return box.clickedButton() is remove
+
+
+def uninstalled_message(parent, errors):
+    text = _("EspDrop ist entfernt.")
+    if errors:
+        text += "\n\n" + _("Einiges ließ sich nicht entfernen: {errors}").format(
+            errors="; ".join(errors))
+    QMessageBox.information(parent, APP, text)
+
+
+def main(port=None, background=False, send=None, installed_from=None):
+    """send: None (normal start) or the files of --send (may be empty).
+    installed_from: the download this copy was installed from (it goes)."""
     _set_app_id()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP)
@@ -1597,17 +1700,23 @@ def main(port=None, background=False, send=None):
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(ui.app_icon())
     ui.apply(app)
+    settings = QSettings(APP, APP)
+    i18n.set_language(settings.value("language", "auto"))   # before any text is made
+    if install.wanted():                       # the download: install, start from there
+        code = install_and_restart(background, send)
+        if code is not None:
+            return code
     files = [os.path.abspath(f) for f in (send or [])]
     # Already running (autostart, an earlier start)? Hand over and leave.
     if send_to_running({"files": files, "send": send is not None,
                         "show": send is None and not background}):
         return 0
     server = InstanceServer()
-    settings = QSettings(APP, APP)
-    i18n.set_language(settings.value("language", "auto"))   # before any text is made
     _desktop_setup(settings)
     w = MainWindow(port=port, settings=settings, background=background)
     server.message.connect(w.handle_message)
+    if installed_from:
+        w.installed(installed_from)
     if send is not None:
         w.open_send_dialog(files)
     elif not background or not w.tray:     # no tray to live in: show the window

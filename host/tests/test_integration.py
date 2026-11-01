@@ -24,6 +24,7 @@ class FakeWinreg:
     """The bits of winreg integration.py uses, on a dict: key -> {name: value}."""
     HKEY_CURRENT_USER = "HKCU"
     REG_SZ = 1
+    REG_DWORD = 4
     KEY_SET_VALUE = 2
 
     def __init__(self):

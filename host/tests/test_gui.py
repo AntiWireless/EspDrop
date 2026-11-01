@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -446,6 +447,14 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(d.install_btn.text(), "Erneut versuchen")
         self.assertTrue(d.close_btn.isEnabled())
         d.close()
+
+    def test_a_newer_copy_asks_to_quit(self):
+        w = self.window(DuplexBridgeDevice())
+        with mock.patch.object(self.gui.QApplication, "quit") as quit_app:
+            w.handle_message({"quit": True})
+        self.assertTrue(w._quitting)
+        quit_app.assert_called_once()
+        self.w = None                              # already shut down
 
     def test_english(self):
         from espdrop import i18n

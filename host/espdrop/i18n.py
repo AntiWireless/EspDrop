@@ -284,6 +284,20 @@ EN = {
     "gedrückt halten, wieder anstecken, loslassen und erneut versuchen.":
         "The ESP could not be switched into its bootloader. Unplug it, hold the BOOT "
         "button, plug it in again, let go and try again.",
+    # ---- installing (install.py) ---------------------------------------------
+    "Eine laufende EspDrop-App ließ sich nicht beenden. Bitte beenden und erneut starten.":
+        "A running EspDrop app could not be closed. Please quit it and start again.",
+    "EspDrop ließ sich nicht installieren ({error}); es läuft jetzt von hier.":
+        "EspDrop could not be installed ({error}); it runs from here now.",
+    "EspDrop ist installiert und im Startmenü.": "EspDrop is installed and in the Start menu.",
+    "EspDrop ist installiert und im Anwendungsmenü.":
+        "EspDrop is installed and in the applications menu.",
+    "Deinstallieren …": "Uninstall …",
+    "EspDrop von diesem PC entfernen? Empfangene Dateien bleiben erhalten.":
+        "Remove EspDrop from this PC? Received files are kept.",
+    "Entfernen": "Remove",
+    "EspDrop ist entfernt.": "EspDrop has been removed.",
+    "Einiges ließ sich nicht entfernen: {errors}": "Some things could not be removed: {errors}",
     # ---- desktop entries (integration.py) --------------------------------------
     "Mit EspDrop senden": "Send with EspDrop",
     "Per AirDrop senden (EspDrop)": "Send with AirDrop (EspDrop)",

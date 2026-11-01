@@ -196,6 +196,79 @@ def set_launcher():
         _refresh_desktop_db(os.path.dirname(path))
 
 
+# ---- the installed program (install.py) -----------------------------------------
+
+UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\EspDrop"
+START_MENU_NAME = "EspDrop.lnk"
+
+
+def _start_menu_path():
+    appdata = os.environ.get("APPDATA") or os.path.expanduser(r"~\AppData\Roaming")
+    return os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs",
+                        START_MENU_NAME)
+
+
+def set_program(exe, version, on=True):
+    """Windows: the start menu entry and the entry in "Installed apps"
+    (Apps & features), whose "Uninstall" runs `exe uninstall`. Per user, no
+    admin rights."""
+    if not IS_WINDOWS:
+        return
+    lnk = _start_menu_path()
+    if not on:
+        if os.path.exists(lnk):
+            os.remove(lnk)
+        _reg_delete_tree(UNINSTALL_KEY)
+        return
+    _reg_set(UNINSTALL_KEY, "DisplayName", APP)
+    _reg_set(UNINSTALL_KEY, "DisplayVersion", version)
+    _reg_set(UNINSTALL_KEY, "Publisher", "EspDrop contributors")
+    _reg_set(UNINSTALL_KEY, "DisplayIcon", exe)
+    _reg_set(UNINSTALL_KEY, "InstallLocation", os.path.dirname(exe))
+    _reg_set(UNINSTALL_KEY, "UninstallString", subprocess.list2cmdline([exe, "uninstall"]))
+    _reg_set(UNINSTALL_KEY, "URLInfoAbout", "https://github.com/AntiWireless/EspDrop")
+    _reg_set(UNINSTALL_KEY, "NoModify", 1)
+    _reg_set(UNINSTALL_KEY, "NoRepair", 1)
+    try:
+        _reg_set(UNINSTALL_KEY, "EstimatedSize", os.path.getsize(exe) // 1024)
+    except OSError:
+        pass
+    env = dict(os.environ, ESPDROP_LNK=lnk, ESPDROP_EXE=exe,
+               ESPDROP_DIR=os.path.dirname(exe),
+               ESPDROP_DESC=_("AirDrop mit iPhone, iPad und Mac über den ESP32-C5"))
+    script = ("$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:ESPDROP_LNK);"
+              "$s.TargetPath = $env:ESPDROP_EXE; $s.WorkingDirectory = $env:ESPDROP_DIR;"
+              "$s.IconLocation = $env:ESPDROP_EXE + ',0';"
+              "$s.Description = $env:ESPDROP_DESC; $s.Save()")
+    os.makedirs(os.path.dirname(lnk), exist_ok=True)
+    subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                   env=env, check=True, capture_output=True,
+                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def remove_all():
+    """Every entry this app made on the desktop: autostart, the file manager
+    entry, the application menu, the start menu and "Installed apps".
+    Returns what failed."""
+    errors = []
+    for fn in (lambda: set_autostart(False), lambda: set_send_menu(False),
+               _remove_launcher, lambda: set_program(None, None, on=False)):
+        try:
+            fn()
+        except Exception as e:                 # noqa: BLE001 - go on with the rest
+            errors.append(str(e))
+    return errors
+
+
+def _remove_launcher():
+    if IS_WINDOWS:
+        return
+    path = _xdg_launcher()
+    if os.path.exists(path):
+        os.remove(path)
+        _refresh_desktop_db(os.path.dirname(path))
+
+
 def refresh():
     """Keep enabled entries pointing at the app as it runs now: a checkout or
     venv that moved, a new icon. Rewrites only what differs (on Windows the
@@ -250,7 +323,10 @@ def _reg_get(key, name):
 
 def _reg_set(key, name, value):
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as k:
-        winreg.SetValueEx(k, name, 0, winreg.REG_SZ, value)
+        if isinstance(value, int):
+            winreg.SetValueEx(k, name, 0, winreg.REG_DWORD, value)
+        else:
+            winreg.SetValueEx(k, name, 0, winreg.REG_SZ, value)
 
 
 def _reg_delete_value(key, name):

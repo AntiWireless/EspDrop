@@ -1,58 +1,33 @@
-AirDrop zwischen iPhone, iPad, Mac und einem Windows- oder Linux-PC, mit einem
-ESP32-C5 als AirDrop-Funkmodul am USB-Anschluss.
+AirDrop between iPhone, iPad, Mac and a Windows or Linux PC, with an
+ESP32-C5 board on USB as the AirDrop radio. See the
+[README](https://github.com/AntiWireless/EspDrop#readme) for what you need.
 
-## Herunterladen
+## Downloads
 
-| Datei | Für |
+| file | for |
 |---|---|
-| `EspDrop-…-windows-x64.exe` | Windows 10 und 11, 64 Bit |
-| `EspDrop-…-linux-x86_64` | Linux, 64-Bit-PC (siehe unten) |
-| `espdrop-esp32c5.bin` | die Firmware für den ESP32-C5 einzeln; sie steckt auch im Programm |
-| `THIRD_PARTY-….txt` | was im Programm steckt, mit den Lizenzen |
+| `EspDrop-…-windows-x64.exe` | Windows 10 and 11, 64 bit |
+| `EspDrop-…-linux-x86_64` | Linux on a 64-bit PC with glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, Linux Mint 21+, Arch, …) |
+| `espdrop-esp32c5.bin` | the ESP32-C5 firmware on its own (the program has it inside) |
+| `THIRD_PARTY-….txt` | what the programs contain, with their licenses |
 
-Das Programm ist eine einzige Datei und braucht weder Python noch eine
-Installation. Beim ersten Start entpackt es sich einmal (einige Sekunden),
-danach startet es sofort.
+## Install
 
-## Windows
+Start the program (Linux: `chmod +x` first). It installs itself – Windows:
+`%LOCALAPPDATA%\Programs\EspDrop`, Start menu, *Installed apps*; Linux:
+`~/.local/bin/espdrop` and the applications menu – and removes the download
+from the Downloads folder. Windows asks once because the program is not
+signed: *More info* → *Run anyway*. Starting a newer version later updates it.
 
-1. `EspDrop-…-windows-x64.exe` an einen festen Ort legen, z. B.
-   `%LOCALAPPDATA%\Programs\EspDrop`, und doppelklicken. Autostart und das
-   Rechtsklickmenü zeigen auf diesen Ort; nicht im Download-Ordner lassen.
-2. Windows fragt einmal, weil das Programm nicht signiert ist: „Weitere
-   Informationen“ → „Trotzdem ausführen“.
+Plug in the ESP32-C5; *General → ESP firmware* installs the firmware over the
+USB cable. On Linux the user needs the group `dialout` (Arch: `uucp`).
 
-## Linux
+The app is in English and German (*General → Language*).
 
-Läuft auf 64-Bit-PCs (x86_64, kein ARM/Raspberry Pi) mit glibc 2.35 oder
-neuer (`ldd --version` zeigt sie): Ubuntu 22.04 LTS und neuer samt Kubuntu,
-Xubuntu, Linux Mint 21+, Pop!_OS 22.04+, Zorin OS 17+, elementary OS 7+;
-Debian 12 und neuer; Fedora 36 und neuer; Arch, Manjaro, EndeavourOS, openSUSE
-Tumbleweed. Nicht: Ubuntu 20.04, Linux Mint 20, Debian 11, RHEL/Alma/Rocky 9,
-openSUSE Leap 15. X11 und Wayland gehen beide.
+---
 
-```sh
-chmod +x EspDrop-*-linux-x86_64       # Downloads verlieren das Ausführrecht
-./EspDrop-*-linux-x86_64
-```
-
-Für den ESP braucht der Benutzer die Gruppe `dialout` (Arch: `uucp`):
-`sudo usermod -aG dialout $USER`, danach ab- und anmelden. Das Symbol im
-Infobereich braucht einen Tray (KDE, Xfce, Cinnamon, Ubuntus GNOME; reines GNOME
-nur mit der Erweiterung „AppIndicator“), sonst bleibt das Fenster offen.
-
-## Der ESP32-C5
-
-Den ESP32-C5 per USB anstecken und die App starten. Hat er noch nicht die
-passende Firmware, bietet die App unter Allgemein → „ESP-Firmware“ das
-Installieren an (über dasselbe USB-Kabel, ohne Tasten am ESP).
-
-## Benutzen
-
-- **Empfangen:** „Empfangen von: 10 Minuten“ oder „Für alle“; am iPhone teilen
-  und den PC wählen. Dateien landen in Downloads.
-- **Senden:** „Suchen“, Datei auf das Gerät ziehen, oder Rechtsklick auf eine
-  Datei → „Mit EspDrop senden“. Am iPhone: AirDrop „Für alle“, entsperrt.
-
-Quellcode und ausführliche Doku: dieses Repository (`host/README.md`,
-`docs/SPIKES.md`). EspDrop steht unter der GPL-3.0.
+**Deutsch:** AirDrop zwischen iPhone, iPad, Mac und Windows- oder Linux-PC
+über einen ESP32-C5 am USB-Anschluss. Programm herunterladen und starten: es
+installiert sich selbst (Startmenü bzw. Anwendungsmenü) und entfernt den
+Download. Den ESP anstecken, unter *Allgemein → ESP-Firmware* die Firmware
+aufspielen. Die Sprache stellt man unter *Allgemein → Sprache* ein.

@@ -55,6 +55,16 @@ Linux), the icon is drawn in code.
   with the sleep mode, docs/SPIKES.md); the line under the title says which.
 - Closing the window keeps it in the tray; "Beenden" (the "…" button or the
   tray) ends it. Unplugging the ESP is fine: it reconnects when it comes back.
+- **Allgemein → "Sprache": Automatisch / Deutsch / English** (`espdrop/i18n.py`:
+  the texts are German in the code, `_()` gives them in the language chosen;
+  Automatisch follows the system; a change shows after "Jetzt neu starten").
+- **Installed like a program** (`espdrop/install.py`): the single-file build,
+  started from anywhere else, copies itself to `%LOCALAPPDATA%\Programs\EspDrop`
+  (Start menu, "Installed apps" with Uninstall) or `~/.local/bin/espdrop`,
+  starts from there, and removes the download from Downloads; a running older
+  copy quits first (that is how one updates). "…" → "Deinstallieren …" or
+  `EspDrop uninstall` removes it all; received files stay. Not for the folder
+  build, test runs (`ESPDROP_NO_DESKTOP`) or `ESPDROP_PORTABLE=1`.
 - **Allgemein → "Erscheinungsbild": Automatisch / Hell / Dunkel.** Automatisch
   follows the system; the choice also sets the title bar on Windows (Qt 6.8+).
 - **Allgemein → "Beim Anmelden im Hintergrund starten"** (Windows:

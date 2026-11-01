@@ -731,15 +731,23 @@ Unter Linux bringt die App jetzt auch einen Eintrag im Anwendungsmenü mit
 (`~/.local/share/applications/espdrop.desktop`, mit Symbol); die Fenster sind
 ihm zugeordnet, so zeigen Dock und Taskleiste auch unter Wayland das Symbol.
 
+Sprache und Entfernen (beide Systeme): Allgemein → „Sprache“ auf „English“,
+„Jetzt neu starten“: die App kommt englisch wieder. „…“ → „Deinstallieren …“
+(bzw. unter Windows Installierte Apps → EspDrop → Deinstallieren) entfernt
+Programm, Einträge und Einstellungen; empfangene Dateien bleiben.
+
 Test unter Windows:
-1. `EspDrop-0.1.0-windows-x64.exe` (eine einzige Datei) an einen festen Ort
-   legen, z. B. `%LOCALAPPDATA%\Programs\EspDrop`, und starten; der erste Start
-   entpackt sie einmal in den Cache (einige Sekunden). (SmartScreen:
-   „Weitere Informationen“ → „Trotzdem ausführen“, das Programm ist nicht
-   signiert). Vorher die laufende App aus dem Checkout beenden.
-2. Das Fenster erscheint mit Symbol in der Taskleiste; Autostart und
-   Rechtsklickmenü zeigen jetzt auf `EspDrop.exe` (Rechtsklick auf eine Datei →
-   „Mit EspDrop senden“ öffnet das AirDrop-Blatt).
+1. `EspDrop-0.1.0-windows-x64.exe` aus dem Download-Ordner starten
+   (SmartScreen: „Weitere Informationen“ → „Trotzdem ausführen“, das Programm
+   ist nicht signiert). Es installiert sich nach
+   `%LOCALAPPDATA%\Programs\EspDrop\EspDrop.exe`, startet von dort (der erste
+   Start entpackt es einmal in den Cache, einige Sekunden) und löscht die Datei
+   im Download-Ordner. Eine laufende ältere EspDrop-App wird dabei beendet und
+   ersetzt.
+2. Startmenü: „EspDrop“ mit Symbol. Einstellungen → Apps → Installierte Apps:
+   „EspDrop“ mit Version. Autostart und Rechtsklickmenü zeigen auf die
+   installierte `EspDrop.exe` (Rechtsklick auf eine Datei → „Mit EspDrop
+   senden“ öffnet das AirDrop-Blatt).
 3. Allgemein → „ESP-Firmware“ → „Aktualisieren …“: die Firmware aus dem
    Programm aufspielen (Abschnitt oben), danach senden und empfangen.
 4. In einer Eingabeaufforderung im Ordner:
@@ -759,11 +767,11 @@ X11-Bibliotheken) bringt das Programm mit.
 
 Test unter Linux:
 1. `chmod +x EspDrop-0.1.0-linux-x86_64` (Downloads verlieren das
-   Ausführrecht), dann starten; der erste Start entpackt sich einmal nach
-   `~/.cache/EspDrop/app`. Zugriff auf `/dev/ttyACM0` über die Gruppe `dialout`
-   wie bisher.
+   Ausführrecht), dann starten: es installiert sich nach `~/.local/bin/espdrop`
+   und löscht den Download. Zugriff auf `/dev/ttyACM0` über die Gruppe
+   `dialout` wie bisher.
 2. Im Anwendungsmenü steht danach „EspDrop“ mit Symbol; Autostart und
-   „Öffnen mit → AirDrop (EspDrop)“ zeigen auf das Programm.
+   „Öffnen mit → AirDrop (EspDrop)“ zeigen auf `~/.local/bin/espdrop`.
 3. Firmware aktualisieren, senden, empfangen wie unter Windows.
 
 ## Danach

@@ -19,6 +19,12 @@ def compiled():
     return "__compiled__" in globals() or bool(getattr(sys, "frozen", False))
 
 
+def onefile():
+    """True in the single-file build (it unpacks itself; tools/build_app.py)."""
+    info = globals().get("__compiled__")
+    return bool(info is not None and getattr(info, "onefile", False))
+
+
 def program():
     """The program file to start again (autostart, the file manager): the
     onefile binary itself rather than its unpacked copy. None from Python."""
