@@ -1,0 +1,50 @@
+# EspDrop bridge-mode overrides. Layer this AFTER sdkconfig.defaults:
+#   idf.py -B build_bridge -DSDKCONFIG=build_bridge/sdkconfig \
+#          -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.bridge.defaults" build
+#
+# The bridge owns the USB-Serial/JTAG with the native driver, so the interactive
+# console must NOT also sit on that endpoint (its echo and CR/LF translation
+# corrupt the binary COBS stream). Disable the console entirely; device-side
+# visibility goes out as BRIDGE_MSG_LOG frames instead.
+
+# Default chip: a fresh build dir otherwise defaults to esp32, which has no
+# USB-Serial/JTAG peripheral, so usb_serial_jtag_driver_install would be
+# undefined at link time. For the C5 pass -DIDF_TARGET=esp32c5, which overrides
+# this cleanly (use a separate build dir per chip).
+CONFIG_IDF_TARGET="esp32c3"
+
+CONFIG_ESPDROP_BRIDGE_MODE=y
+CONFIG_ESP_CONSOLE_NONE=y
+
+# AirDrop wake over the chip's own Bluetooth LE (main/ble_wake.c, bridge
+# `wake`): NimBLE with only the broadcaster role it needs. Legacy advertising
+# (ble_gap_adv_start) is only built without the BLE 5 extended-advertising API.
+# Stack and controller push the image past the default 1 MB app partition,
+# hence the large single-app table (1.5 MB, fits the 2 MB flash setting).
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+# Observer: a passive scan for AirDrop adverts, so the radio can sleep and wake
+# only when a phone nearby wants to share (main/ble_wake.c ble_scan, power.c).
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_SECURITY_ENABLE=n
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+# Advertising only, so no connections and no ACL data: shrink the buffer pools
+# and the controller's reserved connection contexts. Their heap is what the
+# bridge's RX queue needs (with the defaults it dropped from 48 to 16 slots and
+# a 38 MB receive lost ~700 frames to a full queue).
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=12
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=8
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=4
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=16
+CONFIG_BT_LE_CONN_RESERVED_MEMORY_COUNT=0
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# M4 IP mode: TCP buffers for AirDrop over AWDL, where a round trip waits for a
+# shared slot (up to ~0.5 s): 8 x MSS each way instead of 4 x. The socket proxy
+# holds at most 4 connections; the heap in IP mode is ~89 KB (docs/SPIKES.md).
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=11520
+CONFIG_LWIP_TCP_WND_DEFAULT=11520

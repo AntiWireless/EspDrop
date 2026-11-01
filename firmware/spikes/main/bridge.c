@@ -1,0 +1,852 @@
+/*
+ * EspDrop - USB host-link bridge transport (ESP32). See bridge.h.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026  EspDrop contributors
+ */
+#include "bridge.h"
+
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "driver/usb_serial_jtag.h"
+#include "esp_app_desc.h"   /* `version`: the app's own description */
+#include "esp_chip_info.h"
+#include "sdkconfig.h"     /* CONFIG_IDF_TARGET */
+#include "esp_log.h"
+#include "esp_mac.h"
+#include "esp_system.h"   /* esp_get_free_heap_size */
+#include "esp_timer.h"
+#include "hal/usb_serial_jtag_ll.h"   /* `usbtest raw`: write the FIFO directly */
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+
+#include "awdl_cobs.h"
+#include "awdl_app.h" /* awdl_app_resync_peers, for the `resync` command */
+#include "ble_wake.h" /* `wake`: the AirDrop wake over our own Bluetooth */
+#include "awdl_netif.h" /* IP mode: the AWDL link as an lwIP interface */
+#include "sockproxy.h"  /* IP mode: host sockets on that interface */
+#include "power.h"      /* `power`: the radio sleeps while nothing needs it */
+#include "radio.h"    /* radio_get_stats, for the `radio` diagnostic command */
+
+#define BRIDGE_MAX_PAYLOAD 1600
+#define BRIDGE_MAX_MSG     (1 + BRIDGE_MAX_PAYLOAD)   /* type + payload */
+#define USB_RX_BUF         1024
+/* Large enough for several full frames, so the driver can keep feeding the
+ * 64-byte USB FIFO while the forward task COBS-encodes the next frame. */
+#define USB_TX_BUF         8192
+
+/* Device->host RX forwarding: one Ethernet frame per queue slot. The Wi-Fi task
+ * only builds+enqueues (never blocks on USB); a dedicated task drains and sends. */
+#define BRIDGE_RX_PAYLOAD_MAX 1500                 /* L3 payload cap (awdl0 MTU) */
+/* One AWDL window delivers ~15 frames in ~50 ms (airdrop-mt7921 FINDINGS), much
+ * faster than USB drains them, so the queue must absorb a whole burst; on 5 GHz
+ * an iPhone sends in 15 of 16 slots, so bursts are longer still (C5: 299 drops
+ * at depth 32 in one transfer). Try the big depth first and fall back if the
+ * heap is short. */
+static const uint8_t k_rx_q_depths[] = {64, 48, 40, 32, 24, 16, 8};
+/* Wi-Fi allocates its RX/TX buffers dynamically from the same heap, so never
+ * take the last of it: a larger depth is used only if this much stays free.
+ * Measured on the C5 with Bluetooth: over a 38 MB receive the free heap fell
+ * only ~7 KB below its idle value (stats heap vs heap_min). */
+#define BRIDGE_HEAP_RESERVE (24u * 1024u)
+/* In IP mode the same queue carries the socket proxy's messages to the host,
+ * shallower: one ordered path, so a connection's FIN can never overtake its
+ * last data, and the lwIP thread never waits on USB. */
+#define BRIDGE_IPQ_DEPTH 8
+typedef struct {
+	uint8_t  type;   /* BRIDGE_MSG_FRAME (L2), or a proxy message (IP mode) */
+	uint16_t len;
+	uint8_t  eth[14 + BRIDGE_RX_PAYLOAD_MAX];
+} rx_frame_t;
+
+/* Peer add/remove notifications, queued by the AWDL task and sent by their own
+ * task, so the AWDL timing task never blocks on a USB write. */
+#define BRIDGE_PEER_Q_LEN 16
+typedef struct {
+	bool    added;
+	uint8_t mac[6];
+} peer_evt_t;
+
+static SemaphoreHandle_t s_tx_lock;
+/* rx_frame_t: Wi-Fi task -> fwd task. Exists only in L2 mode: in IP mode its
+ * ~60 KB go back to the heap for lwIP. The fwd task alone deletes it (it may be
+ * waiting on it); s_l2q_lock keeps the Wi-Fi task out of a queue being freed. */
+static QueueHandle_t     s_rx_fwd_q;
+static SemaphoreHandle_t s_l2q_lock;
+static SemaphoreHandle_t s_l2q_freed;   /* given by the fwd task after a release */
+static volatile bool     s_l2q_release; /* asks the fwd task to free the queue */
+static TaskHandle_t      s_fwd_task;
+static volatile bool     s_post_wanted;           /* a bridge_post found it full */
+static void            (*s_post_space_cb)(void);  /* called when room appears */
+static QueueHandle_t     s_peer_q;     /* peer_evt_t: AWDL task -> peer task */
+static uint8_t           s_rx_q_depth; /* depth actually allocated */
+static bool s_started;
+
+/* Counters touched only from the single RX task (handle_msg), so no locking. */
+static uint32_t s_frames_from_host;
+static uint32_t s_bytes_from_host;
+/* Touched across tasks (written by Wi-Fi/fwd tasks, read by the stats command).
+ * 32-bit aligned loads/stores are atomic on the C3, and a stale stats read is
+ * harmless, so these are volatile rather than locked. */
+static volatile uint32_t s_frames_to_host;
+static volatile uint32_t s_bytes_to_host;
+static volatile uint32_t s_rx_drops;
+
+/* Sink for host->device Ethernet frames (set by app_main to the AWDL TX path). */
+static bridge_frame_sink_t s_frame_sink;
+static void               *s_frame_sink_ctx;
+
+void bridge_set_frame_sink(bridge_frame_sink_t fn, void *ctx) {
+	s_frame_sink_ctx = ctx;
+	s_frame_sink = fn;
+}
+
+/* Emit one synthetic Ethernet frame to the host so the device->host->awdl0 path
+ * can be exercised before any radio exists (M2.1). ff:ff:ff:ff:ff:ff <- our MAC,
+ * ethertype 0x88b5 (IEEE local experimental, inert) + a marker body. */
+static void send_test_frame(void) {
+	uint8_t mac[6] = {0};
+	esp_read_mac(mac, ESP_MAC_WIFI_STA);
+	static const char body[] = "EspDrop M2.1 testframe";
+	uint8_t eth[14 + sizeof(body) - 1];
+	memset(eth, 0xff, 6);          /* destination: broadcast */
+	memcpy(eth + 6, mac, 6);       /* source: our Wi-Fi MAC */
+	eth[12] = 0x88;
+	eth[13] = 0xb5;                /* ethertype 0x88b5 */
+	memcpy(eth + 14, body, sizeof(body) - 1);
+	bridge_send(BRIDGE_MSG_FRAME, eth, sizeof(eth));
+}
+
+/* Wi-Fi task context: build the Ethernet frame into a scratch slot and enqueue
+ * it for the forwarding task. rx_cb is serialized (one Wi-Fi task), so a single
+ * static scratch buffer is safe and keeps this off the Wi-Fi task's stack. */
+/* Current mode (enum bridge_mode). Read by the Wi-Fi task for every frame. */
+static volatile uint8_t s_mode = BRIDGE_MODE_L2;
+
+static bool l2q_alloc(uint8_t max_depth);
+static void l2q_release(void);
+
+/* Switch L2 <-> IP. Into IP: bring the interface up first, then route frames to
+ * it. Out of IP: route frames to the host first, then take it down. */
+static int set_mode(uint8_t mode) {
+	if (mode == s_mode) return 0;
+	uint8_t mac[6];
+	radio_get_self_mac(mac);
+	if (mode == BRIDGE_MODE_IP) {
+		if (awdl_netif_set_up(mac, true) != 0) return -1;
+		s_mode = BRIDGE_MODE_IP;
+		l2q_release();                   /* its memory is lwIP's now ... */
+		l2q_alloc(BRIDGE_IPQ_DEPTH);     /* ... but for a small ordered queue */
+		sockproxy_reset(0);
+	} else {
+		l2q_release();                   /* the small IP-mode queue, if any */
+		if (!l2q_alloc(255)) return -1;  /* the host's awdl0 needs a deep one */
+		s_mode = BRIDGE_MODE_L2;
+		sockproxy_reset(0);
+		if (awdl_netif_is_up()) awdl_netif_set_up(mac, false);
+	}
+	return 0;
+}
+
+static void send_hello_reply(void) {
+	uint8_t r[12];
+	r[0] = BRIDGE_PROTO_VERSION;
+	r[1] = s_mode;
+	radio_get_self_mac(r + 2);
+	r[8] = SOCKPROXY_TCP_SLOTS;            /* TCP connections at once */
+	r[9] = 1400 & 0xff;                    /* max TCP_DATA chunk, little endian */
+	r[10] = 1400 >> 8;
+	r[11] = (ble_wake_ready() ? 0x01 : 0)  /* caps: BLE wake */
+	      | 0x02                           /*       IP mode */
+	      | ((ble_wake_ready() && ble_scan_supported()) ? 0x04 : 0);  /* listen (BLE scan) */
+	bridge_send(BRIDGE_MSG_HELLO_REPLY, r, sizeof(r));
+}
+
+void bridge_rx_frame(const uint8_t dst[6], const uint8_t src[6], uint16_t ethertype,
+                     const uint8_t *payload, size_t plen, void *ctx) {
+	(void)ctx;
+	if (s_mode == BRIDGE_MODE_IP) {   /* the device's own IP stack takes it */
+		awdl_netif_input(dst, src, ethertype, payload, plen);
+		return;
+	}
+	static rx_frame_t scratch;
+	if (!s_rx_fwd_q) return;
+	if (plen > BRIDGE_RX_PAYLOAD_MAX) { s_rx_drops++; return; }
+	memcpy(scratch.eth, dst, 6);
+	memcpy(scratch.eth + 6, src, 6);
+	scratch.eth[12] = (uint8_t)(ethertype >> 8);
+	scratch.eth[13] = (uint8_t)(ethertype & 0xff);
+	if (plen) memcpy(scratch.eth + 14, payload, plen);
+	scratch.len = (uint16_t)(14 + plen);
+	scratch.type = BRIDGE_MSG_FRAME;
+	/* Never wait: the lock is only held around a mode switch. */
+	if (xSemaphoreTake(s_l2q_lock, 0) != pdTRUE) { s_rx_drops++; return; }
+	if (s_rx_fwd_q && xQueueSend(s_rx_fwd_q, &scratch, 0) != pdTRUE)
+		s_rx_drops++; /* host not keeping up: drop rather than stall Wi-Fi */
+	xSemaphoreGive(s_l2q_lock);
+}
+
+/* Create the queue to the host, at most max_depth deep and as deep as the heap
+ * allows with BRIDGE_HEAP_RESERVE left over (the smallest depth that fits
+ * max_depth is always tried). No-op if it exists. */
+static bool l2q_alloc(uint8_t max_depth) {
+	if (s_rx_fwd_q) return true;
+	QueueHandle_t q = NULL;
+	uint8_t depth = 0;
+	for (size_t i = 0; i < sizeof(k_rx_q_depths) && !q; i++) {
+		if (k_rx_q_depths[i] > max_depth && i + 1 < sizeof(k_rx_q_depths)) continue;
+		size_t need = (size_t)k_rx_q_depths[i] * sizeof(rx_frame_t);
+		bool last = (i + 1 == sizeof(k_rx_q_depths));
+		if (!last && esp_get_free_heap_size() < need + BRIDGE_HEAP_RESERVE)
+			continue;   /* keep headroom for Wi-Fi */
+		q = xQueueCreate(k_rx_q_depths[i], sizeof(rx_frame_t));
+		if (q) depth = k_rx_q_depths[i];
+	}
+	if (!q) return false;
+	xSemaphoreTake(s_l2q_lock, portMAX_DELAY);
+	s_rx_fwd_q = q;
+	s_rx_q_depth = depth;
+	xSemaphoreGive(s_l2q_lock);
+	if (s_fwd_task) xTaskNotifyGive(s_fwd_task);
+	return true;
+}
+
+bool bridge_post(uint8_t type, const void *a, size_t alen, const void *b, size_t blen) {
+	static rx_frame_t item;   /* guarded by s_l2q_lock */
+	if (alen + blen > sizeof(item.eth)) return false;
+	if (!s_l2q_lock || xSemaphoreTake(s_l2q_lock, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+	bool ok = false;
+	if (s_rx_fwd_q) {
+		item.type = type;
+		item.len = (uint16_t)(alen + blen);
+		if (alen) memcpy(item.eth, a, alen);
+		if (blen) memcpy(item.eth + alen, b, blen);
+		ok = xQueueSend(s_rx_fwd_q, &item, 0) == pdTRUE;
+	}
+	xSemaphoreGive(s_l2q_lock);
+	if (!ok) s_post_wanted = true;
+	return ok;
+}
+
+void bridge_set_post_space_cb(void (*cb)(void)) { s_post_space_cb = cb; }
+
+/* Hand the L2 RX queue's memory back (IP mode). The fwd task frees it within
+ * one receive timeout; returns once it has, or after 1 s. */
+static void l2q_release(void) {
+	if (!s_rx_fwd_q) return;
+	xSemaphoreTake(s_l2q_freed, 0);   /* drop a give left over from a timeout */
+	s_l2q_release = true;
+	if (s_fwd_task) xTaskNotifyGive(s_fwd_task);
+	xSemaphoreTake(s_l2q_freed, pdMS_TO_TICKS(1000));
+}
+
+/* Drain the RX-forward queue to the host. A dedicated task so the (bounded but
+ * blocking) USB write never runs on the Wi-Fi task or the AWDL timing task. */
+static void bridge_fwd_task(void *arg) {
+	(void)arg;
+	static rx_frame_t fr;
+	for (;;) {
+		if (s_l2q_release) {
+			xSemaphoreTake(s_l2q_lock, portMAX_DELAY);
+			if (s_rx_fwd_q) vQueueDelete(s_rx_fwd_q);   /* frames still in it are dropped */
+			s_rx_fwd_q = NULL;
+			s_rx_q_depth = 0;
+			xSemaphoreGive(s_l2q_lock);
+			s_l2q_release = false;
+			xSemaphoreGive(s_l2q_freed);
+		}
+		QueueHandle_t q = s_rx_fwd_q;   /* only this task deletes it */
+		if (!q) {
+			ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));   /* IP mode: nothing to do */
+			continue;
+		}
+		/* A timeout, not forever, so a release request is seen promptly. */
+		if (xQueueReceive(q, &fr, pdMS_TO_TICKS(50)) == pdTRUE) {
+			if (bridge_send(fr.type, fr.eth, fr.len) == 0 && fr.type == BRIDGE_MSG_FRAME) {
+				s_frames_to_host++;
+				s_bytes_to_host += fr.len;
+			}
+			if (s_post_wanted) {   /* room again for a waiting producer */
+				s_post_wanted = false;
+				if (s_post_space_cb) s_post_space_cb();
+			}
+		}
+	}
+}
+
+void bridge_notify_peer(bool added, const uint8_t mac[6]) {
+	if (!s_peer_q) return;
+	peer_evt_t ev;
+	ev.added = added;
+	memcpy(ev.mac, mac, 6);
+	/* Never block the caller (the AWDL task). On overflow the event is dropped;
+	 * the host recovers the full peer set with `resync`. */
+	(void)xQueueSend(s_peer_q, &ev, 0);
+}
+
+/* Drain peer notifications to the host (USB write off the AWDL timing task). */
+static void bridge_peer_task(void *arg) {
+	(void)arg;
+	peer_evt_t ev;
+	for (;;) {
+		if (xQueueReceive(s_peer_q, &ev, portMAX_DELAY) == pdTRUE)
+			bridge_send(ev.added ? BRIDGE_MSG_PEER_ADD : BRIDGE_MSG_PEER_REMOVE,
+			            ev.mac, 6);
+	}
+}
+
+/* Send a NUL-terminated string as a CMD_REPLY (length from strlen, so a
+ * truncated snprintf can never be reported as longer than the buffer). */
+static void cmd_reply(const char *s) {
+	bridge_send(BRIDGE_MSG_CMD_REPLY, s, strlen(s));
+}
+
+/* A short text command from the host (BRIDGE_MSG_CMD) -> a CMD_REPLY. */
+/*
+ * `usbtest raw [kib]`: the same dummy frames as `usbtest`, but written straight
+ * into the 64-byte USB FIFO by polling, instead of via the driver, which
+ * refills the FIFO from its interrupt only after the host has fetched the last
+ * packet. If this is much faster, the refill latency is the limit; if not, it
+ * is the host's polling. Holds the TX lock and masks the driver's TX interrupt
+ * meanwhile; a test tool, run it while nothing else is going on.
+ */
+static void usbtest_raw(int kib, char *out, size_t cap) {
+	if (kib < 1) kib = 1;
+	if (kib > 8192) kib = 8192;
+	static uint8_t msg[1 + 14 + 1400];
+	static uint8_t enc[COBS_ENCODE_BOUND(sizeof(msg)) + 1];
+	msg[0] = BRIDGE_MSG_FRAME;
+	memset(msg + 1, 0xff, 6);
+	radio_get_self_mac(msg + 7);
+	msg[13] = 0x88; msg[14] = 0xb5;
+	memset(msg + 15, 0x5a, sizeof(msg) - 15);
+	size_t enc_len = cobs_encode(msg, sizeof(msg), enc, sizeof(enc) - 1);
+	enc[enc_len++] = 0x00;
+
+	xSemaphoreTake(s_tx_lock, portMAX_DELAY);
+	vTaskDelay(pdMS_TO_TICKS(100));   /* let the driver drain its ring buffer */
+	usb_serial_jtag_ll_disable_intr_mask(USB_SERIAL_JTAG_INTR_SERIAL_IN_EMPTY);
+	size_t total = (size_t)kib * 1024, sent = 0;
+	bool stalled = false;
+	int64_t t0 = esp_timer_get_time(), next_yield = t0 + 50000;
+	while (sent < total && !stalled) {
+		const uint8_t *q = enc;
+		size_t left = enc_len;
+		while (left) {
+			int64_t give_up = esp_timer_get_time() + 1000000;
+			while (!usb_serial_jtag_ll_txfifo_writable())
+				if (esp_timer_get_time() > give_up) { stalled = true; break; }
+			if (stalled) break;
+			int w = usb_serial_jtag_ll_write_txfifo(q, left > 64 ? 64 : (uint32_t)left);
+			usb_serial_jtag_ll_txfifo_flush();
+			q += w;
+			left -= (size_t)w;
+		}
+		if (!stalled) sent += sizeof(msg) - 1;
+		if (esp_timer_get_time() > next_yield) {   /* keep the idle task (WDT) alive */
+			vTaskDelay(1);
+			next_yield = esp_timer_get_time() + 50000;
+		}
+	}
+	int64_t dt = esp_timer_get_time() - t0;
+	usb_serial_jtag_ll_ena_intr_mask(USB_SERIAL_JTAG_INTR_SERIAL_IN_EMPTY);
+	xSemaphoreGive(s_tx_lock);
+	snprintf(out, cap, "usbtest raw: %u bytes in %u ms = %u kB/s%s",
+	         (unsigned)sent, (unsigned)(dt / 1000),
+	         dt > 0 ? (unsigned)((uint64_t)sent * 1000u / (uint64_t)dt) : 0u,
+	         stalled ? " (host stopped reading)" : "");
+}
+
+static void handle_cmd(const uint8_t *p, size_t n) {
+	char cmd[64];
+	size_t k = n < sizeof(cmd) - 1 ? n : sizeof(cmd) - 1;
+	memcpy(cmd, p, k);
+	cmd[k] = '\0';
+	while (k && (cmd[k - 1] == '\n' || cmd[k - 1] == '\r' || cmd[k - 1] == ' '))
+		cmd[--k] = '\0';
+
+	char out[192];
+	if (strcmp(cmd, "ping") == 0) {
+		cmd_reply("pong");
+	} else if (strcmp(cmd, "version") == 0) {
+		/* The host app compares this with the firmware it ships (and can flash
+		 * it); older firmware answers "unknown cmd", which says as much. */
+		const esp_app_desc_t *app = esp_app_get_description();
+		esp_chip_info_t chip;
+		esp_chip_info(&chip);
+		snprintf(out, sizeof(out), "version %s idf=%s chip=%s rev=%u.%u proto=%u",
+		         app->version, app->idf_ver, CONFIG_IDF_TARGET,
+		         (unsigned)(chip.revision / 100), (unsigned)(chip.revision % 100),
+		         (unsigned)BRIDGE_PROTO_VERSION);
+		cmd_reply(out);
+	} else if (strcmp(cmd, "mac") == 0) {
+		uint8_t mac[6] = {0};
+		esp_read_mac(mac, ESP_MAC_WIFI_STA);
+		snprintf(out, sizeof(out), "mac %02x:%02x:%02x:%02x:%02x:%02x",
+		         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+		cmd_reply(out);
+	} else if (strcmp(cmd, "stats") == 0) {
+		snprintf(out, sizeof(out),
+		         "frames_from_host=%u bytes_from_host=%u frames_to_host=%u bytes_to_host=%u "
+		         "rx_drops=%u rxq=%u heap=%u heap_min=%u",
+		         (unsigned)s_frames_from_host, (unsigned)s_bytes_from_host,
+		         (unsigned)s_frames_to_host, (unsigned)s_bytes_to_host, (unsigned)s_rx_drops,
+		         (unsigned)s_rx_q_depth, (unsigned)esp_get_free_heap_size(),
+		         (unsigned)esp_get_minimum_free_heap_size());
+		cmd_reply(out);
+	} else if (strcmp(cmd, "radio") == 0) {
+		radio_stats_t st;
+		radio_get_stats(&st);
+		char rbuf[256];
+		/* tx_ack = unicast frames the peer hardware-ACKed (our TX reached it);
+		 * for broadcast/multicast tx_ack is always success. Counts are cast to
+		 * 32-bit (ample for a test run) and printed with %u, matching `stats`. */
+		snprintf(rbuf, sizeof(rbuf),
+		         "rx_action=%u rx_data=%u rx_dup=%u rx_amsdu=%u rx_msdu=%u rx_dperr=%u "
+		         "rx_other=%u rx_perr=%u tx_ok=%u tx_err=%u tx_ack=%u tx_noack=%u",
+		         (unsigned)st.rx_action, (unsigned)st.rx_data, (unsigned)st.rx_dup,
+		         (unsigned)st.rx_amsdu, (unsigned)st.rx_msdu, (unsigned)st.rx_data_perr,
+		         (unsigned)st.rx_other_bssid, (unsigned)st.rx_parse_err,
+		         (unsigned)st.tx_ok, (unsigned)st.tx_err,
+		         (unsigned)st.tx_done_ok, (unsigned)st.tx_done_fail);
+		cmd_reply(rbuf);
+	} else if (strcmp(cmd, "node") == 0) {
+		/* AWDL node state: who we sync to and which slots we advertise. If iOS
+		 * stops sending to us, check here that the master is the iPhone and that
+		 * our sequence is sparse (mirrored), not 16x the same channel. */
+		awdl_node_status_t ns;
+		char nbuf[320];
+		if (!awdl_app_status(&ns)) {
+			cmd_reply("node: awdl not started");
+		} else {
+			int o = snprintf(nbuf, sizeof(nbuf),
+			                 "master=%02x:%02x:%02x:%02x:%02x:%02x%s peers=%d height=%u "
+			                 "sync_err=%d chan=%u auto=%s mode=%s derived=%s seq=",
+			                 ns.master_addr[0], ns.master_addr[1], ns.master_addr[2],
+			                 ns.master_addr[3], ns.master_addr[4], ns.master_addr[5],
+			                 ns.have_master ? "" : "(self)", ns.peer_count,
+			                 (unsigned)ns.height, (int)ns.last_sync_err_tu,
+			                 (unsigned)radio_get_channel(),
+			                 awdl_app_auto_channel() ? "on" : "off",
+			                 ns.seq_mode == AWDL_SEQ_VERBATIM ? "verbatim" : "mirror",
+			                 ns.seq_derived ? "yes" : "no");
+			for (unsigned i = 0; i < AWDL_CHANSEQ_LEN && o > 0 && o < (int)sizeof(nbuf); i++)
+				o += snprintf(nbuf + o, sizeof(nbuf) - (size_t)o, "%s%u",
+				              i ? "," : "", ns.self_chanseq[i]);
+			if (o > 0 && o < (int)sizeof(nbuf))
+				o += snprintf(nbuf + o, sizeof(nbuf) - (size_t)o, " mseq=");
+			for (unsigned i = 0; i < AWDL_CHANSEQ_LEN && o > 0 && o < (int)sizeof(nbuf); i++)
+				o += ns.master_has_chanseq
+				     ? snprintf(nbuf + o, sizeof(nbuf) - (size_t)o, "%s%u",
+				                i ? "," : "", ns.master_chanseq[i])
+				     : (i ? 0 : snprintf(nbuf + o, sizeof(nbuf) - (size_t)o, "-"));
+			cmd_reply(nbuf);
+		}
+	} else if (strcmp(cmd, "tx") == 0) {
+		/* Host->radio data path: did the frame reach the radio, and did the peer
+		 * ACK our unicast data frames (broadcast PSF/MIF excluded)? */
+		awdl_app_tx_counters_t c;
+		awdl_app_get_tx_counters(&c);
+		radio_stats_t st;
+		radio_get_stats(&st);
+		snprintf(out, sizeof(out),
+		         "queued=%u q_drop=%u sent_uc=%u sent_mc=%u fail=%u uc_ack=%u uc_noack=%u",
+		         (unsigned)c.queued, (unsigned)c.q_drop, (unsigned)c.sent_uc,
+		         (unsigned)c.sent_mc, (unsigned)c.tx_fail,
+		         (unsigned)st.tx_uc_ack, (unsigned)st.tx_uc_noack);
+		cmd_reply(out);
+	} else if (strcmp(cmd, "chan") == 0 || strncmp(cmd, "chan ", 5) == 0) {
+		/* `chan` shows the channel and whether auto is on; `chan <n>` pins the
+		 * node to a channel (keeps sync/peers); `chan auto` follows the master
+		 * onto its preferred 5 GHz channel (44/149) on its own. */
+		const char *arg = cmd[4] == '\0' ? "" : cmd + 5;
+		if (arg[0] == '\0') {
+			snprintf(out, sizeof(out), "chan %u (auto %s)", radio_get_channel(),
+			         awdl_app_auto_channel() ? "on" : "off");
+		} else if (strcmp(arg, "auto") == 0) {
+			awdl_app_set_auto_channel(true);
+			snprintf(out, sizeof(out), "chan auto on (now %u)", radio_get_channel());
+		} else {
+			int ch = atoi(arg);
+			int err = (ch >= 1 && ch <= 255 && radio_channel_supported((uint8_t)ch))
+			          ? awdl_app_set_channel((uint8_t)ch, false) : ESP_ERR_NOT_SUPPORTED;
+			if (err != ESP_OK)
+				snprintf(out, sizeof(out), "chan %d: %s", ch, esp_err_to_name(err));
+			else
+				snprintf(out, sizeof(out), "chan %d (auto off)", ch);
+		}
+		cmd_reply(out);
+	} else if (strcmp(cmd, "seq") == 0 || strncmp(cmd, "seq ", 4) == 0) {
+		/* `seq` shows how our advertised sequence follows the master's; `seq
+		 * mirror` (default) puts our channel only where the master is on it,
+		 * `seq verbatim` copies the master's sequence unchanged. An experiment:
+		 * which one the iPhone sends unicast to (see `node`, ping6). */
+		const char *arg = cmd[3] == '\0' ? "" : cmd + 4;
+		if (strcmp(arg, "mirror") == 0)
+			awdl_app_set_seq_mode(AWDL_SEQ_MIRROR);
+		else if (strcmp(arg, "verbatim") == 0)
+			awdl_app_set_seq_mode(AWDL_SEQ_VERBATIM);
+		if (arg[0] && strcmp(arg, "mirror") && strcmp(arg, "verbatim"))
+			snprintf(out, sizeof(out), "seq: use `seq`, `seq mirror` or `seq verbatim`");
+		else
+			snprintf(out, sizeof(out), "seq %s",
+			         awdl_app_seq_mode() == AWDL_SEQ_VERBATIM ? "verbatim" : "mirror");
+		cmd_reply(out);
+	} else if (strcmp(cmd, "wake") == 0 || strncmp(cmd, "wake ", 5) == 0) {
+		/* AirDrop wake over our own Bluetooth (ble_wake.h): `wake` shows it,
+		 * `wake <secs> [16 hex digits]` advertises for secs seconds (restarts a
+		 * running one) with the four 2-byte contact hashes, `wake off` stops. */
+		const char *arg = cmd[4] == '\0' ? "" : cmd + 5;
+		if (!ble_wake_ready()) {
+			snprintf(out, sizeof(out), "wake unavailable (no Bluetooth in this "
+			         "firmware, or it is still starting)");
+		} else if (arg[0] == '\0') {
+			unsigned left = ble_wake_remaining();
+			if (left) snprintf(out, sizeof(out), "wake on %u s left", left);
+			else snprintf(out, sizeof(out), "wake off");
+		} else if (strcmp(arg, "off") == 0) {
+			int rc = ble_wake_stop();
+			power_wake(0);
+			if (rc) snprintf(out, sizeof(out), "wake error %d", rc);
+			else snprintf(out, sizeof(out), "wake off");
+		} else {
+			char *end;
+			long secs = strtol(arg, &end, 10);
+			while (*end == ' ') end++;
+			uint8_t h[8];
+			bool have_h = false, bad = end == arg || secs < 1 || secs > BLE_WAKE_MAX_SECS;
+			if (!bad && *end) {
+				bad = strlen(end) != 16;
+				for (int i = 0; !bad && i < 8; i++) {
+					char hx[3] = {end[2 * i], end[2 * i + 1], 0};
+					char *e2;
+					h[i] = (uint8_t)strtoul(hx, &e2, 16);
+					bad = *e2 != '\0' || !hx[0] || !hx[1];
+				}
+				have_h = !bad;
+			}
+			if (bad) {
+				snprintf(out, sizeof(out), "wake: use `wake`, `wake off` or "
+				         "`wake <1..%d> [16 hex digits]`", BLE_WAKE_MAX_SECS);
+			} else {
+				int rc = ble_wake_start((unsigned)secs, have_h ? h : NULL);
+				if (!rc) power_wake((uint32_t)secs);   /* AWDL up for the send it announces */
+				if (rc) snprintf(out, sizeof(out), "wake error %d", rc);
+				else snprintf(out, sizeof(out), "wake on %u s left", ble_wake_remaining());
+			}
+		}
+		cmd_reply(out);
+	} else if (strcmp(cmd, "power") == 0 || strncmp(cmd, "power ", 6) == 0) {
+		/* `power` shows whether the radio is on and why; `power hold <secs>`
+		 * keeps it on (browsing, a receive window), `power release` ends that,
+		 * `power listen on|off` watches for AirDrop adverts and wakes on them,
+		 * `power on` / `power auto` set the mode (HELLO sets it too). */
+		const char *arg = cmd[5] == '\0' ? "" : cmd + 6;
+		bool bad = false;
+		if (strcmp(arg, "on") == 0) power_set_mode(AWDL_POWER_ON);
+		else if (strcmp(arg, "auto") == 0) power_set_mode(AWDL_POWER_AUTO);
+		else if (strcmp(arg, "release") == 0) power_hold(0);
+		else if (strcmp(arg, "listen on") == 0) {
+			if (power_listen_supported()) power_set_listen(true);
+			else bad = true;
+		} else if (strcmp(arg, "listen off") == 0) {
+			power_set_listen(false);
+		} else if (strncmp(arg, "hold ", 5) == 0) {
+			char *end;
+			long secs = strtol(arg + 5, &end, 10);
+			bad = end == arg + 5 || *end || secs < 1 || secs > 3600;
+			if (!bad) power_hold((uint32_t)secs);
+		} else if (arg[0]) bad = true;
+		if (strcmp(arg, "listen on") == 0 && !power_listen_supported())
+			snprintf(out, sizeof(out), "power: listen needs the BLE observer role, not in "
+			         "this firmware");
+		else if (bad) snprintf(out, sizeof(out), "power: use `power`, `power hold <1..3600>`, "
+		                  "`power release`, `power listen on|off`, `power on` or `power auto`");
+		else power_format_status(out, sizeof(out));
+		cmd_reply(out);
+	} else if (strcmp(cmd, "mode") == 0 || strncmp(cmd, "mode ", 5) == 0) {
+		/* `mode` shows L2 (frames to the host's awdl0) or IP (the device's own
+		 * IPv6 stack); `mode l2` / `mode ip` switch, as HELLO does. */
+		const char *arg = cmd[4] == '\0' ? "" : cmd + 5;
+		int err = 0;
+		if (strcmp(arg, "ip") == 0) err = set_mode(BRIDGE_MODE_IP);
+		else if (strcmp(arg, "l2") == 0) err = set_mode(BRIDGE_MODE_L2);
+		else if (arg[0]) err = 1;
+		if (err == 1) snprintf(out, sizeof(out), "mode: use `mode`, `mode l2` or `mode ip`");
+		else if (err) snprintf(out, sizeof(out), "mode ip: the interface did not come up");
+		else snprintf(out, sizeof(out), "mode %s", s_mode == BRIDGE_MODE_IP ? "ip" : "l2");
+		cmd_reply(out);
+	} else if (strcmp(cmd, "ip") == 0) {
+		/* IP mode: our link-local, RX/TX counters, peers learned from traffic. */
+		static char ibuf[480];   /* bridge RX task only */
+		int o = snprintf(ibuf, sizeof(ibuf), "ip mode=%s ",
+		                 s_mode == BRIDGE_MODE_IP ? "ip" : "l2");
+		if (o > 0 && (size_t)o < sizeof(ibuf))
+			o += awdl_netif_format_status(ibuf + o, sizeof(ibuf) - (size_t)o);
+		if (o > 0 && (size_t)o + 2 < sizeof(ibuf)) {
+			ibuf[o++] = ' ';
+			ibuf[o] = '\0';
+			sockproxy_format_status(ibuf + o, sizeof(ibuf) - (size_t)o);
+		}
+		cmd_reply(ibuf);
+	} else if (strncmp(cmd, "ping6 ", 6) == 0) {
+		/* `ping6 <addr> [count]`: ICMPv6 echo from the device's own stack (IP
+		 * mode). Replies come back as log lines, one per second. */
+		char addr[48] = "";
+		int count = 5;
+		sscanf(cmd + 6, "%47s %d", addr, &count);
+		char err[64];
+		if (awdl_netif_ping6(addr, count, err, sizeof(err)) == 0)
+			snprintf(out, sizeof(out), "ping6 %s: %d requests, replies follow as log lines",
+			         addr, count < 1 ? 1 : count > 100 ? 100 : count);
+		else
+			snprintf(out, sizeof(out), "ping6: %s", err);
+		cmd_reply(out);
+	} else if (strcmp(cmd, "checks") == 0) {
+		/* Bring-up checks on a new chip: is the frame length right (FCS where
+		 * we expect it, IPv6 packets neither cut short nor padded)? */
+		radio_stats_t st;
+		radio_get_stats(&st);
+		snprintf(out, sizeof(out),
+		         "fcs_ok=%u fcs_bad=%u fcs_at_sig=%u fcs_at_dump=%u type_mm=%u "
+		         "ip6_short=%u ip6_long=%u",
+		         (unsigned)st.rx_fcs_ok, (unsigned)st.rx_fcs_bad,
+		         (unsigned)st.rx_fcs_at_sig, (unsigned)st.rx_fcs_at_dump,
+		         (unsigned)st.rx_type_mismatch, (unsigned)st.rx_ip6_short,
+		         (unsigned)st.rx_ip6_long);
+		cmd_reply(out);
+	} else if (strcmp(cmd, "usbtest raw") == 0 || strncmp(cmd, "usbtest raw ", 12) == 0) {
+		int kib = cmd[11] ? atoi(cmd + 12) : 1024;
+		usbtest_raw(kib, out, sizeof(out));
+		cmd_reply(out);
+	} else if (strcmp(cmd, "usbtest") == 0 || strncmp(cmd, "usbtest ", 8) == 0) {
+		/* Device->host ceiling of the bridge path: stream full-size dummy
+		 * Ethernet frames (ethertype 0x88b5, ignored by the host stack) through
+		 * the same COBS/USB path as received AWDL data, and time it. Run it
+		 * while no transfer is going on: this task is busy meanwhile. */
+		int kib = cmd[7] ? atoi(cmd + 8) : 1024;
+		if (kib < 1) kib = 1;
+		if (kib > 8192) kib = 8192;
+		static uint8_t f[14 + 1400];
+		memset(f, 0xff, 6);
+		radio_get_self_mac(f + 6);
+		f[12] = 0x88; f[13] = 0xb5;
+		memset(f + 14, 0x5a, sizeof(f) - 14);
+		size_t total = (size_t)kib * 1024, sent = 0;
+		int fails = 0;
+		int64_t t0 = esp_timer_get_time();
+		while (sent < total && fails < 10) {
+			if (bridge_send(BRIDGE_MSG_FRAME, f, sizeof(f)) == 0) sent += sizeof(f);
+			else fails++;
+		}
+		int64_t dt = esp_timer_get_time() - t0;
+		snprintf(out, sizeof(out), "usbtest: %u bytes in %u ms = %u kB/s%s",
+		         (unsigned)sent, (unsigned)(dt / 1000),
+		         dt > 0 ? (unsigned)((uint64_t)sent * 1000u / (uint64_t)dt) : 0u,
+		         fails ? " (writes timed out)" : "");
+		cmd_reply(out);
+	} else if (strcmp(cmd, "testframe") == 0) {
+		send_test_frame();
+		cmd_reply("sent testframe");
+	} else if (strcmp(cmd, "resync") == 0) {
+		/* Re-announce every known peer on the next AWDL tick. The host sends this
+		 * on connect, because the C3 keeps running across host sessions (its USB
+		 * port does not reset the chip) and would otherwise never re-emit peers
+		 * it already knew before the host attached. */
+		awdl_app_resync_peers();
+		cmd_reply("resync");
+	} else {
+		snprintf(out, sizeof(out), "unknown cmd '%s'", cmd);
+		cmd_reply(out);
+	}
+}
+
+/* Dispatch a fully decoded message (type byte + payload). */
+static void handle_msg(const uint8_t *msg, size_t len) {
+	if (len < 1) return;
+	uint8_t type = msg[0];
+	const uint8_t *payload = msg + 1;
+	size_t plen = len - 1;
+	power_host_seen();              /* the host is there; its requests stay valid */
+
+	switch (type) {
+	case BRIDGE_MSG_ECHO:
+		bridge_send(BRIDGE_MSG_ECHO_REPLY, payload, plen);
+		break;
+	case BRIDGE_MSG_FRAME:
+		/* Host -> device Ethernet frame for awdl0. Account it, then hand it to the
+		 * TX sink (the AWDL data-TX path) if one is registered. */
+		s_frames_from_host++;
+		s_bytes_from_host += (uint32_t)plen;
+		/* In IP mode the device owns the address; the host's awdl0 must not
+		 * send on it too (ND, MLD, mDNS of a second stack). */
+		if (s_frame_sink && s_mode == BRIDGE_MODE_L2)
+			s_frame_sink(payload, plen, s_frame_sink_ctx);
+		break;
+	case BRIDGE_MSG_CMD:
+		handle_cmd(payload, plen);
+		break;
+	case BRIDGE_MSG_HELLO:
+		/* Unknown version: answer with ours and stay in L2 (docs/M4_ENTWURF.md
+		 * 4.4); the host reports the mismatch. */
+		if (plen >= 2 && payload[0] == BRIDGE_PROTO_VERSION &&
+		    payload[1] <= BRIDGE_MODE_IP)
+			set_mode(payload[1]);
+		else
+			set_mode(BRIDGE_MODE_L2);
+		/* L2 (the host's awdl0) expects AWDL all the time; in IP mode the
+		 * radio runs only while the host asks for it (power.h). */
+		power_set_mode(s_mode == BRIDGE_MODE_IP ? AWDL_POWER_AUTO : AWDL_POWER_ON);
+		/* A new host session starts with no sockets, and says how much each
+		 * connection may send it before it grants more. */
+		sockproxy_reset(plen >= 6 ? (uint32_t)(payload[2] | (payload[3] << 8) |
+		                                      (payload[4] << 16) | ((uint32_t)payload[5] << 24))
+		                          : 0);
+		send_hello_reply();
+		break;
+	case BRIDGE_MSG_UDP_OPEN:
+	case BRIDGE_MSG_UDP_SEND:
+	case BRIDGE_MSG_UDP_CLOSE:
+	case BRIDGE_MSG_TCP_LISTEN:
+	case BRIDGE_MSG_TCP_CONNECT:
+	case BRIDGE_MSG_TCP_DATA:
+	case BRIDGE_MSG_TCP_CREDIT:
+	case BRIDGE_MSG_TCP_CLOSE:
+		sockproxy_handle(type, payload, plen);
+		break;
+	/* PEER_* are device->host only (see bridge_notify_peer). */
+	default:
+		break;
+	}
+}
+
+static void bridge_rx_task(void *arg) {
+	(void)arg;
+	static cobs_rx_t rx;
+	static uint8_t out[BRIDGE_MAX_MSG];
+	uint8_t chunk[256];
+	cobs_rx_init(&rx);
+
+	for (;;) {
+		int n = usb_serial_jtag_read_bytes(chunk, sizeof(chunk), portMAX_DELAY);
+		if (n <= 0) continue;
+		for (int i = 0; i < n; i++) {
+			int r = cobs_rx_byte(&rx, chunk[i], out, sizeof(out));
+			if (r > 0)
+				handle_msg(out, (size_t)r);
+			/* r == -1: malformed/overflowed frame, already reset; ignore. */
+		}
+	}
+}
+
+int bridge_start(void) {
+	if (s_started) return 0;
+
+	s_tx_lock = xSemaphoreCreateMutex();
+	if (!s_tx_lock) return -1;
+
+	usb_serial_jtag_driver_config_t cfg = {
+		.tx_buffer_size = USB_TX_BUF,
+		.rx_buffer_size = USB_RX_BUF,
+	};
+	esp_err_t e = usb_serial_jtag_driver_install(&cfg);
+	if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) { /* INVALID_STATE: console already installed it */
+		vSemaphoreDelete(s_tx_lock);
+		s_tx_lock = NULL;
+		return e;
+	}
+
+	s_l2q_lock = xSemaphoreCreateMutex();
+	s_l2q_freed = xSemaphoreCreateBinary();
+	if (s_l2q_lock && s_l2q_freed) l2q_alloc(255);   /* L2 after boot */
+	s_peer_q   = xQueueCreate(BRIDGE_PEER_Q_LEN, sizeof(peer_evt_t));
+	if (!s_rx_fwd_q || !s_peer_q) {
+		if (s_rx_fwd_q) vQueueDelete(s_rx_fwd_q);
+		if (s_peer_q)   vQueueDelete(s_peer_q);
+		s_rx_fwd_q = NULL;
+		s_peer_q = NULL;
+		vSemaphoreDelete(s_tx_lock);
+		s_tx_lock = NULL;
+		return -1;
+	}
+
+	/* Reduce corruption of the binary frame stream by silencing ESP_LOG. This is
+	 * not absolute: ROM/early-boot output (before this runs) and the panic
+	 * handler (esp_rom_printf, crash only) still reach the same peripheral. Those
+	 * are pre-stream or crash-only, and COBS resynchronises at the next 0x00
+	 * delimiter, so steady-state framing is unaffected. */
+	esp_log_level_set("*", ESP_LOG_NONE);
+
+	/* Set started before creating the task: the RX task runs at a higher
+	 * priority and may dispatch (and reply to) a queued ECHO before xTaskCreate
+	 * returns; bridge_send must not reject that first reply. */
+	s_started = true;
+	if (xTaskCreate(bridge_rx_task, "bridge_rx", 4096, NULL, 6, NULL) != pdPASS) {
+		s_started = false;
+		vQueueDelete(s_rx_fwd_q);
+		s_rx_fwd_q = NULL;
+		vQueueDelete(s_peer_q);
+		s_peer_q = NULL;
+		vSemaphoreDelete(s_tx_lock);
+		s_tx_lock = NULL;
+		/* Logging was just silenced; restore it so the caller's error is visible
+		 * (nothing was transmitted yet, so no COBS stream to corrupt). */
+		esp_log_level_set("*", ESP_LOG_ERROR);
+		return -1;
+	}
+	/* The forwarding task is best-effort: if it fails to start, RX frames are
+	 * dropped (queue fills) but the control link stays up, so do not fail. */
+	if (xTaskCreate(bridge_fwd_task, "bridge_fwd", 3072, NULL, 5, &s_fwd_task) != pdPASS)
+		bridge_log("warning: rx-forward task did not start");
+	if (xTaskCreate(bridge_peer_task, "bridge_peer", 2560, NULL, 4, NULL) != pdPASS)
+		bridge_log("warning: peer-notify task did not start");
+
+	bridge_log("bridge up");
+	return 0;
+}
+
+int bridge_send(uint8_t type, const void *payload, size_t len) {
+	if (!s_started || len > BRIDGE_MAX_PAYLOAD) return -1;
+
+	static uint8_t msg[BRIDGE_MAX_MSG];
+	static uint8_t enc[COBS_ENCODE_BOUND(BRIDGE_MAX_MSG) + 1];
+
+	xSemaphoreTake(s_tx_lock, portMAX_DELAY);
+	msg[0] = type;
+	if (len && payload) memcpy(msg + 1, payload, len);
+	size_t mlen = 1 + len;
+	size_t enc_len = cobs_encode(msg, mlen, enc, sizeof(enc) - 1);
+	int ret = -1;
+	if (enc_len > 0) {
+		enc[enc_len++] = 0x00; /* frame delimiter */
+		/* Write the whole frame, looping over short writes. A bounded timeout
+		 * keeps a host that stops draining from wedging the lock (and thus every
+		 * other sender) forever; on timeout we drop the rest of this frame. */
+		size_t off = 0;
+		ret = 0;
+		while (off < enc_len) {
+			int w = usb_serial_jtag_write_bytes(enc + off, enc_len - off,
+			                                    pdMS_TO_TICKS(1000));
+			if (w <= 0) { ret = -1; break; } /* host not draining: drop */
+			off += (size_t)w;
+		}
+	}
+	xSemaphoreGive(s_tx_lock);
+	return ret;
+}
+
+void bridge_log(const char *fmt, ...) {
+	char buf[200];
+	va_list ap;
+	va_start(ap, fmt);
+	int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	if (n < 0) return;
+	if (n > (int)sizeof(buf) - 1) n = sizeof(buf) - 1;
+	bridge_send(BRIDGE_MSG_LOG, buf, (size_t)n);
+}

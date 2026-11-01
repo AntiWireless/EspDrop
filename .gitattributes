@@ -1,0 +1,4 @@
+# Line ends that must not depend on the checkout's core.autocrlf: cmd.exe
+# misreads batch files with bare LF, bash rejects scripts with CRLF.
+*.cmd text eol=crlf
+*.sh  text eol=lf

@@ -1,0 +1,44 @@
+# --- Build output -----------------------------------------------------------
+build/
+**/build/
+firmware/**/sdkconfig
+firmware/**/sdkconfig.old
+firmware/**/managed_components/
+firmware/**/dependencies.lock
+*.o
+*.a
+*.elf
+*.bin
+*.map
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# --- Editors ----------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# --- Privacy: never commit captures or logs ---------------------------------
+# Wi-Fi/BLE captures and serial logs contain MAC addresses and device names
+# ("Anna's iPhone") of everyone nearby. Keep them local.
+*.pcap
+*.pcapng
+*.cap
+captures/
+logs/
+*.log
+
+# Native host test binary
+test_awdl_frame
+test_awdl_cobs
+test_awdl_power
+
+# Separate build dirs for the bridge-mode / per-chip firmware
+build_bridge/
+firmware/**/build_*/
