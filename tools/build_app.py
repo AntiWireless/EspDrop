@@ -321,6 +321,72 @@ def smoke(exe):
     print("smoke: --version, check and the window are fine", flush=True)
 
 
+def smoke_install(exe):
+    """Start the single file as a double-click would, from Downloads, and see
+    it install itself, start from there and remove the download. Windows: for
+    real in this user's profile (CI only: --smoke-install); Linux: in a
+    throwaway home folder."""
+    import tempfile
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("ESPDROP_NO_DESKTOP", "ESPDROP_PORTABLE", "QT_QPA_PLATFORM")}
+    env["ESPDROP_INSTANCE"] = f"espdrop-install-{os.getpid()}"
+    if IS_WINDOWS:
+        downloads = os.path.join(os.environ["USERPROFILE"], "Downloads")
+        installed = os.path.join(os.environ["LOCALAPPDATA"], "Programs", NAME, NAME + ".exe")
+    else:
+        home = tempfile.mkdtemp(prefix="espdrop-home-")
+        for k in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
+            env.pop(k, None)
+        env.update(HOME=home, QT_QPA_PLATFORM="offscreen")
+        downloads = os.path.join(home, "Downloads")
+        installed = os.path.join(home, ".local", "bin", "espdrop")
+    os.makedirs(downloads, exist_ok=True)
+    download = os.path.join(downloads, os.path.basename(exe) + ("" if IS_WINDOWS else "-dl"))
+    if IS_WINDOWS and not download.endswith(".exe"):
+        download += ".exe"
+    shutil.copy2(exe, download)
+    if IS_WINDOWS:
+        # Explorer's way: no console, no valid standard handles (WinError 6
+        # once came from passing those on to the programs it starts).
+        saved = dict(os.environ)
+        os.environ.clear()
+        os.environ.update(env)
+        try:
+            os.startfile(download)
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+    else:
+        subprocess.Popen([download], env=env, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    end = time.monotonic() + 120
+    while time.monotonic() < end and (os.path.exists(download) or not os.path.exists(installed)):
+        time.sleep(1)
+    try:
+        if not os.path.exists(installed):
+            sys.exit(f"smoke: not installed to {installed}")
+        if os.path.exists(download):
+            sys.exit(f"smoke: the download {download} is still there")
+        if IS_WINDOWS:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Software\Microsoft\Windows\CurrentVersion\Uninstall\EspDrop") as k:
+                uninstall = winreg.QueryValueEx(k, "UninstallString")[0]
+            lnk = os.path.join(os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu",
+                               "Programs", "EspDrop.lnk")
+            if not os.path.exists(lnk):
+                sys.exit("smoke: no start menu entry")
+            print(f"smoke: installed {installed}; Installed apps: {uninstall}", flush=True)
+        else:
+            print(f"smoke: installed {installed}", flush=True)
+    finally:
+        if IS_WINDOWS:
+            subprocess.run(["taskkill", "/F", "/IM", NAME + ".exe"], capture_output=True)
+        else:
+            subprocess.run(["pkill", "-f", installed], capture_output=True)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--firmware", help="firmware image to ship (espdrop-esp32c5.bin)")
@@ -328,6 +394,9 @@ def main(argv=None):
     ap.add_argument("--zig", action="store_true", help="Windows: compile with Zig, not MSVC")
     ap.add_argument("--jobs", type=int, help="parallel C compilations (default: CPUs)")
     ap.add_argument("--smoke", action="store_true", help="start the built program to check it")
+    ap.add_argument("--smoke-install", action="store_true",
+                    help="also start the single file as a double-click would and check "
+                         "that it installs itself (Windows: for real, for CI machines)")
     ap.add_argument("--folder", action="store_true",
                     help="a program folder (zip/tar.gz) instead of one file")
     ap.add_argument("--out", default=os.path.join(ROOT, "build"), help="build folder")
@@ -377,6 +446,9 @@ def main(argv=None):
     if args.smoke:
         step("starting the built program")
         smoke(exe)
+    if args.smoke_install and not args.folder:
+        step("installing it as a double-click does")
+        smoke_install(exe)
     step("packing")
     path = package(dist, build) if args.folder else package_onefile(exe, build)
     platform_name = "windows" if IS_WINDOWS else "linux"

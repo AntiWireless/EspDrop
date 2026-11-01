@@ -147,7 +147,8 @@ def uninstall(exe=None):
         subprocess.Popen(
             'cmd /c "ping -n 4 127.0.0.1 >nul & ' + " & ".join(steps) + '"',
             creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0), close_fds=True)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0), close_fds=True,
+            **integration.NO_STDIO)
     else:
         try:
             if os.path.exists(exe):
@@ -164,7 +165,7 @@ def start(path, args):
     subprocess.Popen([path, *args], close_fds=True,
                      creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
                      if IS_WINDOWS else 0,
-                     start_new_session=not IS_WINDOWS)
+                     start_new_session=not IS_WINDOWS, **integration.NO_STDIO)
 
 
 def argv_without(argv, flag, with_value=True):

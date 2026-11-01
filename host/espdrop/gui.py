@@ -1726,5 +1726,6 @@ def main(port=None, background=False, send=None, installed_from=None):
     if w.restart_requested:                    # the same app again, the window shown
         import subprocess
         subprocess.Popen(integration.launch_command(), close_fds=True,
-                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
+                         **integration.NO_STDIO)
     return rc

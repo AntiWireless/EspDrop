@@ -111,7 +111,7 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = Linux ]; then export PATH="$RUNNER_TEMP/venv/bin:$PATH"; fi
-          "$PY" tools/build_app.py --firmware build/firmware/espdrop-esp32c5.bin --smoke
+          "$PY" tools/build_app.py --firmware build/firmware/espdrop-esp32c5.bin --smoke --smoke-install
       - uses: actions/upload-artifact@v4
         with:
           name: EspDrop-${{ matrix.name }}

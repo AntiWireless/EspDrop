@@ -42,6 +42,13 @@ SENDTO_NAME = "EspDrop (AirDrop).lnk"
 MENU_TEXT = N_("Mit EspDrop senden")          # in the language the app runs in
 
 
+# The window has no console when started by a double-click (Windows): its
+# standard handles are not valid ones, and a child that would inherit them
+# fails with WinError 6 "The handle is invalid". Every child gets these.
+NO_STDIO = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL}
+
+
 def launch_command(*args):
     """argv that starts the app with these arguments, as it runs now: the
     venv's pythonw on Windows (no console window), tools/espdrop.py of this
@@ -167,7 +174,7 @@ def _set_windows_send(on):
                   "$s.Description = $env:ESPDROP_DESC; $s.Save()")
         os.makedirs(os.path.dirname(lnk), exist_ok=True)
         subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                       env=env, check=True, capture_output=True,
+                       env=env, check=True, capture_output=True, stdin=subprocess.DEVNULL,
                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     else:
         if os.path.exists(lnk):
@@ -242,7 +249,7 @@ def set_program(exe, version, on=True):
               "$s.Description = $env:ESPDROP_DESC; $s.Save()")
     os.makedirs(os.path.dirname(lnk), exist_ok=True)
     subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                   env=env, check=True, capture_output=True,
+                   env=env, check=True, capture_output=True, stdin=subprocess.DEVNULL,
                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
@@ -405,6 +412,7 @@ def _refresh_desktop_db(directory):
     """File managers find "Open with" apps through mimeinfo.cache."""
     try:
         subprocess.run(["update-desktop-database", directory], capture_output=True,
+                       stdin=subprocess.DEVNULL,
                        timeout=10)
     except (OSError, subprocess.SubprocessError):
         pass
