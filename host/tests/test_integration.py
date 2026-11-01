@@ -202,6 +202,17 @@ class UnpackedCopiesTest(unittest.TestCase):
         self.run_in(os.path.join(app, "v0.1.0-20261101"))
         self.assertEqual(sorted(os.listdir(app)), ["notes", "v0.1.0-20261101"])
 
+    def test_own_folder_under_another_spelling_stays(self):
+        # Windows may give our path in its 8.3 short form; a symlink stands
+        # in for that: another spelling of the very folder we run from.
+        app = os.path.join(self.tmp.name, "cache", "EspDrop", "app")
+        ours = os.path.join(app, "v0.1.0-20261101093700")
+        os.makedirs(ours)
+        short = os.path.join(app, "V01~1.0-2")
+        os.symlink(ours, short)                     # what bundle_dir() might say
+        self.run_in(short)
+        self.assertTrue(os.path.isdir(ours))
+
     def test_anything_else_is_left_alone(self):
         # A folder build, or a cache path we did not choose: nothing is removed.
         other = os.path.join(self.tmp.name, "Programs", "EspDrop")

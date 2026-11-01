@@ -72,5 +72,14 @@ def clean_old_unpacked():
         return                                 # not our cache folder: leave it alone
     for name in os.listdir(parent):
         path = os.path.join(parent, name)
-        if path != here and os.path.isdir(path) and name.startswith("v"):
+        if not name.startswith("v") or not os.path.isdir(path):
+            continue
+        try:
+            ours = os.path.samefile(path, here)
+        except OSError:
+            continue                           # cannot tell: leave it
+        # Compared as the same folder, not as text: Windows may hand us the
+        # short 8.3 form of our own path (V01~1.0-2), which once deleted the
+        # running program's files.
+        if not ours:
             shutil.rmtree(path, ignore_errors=True)
