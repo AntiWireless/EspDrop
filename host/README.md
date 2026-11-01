@@ -162,13 +162,32 @@ pointing at the program itself; a moved folder is followed at the next start.
 **Builds on GitHub** (`.github/workflows/build.yml`), on every push that
 touches the code: the firmware with ESP-IDF 6.0.3 (container
 `espressif/idf:v6.0.3`) merged into one image; the app with Nuitka on Windows
-and on Ubuntu 22.04 (its glibc is the oldest the Linux build needs), the
-firmware inside, each started with `--smoke`; the host and firmware tests. The
+and on Ubuntu 22.04 (built there, the program needs glibc 2.35, see below),
+the firmware inside, each started with `--smoke`; the host and firmware tests. The
 files are on the run's page (Artifacts). A tag `v*` drafts a release with
 them.
 
 The Windows program is not signed: SmartScreen asks once ("Weitere
-Informationen" → "Trotzdem ausführen").
+Informationen" → "Trotzdem ausführen"). It runs on Windows 10 and 11, 64 bit.
+
+**Which Linux the program runs on.** 64-bit PCs (x86_64; not ARM, so not a
+Raspberry Pi) with glibc 2.35 or newer; the build measures this from every
+file of the program and prints it ("runs on Linux with glibc 2.35 or
+newer"). `ldd --version` shows a system's glibc. That is:
+
+| runs | does not run (glibc too old) |
+|---|---|
+| Ubuntu 22.04 LTS and newer, also Kubuntu, Xubuntu, Linux Mint 21+, Pop!_OS 22.04+, Zorin OS 17+, elementary OS 7+ | Ubuntu 20.04, Linux Mint 20 (2.31) |
+| Debian 12 "Bookworm" and newer (2.36) | Debian 11 (2.31) |
+| Fedora 36 and newer | RHEL, AlmaLinux, Rocky Linux 9 (2.34) |
+| Arch, Manjaro, EndeavourOS, openSUSE Tumbleweed | openSUSE Leap 15 (2.31) |
+
+Everything else the program needs it carries (Python, Qt with its X11 and
+Wayland plugins, libarchive as a fallback). The desktop may be X11 or
+Wayland, GNOME, KDE, Xfce, Cinnamon or another. The icon in the panel needs
+a tray (KDE, Xfce, Cinnamon, Ubuntu's GNOME; plain GNOME as on Fedora only
+with the "AppIndicator" extension); without one the window simply stays
+open. The ESP's port needs the group `dialout` (`uucp` on Arch).
 
 ## Windows 10/11
 

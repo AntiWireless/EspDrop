@@ -745,6 +745,17 @@ Test unter Windows:
    `espdrop status` (über `espdrop.cmd`, das auf das Programm wartet) geben ihre
    Ausgabe in diesem Fenster aus.
 
+Für welche Linux-Versionen: 64-Bit-PCs (x86_64, kein ARM/Raspberry Pi) mit
+glibc 2.35 oder neuer (beim Build gemessen; `ldd --version` zeigt sie). Das
+sind Ubuntu 22.04 LTS und neuer samt Kubuntu, Xubuntu, Linux Mint 21+,
+Pop!_OS 22.04+, Zorin OS 17+, elementary OS 7+; Debian 12 und neuer; Fedora 36
+und neuer; Arch, Manjaro, EndeavourOS, openSUSE Tumbleweed. Nicht: Ubuntu
+20.04, Linux Mint 20, Debian 11, RHEL/Alma/Rocky 9, openSUSE Leap 15. X11 und
+Wayland gehen beide; das Symbol im Infobereich braucht einen Tray (KDE, Xfce,
+Cinnamon, Ubuntus GNOME; reines GNOME wie bei Fedora nur mit der Erweiterung
+„AppIndicator“), sonst bleibt das Fenster offen. Alles Weitere (Python, Qt,
+X11-Bibliotheken) bringt das Programm mit.
+
 Test unter Linux:
 1. `tar xzf EspDrop-0.1.0-linux-x86_64.tar.gz`, `EspDrop/EspDrop` starten
    (Zugriff auf `/dev/ttyACM0` über die Gruppe `dialout` wie bisher).
