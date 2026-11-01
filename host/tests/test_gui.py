@@ -59,6 +59,7 @@ class GuiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+        os.environ["ESPDROP_LANG"] = "de"          # the texts below are the German ones
 
     def setUp(self):
         from espdrop import gui
@@ -84,7 +85,7 @@ class GuiTest(unittest.TestCase):
             time.sleep(0.02)
         return cond()
 
-    def window(self, fake, background=False):
+    def window(self, fake, background=False, wait_text="ESP verbunden"):
         from espdrop.session import Session
 
         def factory(w):
@@ -95,7 +96,7 @@ class GuiTest(unittest.TestCase):
                                      ask_timeout=20.0, tray=False, background=background)
         if not background:
             self.w.show()
-        self.assertTrue(self.pump(lambda: self.w.device_label.text().startswith("ESP verbunden")),
+        self.assertTrue(self.pump(lambda: self.w.device_label.text().startswith(wait_text)),
                         self.w.device_label.text())
         return self.w
 
@@ -445,6 +446,25 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(d.install_btn.text(), "Erneut versuchen")
         self.assertTrue(d.close_btn.isEnabled())
         d.close()
+
+    def test_english(self):
+        from espdrop import i18n
+        self.settings.setValue("language", "en")
+        try:
+            w = self.window(DuplexBridgeDevice(), wait_text="ESP connected")
+            self.assertEqual(w.search_btn.text(), "Search")
+            self.assertEqual(w.visibility.labels, ["Off", "10 minutes", "Everyone"])
+            self.assertIn("Nobody can send you anything", w.receive_left.text())
+            self.assertEqual(self.gui.what_text(["a.jpg", "b.heic"]), "2 photos")
+            self.assertEqual(self.gui.human(2_400_000), "2.4 MB")
+            # back to German: shown after a restart, which the button offers
+            w.language.select(1)
+            self.assertEqual(self.settings.value("language"), "de")
+            self.assertFalse(w.restart_btn.isHidden())
+            w.language.select(2)
+            self.assertTrue(w.restart_btn.isHidden())
+        finally:
+            i18n.set_language("de")
 
     def test_built_text(self):
         b = self.gui.built_text

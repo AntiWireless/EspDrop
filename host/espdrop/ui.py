@@ -15,6 +15,8 @@
 import os
 import re
 
+from .i18n import N_, _
+
 from PySide6.QtCore import (QEasingCurve, QPoint, QPointF, QRect, QRectF, QSize, Qt,
                             QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import (QColor, QFont, QFontMetrics, QGuiApplication, QIcon, QImageReader,
@@ -1122,8 +1124,8 @@ class DeviceTile(QWidget):
     clicked = Signal(str)
     dropped = Signal(str, list)
     W, H, AV = 104, 124, 58
-    NOTES = {"waiting": "Warten …", "sent": "Gesendet", "declined": "Abgelehnt",
-             "failed": "Fehlgeschlagen", "cancelled": "Abgebrochen"}
+    NOTES = {"waiting": N_("Warten …"), "sent": N_("Gesendet"), "declined": N_("Abgelehnt"),
+             "failed": N_("Fehlgeschlagen"), "cancelled": N_("Abgebrochen")}
 
     def __init__(self, rid, parent=None):
         super().__init__(parent)
@@ -1149,7 +1151,7 @@ class DeviceTile(QWidget):
 
     def set_info(self, name, model, present, named):
         self.name, self.model, self.present, self.named = name, model, present, named
-        self.setToolTip(name if named else f"{name} (Name noch unbekannt)")
+        self.setToolTip(name if named else name + _(" (Name noch unbekannt)"))
         self.setAccessibleName(name)
         self.update()
 
@@ -1168,11 +1170,11 @@ class DeviceTile(QWidget):
 
     def caption(self):
         if self.phase == "sending":
-            return f"Senden … {int(self.progress * 100)} %"
+            return _("Senden … {percent} %").format(percent=int(self.progress * 100))
         if self.phase in self.NOTES:
-            return self.NOTES[self.phase]
+            return _(self.NOTES[self.phase])
         if not self.present:
-            return "nicht in der Nähe"
+            return _("nicht in der Nähe")
         return pretty_model(self.model)
 
     def _step(self):
@@ -1346,9 +1348,9 @@ class TransferRow(QWidget):
         v.addWidget(self.sub)
         v.addWidget(self.bar)
         h.addLayout(v, 1)
-        self.cancel_btn = tool_button("x", "Abbrechen")
+        self.cancel_btn = tool_button("x", _("Abbrechen"))
         self.cancel_btn.clicked.connect(self.cancel)
-        self.open_btn = tool_button("search", "Im Ordner zeigen")
+        self.open_btn = tool_button("search", _("Im Ordner zeigen"))
         self.open_btn.clicked.connect(self.open)
         h.addWidget(self.cancel_btn)
         h.addWidget(self.open_btn)
@@ -1403,7 +1405,7 @@ class TransferList(QWidget):
         self.box = QVBoxLayout(self)
         self.box.setContentsMargins(0, 0, 0, 0)
         self.box.setSpacing(0)
-        self.placeholder = label("Noch keine Übertragungen.", "secondary", center=True)
+        self.placeholder = label(_("Noch keine Übertragungen."), "secondary", center=True)
         self.placeholder.setContentsMargins(0, 16, 0, 16)
         self.box.addWidget(self.placeholder)
 

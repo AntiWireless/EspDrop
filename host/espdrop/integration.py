@@ -26,6 +26,8 @@ import os
 import subprocess
 import sys
 
+from .i18n import N_, _
+
 IS_WINDOWS = os.name == "nt"
 try:
     import winreg                              # Windows only
@@ -37,7 +39,7 @@ ICON = None              # our icon file, .ico on Windows (gui.py writes it at s
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 MENU_KEY = r"Software\Classes\*\shell\EspDrop"
 SENDTO_NAME = "EspDrop (AirDrop).lnk"
-MENU_TEXT = "Mit EspDrop senden"
+MENU_TEXT = N_("Mit EspDrop senden")          # in the language the app runs in
 
 
 def launch_command(*args):
@@ -71,11 +73,11 @@ def supported():
     "send_hint": what the label switches on}."""
     if IS_WINDOWS:
         return {"autostart": winreg is not None,
-                "send": "Im Rechtsklickmenü des Explorers anbieten",
-                "send_hint": "„Senden an → EspDrop (AirDrop)“ und „Mit EspDrop senden“"}
+                "send": N_("Im Rechtsklickmenü des Explorers anbieten"),
+                "send_hint": N_("„Senden an → EspDrop (AirDrop)“ und „Mit EspDrop senden“")}
     if sys.platform.startswith("linux"):
-        return {"autostart": True, "send": "Im Dateimanager anbieten",
-                "send_hint": "„Öffnen mit → AirDrop (EspDrop)“"}
+        return {"autostart": True, "send": N_("Im Dateimanager anbieten"),
+                "send_hint": N_("„Öffnen mit → AirDrop (EspDrop)“")}
     return {"autostart": False, "send": None, "send_hint": None}
 
 
@@ -100,7 +102,7 @@ def set_autostart(on):
     if on:
         _write_desktop(path, {
             "Type": "Application", "Name": APP,
-            "Comment": "AirDrop über den ESP32 – empfangsbereit im Hintergrund",
+            "Comment": _("AirDrop über den ESP32 – empfangsbereit im Hintergrund"),
             "Exec": _exec_line(cmd), "Icon": ICON or "document-send", "Terminal": "false",
             "X-GNOME-Autostart-enabled": "true"})
     elif os.path.exists(path):
@@ -123,7 +125,7 @@ def set_send_menu(on):
     if on:
         changed = _write_desktop(path, {
             "Type": "Application", "Name": "AirDrop (EspDrop)", "Icon": ICON or "document-send",
-            "Comment": "Dateien per AirDrop an ein iPhone/iPad senden",
+            "Comment": _("Dateien per AirDrop an ein iPhone/iPad senden"),
             "Exec": _exec_line(launch_command("--send")) + " %F",
             "Terminal": "false", "NoDisplay": "true",
             # Common types; "Open with other application" lists the app for any.
@@ -148,7 +150,7 @@ def _set_windows_send(on):
     if on:
         # The right-click entry first: plain registry values, it works even
         # where PowerShell below is blocked (the error still reaches the caller).
-        _reg_set(MENU_KEY, "", MENU_TEXT)
+        _reg_set(MENU_KEY, "", _(MENU_TEXT))
         _reg_set(MENU_KEY, "Icon", ICON or cmd[0])
         _reg_set(MENU_KEY + r"\command", "", subprocess.list2cmdline(cmd) + ' "%1"')
         # Explorer appends the selected files to the shortcut's arguments.
@@ -157,12 +159,12 @@ def _set_windows_send(on):
         env = dict(os.environ, ESPDROP_LNK=lnk, ESPDROP_EXE=cmd[0],
                    ESPDROP_ARGS=subprocess.list2cmdline(cmd[1:]),
                    ESPDROP_DIR=os.path.dirname(cmd[1]) if len(cmd) > 1 else "",
-                   ESPDROP_ICON=ICON or "")
+                   ESPDROP_ICON=ICON or "", ESPDROP_DESC=_("Per AirDrop senden (EspDrop)"))
         script = ("$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:ESPDROP_LNK);"
                   "$s.TargetPath = $env:ESPDROP_EXE; $s.Arguments = $env:ESPDROP_ARGS;"
                   "$s.WorkingDirectory = $env:ESPDROP_DIR;"
                   "if ($env:ESPDROP_ICON) { $s.IconLocation = $env:ESPDROP_ICON + ',0' };"
-                  "$s.Description = 'Per AirDrop senden (EspDrop)'; $s.Save()")
+                  "$s.Description = $env:ESPDROP_DESC; $s.Save()")
         os.makedirs(os.path.dirname(lnk), exist_ok=True)
         subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
                        env=env, check=True, capture_output=True,
@@ -186,7 +188,7 @@ def set_launcher():
     path = _xdg_launcher()
     if _write_desktop(path, {
             "Type": "Application", "Name": APP, "GenericName": "AirDrop",
-            "Comment": "AirDrop mit iPhone, iPad und Mac über den ESP32-C5",
+            "Comment": _("AirDrop mit iPhone, iPad und Mac über den ESP32-C5"),
             "Exec": _exec_line(launch_command()), "Icon": ICON or "document-send",
             "Terminal": "false", "Categories": "Network;FileTransfer;",
             "Keywords": "AirDrop;iPhone;iPad;Mac;teilen;senden;",
@@ -210,6 +212,7 @@ def refresh():
         if IS_WINDOWS:
             want = subprocess.list2cmdline(launch_command("--send")) + ' "%1"'
             if (_reg_get(MENU_KEY + r"\command", "") != want
+                    or _reg_get(MENU_KEY, "") != _(MENU_TEXT)          # another language
                     or _reg_get(MENU_KEY, "Icon") != (ICON or launch_command()[0])
                     or not os.path.isfile(_sendto_path())):
                 set_send_menu(True)

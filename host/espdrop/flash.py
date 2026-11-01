@@ -24,6 +24,8 @@ import os
 import re
 import struct
 
+from .i18n import _
+
 IMAGE_MAGIC = 0xE9
 APP_DESC_MAGIC = 0xABCD5432
 APP_OFFSET = 0x10000
@@ -55,7 +57,7 @@ class Firmware:
 
     @property
     def size(self):
-        return sum(len(data) for _, data in self.parts)
+        return sum(len(data) for _offset, data in self.parts)
 
     def __repr__(self):
         return f"<Firmware {self.version} {self.chip} {self.source}>"
@@ -94,21 +96,24 @@ def load(path):
         with open(path, "rb") as f:
             data = f.read()
     except OSError as e:
-        raise FirmwareError(f"{path} lässt sich nicht lesen: {e.strerror or e}") from e
+        raise FirmwareError(_("{path} lässt sich nicht lesen: {error}").format(
+            path=path, error=e.strerror or e)) from e
     chip, desc = image_chip(data, APP_OFFSET), app_desc(data, APP_OFFSET)
     if chip is None or desc is None:
         if image_chip(data) is not None and app_desc(data) is not None:
-            raise FirmwareError("Das ist nur der App-Teil einer Firmware. Gebraucht wird das "
-                                f"vollständige Image ({FIRMWARE_NAME}) oder der Build-Ordner.")
-        raise FirmwareError("Keine ESP-Firmware: es fehlt die App an 0x10000.")
+            raise FirmwareError(_("Das ist nur der App-Teil einer Firmware. Gebraucht wird das "
+                                  "vollständige Image ({name}) oder der Build-Ordner.").format(
+                                      name=FIRMWARE_NAME))
+        raise FirmwareError(_("Keine ESP-Firmware: es fehlt die App an 0x10000."))
     boot = BOOT_OFFSET.get(chip)
     if boot is None:
-        raise FirmwareError(f"Firmware für einen anderen Chip (Kennung {chip}).")
+        raise FirmwareError(_("Firmware für einen anderen Chip (Kennung {chip}).").format(
+            chip=chip))
     if image_chip(data, boot) != chip:
-        raise FirmwareError(f"Kein vollständiges Image: der Bootloader für den {CHIPS[chip]} "
-                            f"fehlt an {boot:#x}.")
+        raise FirmwareError(_("Kein vollständiges Image: der Bootloader für den {chip} fehlt "
+                              "an {offset}.").format(chip=CHIPS[chip], offset=f"{boot:#x}"))
     if data[PART_TABLE_OFFSET:PART_TABLE_OFFSET + 2] != b"\xaa\x50":
-        raise FirmwareError("Kein vollständiges Image: die Partitionstabelle fehlt an 0x8000.")
+        raise FirmwareError(_("Kein vollständiges Image: die Partitionstabelle fehlt an 0x8000."))
     return Firmware([(0, data)], chip, desc, path)
 
 
@@ -119,26 +124,31 @@ def _load_build(folder):
         files = {int(off, 16): name for off, name in args["flash_files"].items()}
         app_offset = int(args["app"]["offset"], 16)
     except (OSError, ValueError, KeyError, TypeError) as e:
-        raise FirmwareError(f"{folder} ist kein ESP-IDF-Build-Ordner ({e}).") from e
+        raise FirmwareError(_("{folder} ist kein ESP-IDF-Build-Ordner ({error}).").format(
+            folder=folder, error=e)) from e
     if _bridge_mode(folder) is False:
-        raise FirmwareError("Dieser Build ist die Test-Konsole, nicht die Firmware für die App: "
-                            "mit sdkconfig.bridge.defaults bauen (firmware/README.md).")
+        raise FirmwareError(_("Dieser Build ist die Test-Konsole, nicht die Firmware für die "
+                              "App: mit sdkconfig.bridge.defaults bauen (firmware/README.md)."))
     parts = []
     for offset in sorted(files):
         try:
             with open(os.path.join(folder, files[offset]), "rb") as f:
                 parts.append((offset, f.read()))
         except OSError as e:
-            raise FirmwareError(f"{files[offset]} fehlt im Build ({e.strerror or e}).") from e
+            raise FirmwareError(_("{name} fehlt im Build ({error}).").format(
+                name=files[offset], error=e.strerror or e)) from e
     app = dict(parts).get(app_offset, b"")
     chip, desc = image_chip(app), app_desc(app)
     if chip is None or desc is None:
-        raise FirmwareError(f"Die App im Build ({files.get(app_offset)}) ist kein ESP-Image.")
+        raise FirmwareError(_("Die App im Build ({name}) ist kein ESP-Image.").format(
+            name=files.get(app_offset)))
     if chip not in CHIPS:
-        raise FirmwareError(f"Firmware für einen anderen Chip (Kennung {chip}).")
+        raise FirmwareError(_("Firmware für einen anderen Chip (Kennung {chip}).").format(
+            chip=chip))
     for offset, data in parts:
         if data[:1] == bytes([IMAGE_MAGIC]) and image_chip(data) != chip:
-            raise FirmwareError(f"{files[offset]} ist für einen anderen Chip als die App.")
+            raise FirmwareError(_("{name} ist für einen anderen Chip als die App.").format(
+                name=files[offset]))
     return Firmware(parts, chip, desc, folder)
 
 
@@ -230,8 +240,8 @@ def flash(fw, port, on_progress=None, on_log=None):
         from esptool.cmds import attach_flash, detect_chip, reset_chip, run_stub, write_flash
         from esptool.logger import TemplateLogger, log
     except ImportError as e:
-        raise FirmwareError("esptool fehlt: tools/opendrop_install.py installiert es "
-                            "(oder pip install esptool).") from e
+        raise FirmwareError(_("esptool fehlt: tools/opendrop_install.py installiert es "
+                              "(oder pip install esptool).")) from e
     report = on_progress or (lambda stage, fraction=None: None)
     parts = sorted(fw.parts)                   # written in this order
 
@@ -283,8 +293,9 @@ def flash(fw, port, on_progress=None, on_log=None):
     try:
         with detect_chip(port) as esp:
             if esp.IMAGE_CHIP_ID != fw.chip_id:
-                raise FirmwareError(f"Am Anschluss {port} steckt ein {esp.CHIP_NAME}; "
-                                    f"diese Firmware ist für den {fw.chip}.")
+                raise FirmwareError(_("Am Anschluss {port} steckt ein {found}; diese Firmware "
+                                      "ist für den {chip}.").format(
+                                          port=port, found=esp.CHIP_NAME, chip=fw.chip))
             esp = run_stub(esp)
             attach_flash(esp)
             report("write", 0.0)
@@ -318,11 +329,11 @@ def explain(error, port):
     low = text.lower()
     if any(k in low for k in ("could not open port", "permission denied", "access is denied",
                               "zugriff verweigert", "resource busy", "errno 16")):
-        hint = (" Unter Linux muss der Benutzer in der Gruppe 'dialout' sein."
+        hint = (_(" Unter Linux muss der Benutzer in der Gruppe 'dialout' sein.")
                 if os.name == "posix" else "")
-        return (f"Der Anschluss {port} ist belegt oder gesperrt: hat ihn ein anderes Programm "
-                f"offen (awdl_bridge.py, ein serieller Monitor)?{hint}")
+        return _("Der Anschluss {port} ist belegt oder gesperrt: hat ihn ein anderes Programm "
+                 "offen (awdl_bridge.py, ein serieller Monitor)?").format(port=port) + hint
     if any(k in low for k in ("failed to connect", "no serial data", "wrong boot mode")):
-        return ("Der ESP ließ sich nicht in den Bootloader schalten. Abstecken, die BOOT-Taste "
-                "gedrückt halten, wieder anstecken, loslassen und erneut versuchen.")
-    return f"Flashen fehlgeschlagen: {text}"
+        return _("Der ESP ließ sich nicht in den Bootloader schalten. Abstecken, die BOOT-Taste "
+                 "gedrückt halten, wieder anstecken, loslassen und erneut versuchen.")
+    return _("Flashen fehlgeschlagen: {error}").format(error=text)

@@ -40,21 +40,23 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QF
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
                                QScrollArea, QSystemTrayIcon, QToolButton, QVBoxLayout, QWidget)
 
-from . import env, flash, integration, ui
+from . import env, flash, i18n, integration, ui
+from .i18n import N_, _
 from .session import Session
 from .version import __version__
 
 APP = "EspDrop"
 # Who may send to us, as AirDrop on the iPhone puts it: label, seconds (0: off,
 # None: until switched off).
-VISIBILITY = [("Aus", 0), ("10 Minuten", 600), ("Für alle", None)]
+VISIBILITY = [(N_("Aus"), 0), (N_("10 Minuten"), 600), (N_("Für alle"), None)]
 
-THEMES = [("Automatisch", "auto"), ("Hell", "light"), ("Dunkel", "dark")]
-THEME_KEYS = [key for _, key in THEMES]
+THEMES = [(N_("Automatisch"), "auto"), (N_("Hell"), "light"), (N_("Dunkel"), "dark")]
+THEME_KEYS = [key for _label, key in THEMES]
 
-SEND_STATES = {"new": "Warten …", "asking": "Warten auf Annahme …", "uploading": "Senden …",
-               "done": "Gesendet", "declined": "Abgelehnt", "failed": "Fehlgeschlagen",
-               "cancelled": "Abgebrochen"}
+SEND_STATES = {"new": N_("Warten …"), "asking": N_("Warten auf Annahme …"),
+               "uploading": N_("Senden …"), "done": N_("Gesendet"),
+               "declined": N_("Abgelehnt"), "failed": N_("Fehlgeschlagen"),
+               "cancelled": N_("Abgebrochen")}
 TILE_PHASE = {"new": "waiting", "asking": "waiting", "uploading": "sending", "done": "sent",
               "declined": "declined", "failed": "failed", "cancelled": "cancelled"}
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".gif", ".webp", ".tif", ".tiff",
@@ -79,7 +81,7 @@ def human(n):
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1000 or unit == "GB":
             text = f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-            return text.replace(".", ",")
+            return text.replace(".", ",") if i18n.LANG == "de" else text
         n /= 1000
 
 
@@ -99,14 +101,15 @@ def _kind(path):
 def what_text(files, urls=()):
     """'ein Foto', '3 Dateien', 'einen Link' - what a transfer carries."""
     if urls and not files:
-        return "einen Link" if len(urls) == 1 else f"{len(urls)} Links"
+        return _("einen Link") if len(urls) == 1 else _("{n} Links").format(n=len(urls))
     n = len(files)
     if not n:
-        return "etwas"
+        return _("etwas")
     kinds = {_kind(f) for f in files}
-    one, many = {"photo": ("ein Foto", "Fotos"), "video": ("ein Video", "Videos")}.get(
-        kinds.pop() if len(kinds) == 1 else "file", ("eine Datei", "Dateien"))
-    return one if n == 1 else f"{n} {many}"
+    one, many = {"photo": (N_("ein Foto"), N_("{n} Fotos")),
+                 "video": (N_("ein Video"), N_("{n} Videos"))}.get(
+        kinds.pop() if len(kinds) == 1 else "file", (N_("eine Datei"), N_("{n} Dateien")))
+    return _(one) if n == 1 else _(many).format(n=n)
 
 
 # ---- one copy per user -------------------------------------------------------
@@ -170,7 +173,7 @@ class InstanceServer(QObject):
                 continue
             buf.extend(bytes(sock.readAll()))
             while b"\n" in buf:
-                line, _, rest = bytes(buf).partition(b"\n")
+                line, _sep, rest = bytes(buf).partition(b"\n")
                 buf[:] = rest
                 try:
                     msg = json.loads(line.decode("utf-8"))
@@ -249,11 +252,14 @@ class AskDialog(QDialog):
         pic.setPixmap(self._preview(ask))
         v.addWidget(pic)
         v.addSpacing(4)
-        v.addWidget(ui.label(f"„{ask.sender}“ möchte {what_text(ask.files, ask.urls)} teilen.",
-                             "headline", wrap=True, center=True))
+        v.addWidget(ui.label(_("„{name}“ möchte {what} teilen.").format(
+            name=ask.sender, what=what_text(ask.files, ask.urls)),
+            "headline", wrap=True, center=True))
         what = ask.files or ask.urls
         if what:
-            names = ", ".join(what[:3]) + (f" und {len(what) - 3} weitere" if len(what) > 3 else "")
+            names = ", ".join(what[:3])
+            if len(what) > 3:
+                names = _("{names} und {n} weitere").format(names=names, n=len(what) - 3)
             v.addWidget(ui.label(names, "secondary", wrap=True, center=True))
         v.addSpacing(6)
         self.countdown = ui.ThinProgress()
@@ -264,8 +270,8 @@ class AskDialog(QDialog):
         v.addSpacing(2)
         row = QHBoxLayout()
         row.setSpacing(10)
-        self.no = ui.button("Ablehnen")
-        self.yes = ui.button("Annehmen", "primary")
+        self.no = ui.button(_("Ablehnen"))
+        self.yes = ui.button(_("Annehmen"), "primary")
         for b in (self.no, self.yes):
             b.setAutoDefault(False)
             b.setDefault(False)
@@ -320,7 +326,7 @@ class AskDialog(QDialog):
             self.reject()
             return
         self.countdown.set_value(left / self.timeout)
-        self.left.setText(f"Ohne Antwort abgelehnt in {left:.0f} s")
+        self.left.setText(_("Ohne Antwort abgelehnt in {secs} s").format(secs=f"{left:.0f}"))
 
     def _answer(self, result):
         self.timer.stop()
@@ -367,7 +373,7 @@ class SendDialog(QDialog):
         titles.addWidget(self.subtitle)
         titles.addStretch(1)
         head.addLayout(titles, 1)
-        self.more_btn = ui.button("Hinzufügen …", "link")
+        self.more_btn = ui.button(_("Hinzufügen …"), "link")
         self.more_btn.clicked.connect(self._choose_files)
         head.addWidget(self.more_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addLayout(head)
@@ -389,7 +395,7 @@ class SendDialog(QDialog):
         lay.addWidget(card, 1)
         bottom = QHBoxLayout()
         bottom.addStretch(1)
-        self.close_btn = ui.button("Abbrechen")
+        self.close_btn = ui.button(_("Abbrechen"))
         self.close_btn.clicked.connect(self.reject)
         bottom.addWidget(self.close_btn)
         lay.addLayout(bottom)
@@ -422,12 +428,12 @@ class SendDialog(QDialog):
                 self.title.setText(text[0].upper() + text[1:])
                 self.subtitle.setText(human(size))
         else:
-            self.title.setText("Keine Datei gewählt")
-            self.subtitle.setText("„Hinzufügen …“ wählt Dateien (Ordner gehen noch nicht).")
+            self.title.setText(_("Keine Datei gewählt"))
+            self.subtitle.setText(_("„Hinzufügen …“ wählt Dateien (Ordner gehen noch nicht)."))
         return True
 
     def _choose_files(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Per AirDrop senden")
+        files, _filter = QFileDialog.getOpenFileNames(self, _("Per AirDrop senden"))
         self.add_files(files)
 
     # ---- devices --------------------------------------------------------------
@@ -440,14 +446,14 @@ class SendDialog(QDialog):
 
     def on_device(self, connected):
         if not connected:
-            self.status.setText("Verbinde mit dem ESP …")
+            self.status.setText(_("Verbinde mit dem ESP …"))
             self._browsing = False
             self._update_view()
             return
         if not self._browsing and self.transfer_id is None:
             self._browsing = True
-            self.status.setText("Suche nach Geräten in der Nähe …\nAm iPhone oder iPad: "
-                                "AirDrop „Für alle“, entsperrt.")
+            self.status.setText(_("Suche nach Geräten in der Nähe …\nAm iPhone oder iPad: "
+                                  "AirDrop „Für alle“, entsperrt."))
             run_bg(self.w.session.browse, 60, on_error=self.w._log)
         self._update_view()
 
@@ -458,7 +464,7 @@ class SendDialog(QDialog):
         if self.transfer_id is not None:
             tile.setEnabled(r.id == self._target)
         elif self._browsing:
-            self.status.setText("Zum Senden auf ein Gerät klicken.")
+            self.status.setText(_("Zum Senden auf ein Gerät klicken."))
         self._update_view()
 
     def _dropped(self, rid, files):
@@ -475,7 +481,7 @@ class SendDialog(QDialog):
         try:
             t = self.w.session.send(rid, self.files)
         except Exception as e:                 # noqa: BLE001
-            self.status.setText(f"Senden geht nicht: {e}")
+            self.status.setText(_("Senden geht nicht: {error}").format(error=e))
             return
         self.transfer_id, self._target = t.id, rid
         self.grid.set_tiles_enabled(False, except_rid=rid)
@@ -483,7 +489,7 @@ class SendDialog(QDialog):
         if tile:
             tile.set_phase("waiting")
         self.more_btn.setEnabled(False)
-        self.status.setText(f"Warten, bis {t.receiver.label} annimmt …")
+        self.status.setText(_("Warten, bis {name} annimmt …").format(name=t.receiver.label))
 
     # ---- the transfer ---------------------------------------------------------
 
@@ -496,16 +502,17 @@ class SendDialog(QDialog):
         if tile:
             tile.set_phase(TILE_PHASE.get(state, "idle"), info.get("progress") or 0.0)
         if state == "uploading":
-            self.status.setText(f"Senden an {t.receiver.label} …")
+            self.status.setText(_("Senden an {name} …").format(name=t.receiver.label))
         elif state == "done":
-            self.status.setText(f"Gesendet an {t.receiver.label}.")
+            self.status.setText(_("Gesendet an {name}").format(name=t.receiver.label) + ".")
             self.transfer_id = None
-            self.close_btn.setText("Fertig")
+            self.close_btn.setText(_("Fertig"))
             QTimer.singleShot(1500, self.accept)
         elif state in ("declined", "failed", "cancelled"):
-            text = {"declined": f"{t.receiver.label} hat abgelehnt.",
-                    "cancelled": "Abgebrochen."}.get(state, f"Fehlgeschlagen: {info.get('error')}")
-            self.status.setText(text + " Zum erneuten Versuch auf ein Gerät klicken.")
+            text = {"declined": _("{name} hat abgelehnt.").format(name=t.receiver.label),
+                    "cancelled": _("Abgebrochen.")}.get(
+                state, _("Fehlgeschlagen: {error}").format(error=info.get("error")))
+            self.status.setText(text + _(" Zum erneuten Versuch auf ein Gerät klicken."))
             self.transfer_id = None
             self.grid.set_tiles_enabled(True)
             self.more_btn.setEnabled(True)
@@ -527,14 +534,18 @@ def built_text(built):
     m = re.match(r"([A-Z][a-z]{2})\s+(\d{1,2}) (\d{4})(?: (\d{2}):(\d{2}))?", built or "")
     if not m or m.group(1) not in MONTHS:
         return built
-    text = f"{int(m.group(2))}.{MONTHS.index(m.group(1)) + 1}.{m.group(3)}"
-    return text + (f", {m.group(4)}:{m.group(5)}" if m.group(4) else "")
+    day, month, year = int(m.group(2)), MONTHS.index(m.group(1)) + 1, m.group(3)
+    if i18n.LANG == "de":
+        text = f"{day}.{month}.{year}"
+        return text + (f", {m.group(4)}:{m.group(5)}" if m.group(4) else "")
+    text = f"{year}-{month:02d}-{day:02d}"
+    return text + (f" {m.group(4)}:{m.group(5)}" if m.group(4) else "")
 
 
-FLASH_STAGES = {"connect": "Verbinde mit dem ESP …",
-                "write": "Schreibe die Firmware …",
-                "verify": "Prüfe, ob alles angekommen ist …",
-                "restart": "Starte den ESP neu …"}
+FLASH_STAGES = {"connect": N_("Verbinde mit dem ESP …"),
+                "write": N_("Schreibe die Firmware …"),
+                "verify": N_("Prüfe, ob alles angekommen ist …"),
+                "restart": N_("Starte den ESP neu …")}
 TRANSFER_DONE = ("done", "declined", "failed", "cancelled")
 
 
@@ -558,27 +569,27 @@ class FirmwareDialog(QDialog):
         self.loader = loader or flash.load
         self.fw = None
         self.busy = False
-        self.setWindowTitle("ESP-Firmware")
+        self.setWindowTitle(_("ESP-Firmware"))
         self.setWindowIcon(ui.app_icon())
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setMinimumWidth(460)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(10)
-        title = QLabel("ESP-Firmware")
+        title = QLabel(_("ESP-Firmware"))
         title.setFont(ui.font(15, QFont.Weight.DemiBold))
         lay.addWidget(title)
-        lay.addWidget(ui.label("Die App bringt die Firmware für den ESP32-C5 mit und spielt sie "
-                               "über das USB-Kabel auf; Tasten am ESP braucht es dafür nicht.",
-                               "secondary", wrap=True))
+        lay.addWidget(ui.label(_("Die App bringt die Firmware für den ESP32-C5 mit und spielt "
+                                 "sie über das USB-Kabel auf; Tasten am ESP braucht es dafür "
+                                 "nicht."), "secondary", wrap=True))
         card = ui.Card()
-        self.device_sub = card.add_row("Auf dem ESP", None, "")
-        self.file_btn = ui.button("Andere Datei …", "link")
+        self.device_sub = card.add_row(_("Auf dem ESP"), None, "")
+        self.file_btn = ui.button(_("Andere Datei …"), "link")
         self.file_btn.clicked.connect(self._choose)
-        self.fw_sub = card.add_row("Zum Installieren", self.file_btn, "")
+        self.fw_sub = card.add_row(_("Zum Installieren"), self.file_btn, "")
         self.port_box = QComboBox()
         self.port_box.setMinimumWidth(130)
-        self.port_sub = card.add_row("Anschluss", self.port_box, "")
+        self.port_sub = card.add_row(_("Anschluss"), self.port_box, "")
         lay.addWidget(card)
         self.status = ui.label("", "secondary", wrap=True)
         lay.addWidget(self.status)
@@ -588,9 +599,9 @@ class FirmwareDialog(QDialog):
         lay.addStretch(1)
         row = QHBoxLayout()
         row.addStretch(1)
-        self.close_btn = ui.button("Schließen")
+        self.close_btn = ui.button(_("Schließen"))
         self.close_btn.clicked.connect(self.close)
-        self.install_btn = ui.button("Installieren", "primary")
+        self.install_btn = ui.button(_("Installieren"), "primary")
         self.install_btn.clicked.connect(self._install)
         row.addWidget(self.close_btn)
         row.addWidget(self.install_btn)
@@ -609,8 +620,8 @@ class FirmwareDialog(QDialog):
     def _load(self, path):
         self.fw = None
         if not path:
-            self.fw_sub.setText("Keine Firmware dabei: eine Datei wählen (espdrop-esp32c5.bin "
-                                "aus einem Release).")
+            self.fw_sub.setText(_("Keine Firmware dabei: eine Datei wählen (espdrop-esp32c5.bin "
+                                  "aus einem Release)."))
             return
         try:
             self.fw = self.loader(path)
@@ -618,14 +629,15 @@ class FirmwareDialog(QDialog):
             self.fw_sub.setText(str(e))
             return
         name = os.path.basename(self.fw.source.rstrip("/\\"))
-        self.fw_sub.setText(f"EspDrop {self.fw.version} für den {self.fw.chip}, gebaut "
-                            f"{built_text(self.fw.built)}\n{name}")
+        self.fw_sub.setText(_("EspDrop {version} für den {chip}, gebaut {built}").format(
+            version=self.fw.version, chip=self.fw.chip, built=built_text(self.fw.built))
+            + "\n" + name)
         self._fit()
 
     def _choose(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Firmware wählen", os.path.expanduser("~"),
-            "ESP-Firmware (*.bin flasher_args.json);;Alle Dateien (*)")
+        path, _filter = QFileDialog.getOpenFileName(
+            self, _("Firmware wählen"), os.path.expanduser("~"),
+            _("ESP-Firmware (*.bin flasher_args.json);;Alle Dateien (*)"))
         if path:
             self._load(path)
             self._refresh()
@@ -640,8 +652,8 @@ class FirmwareDialog(QDialog):
             self.port_box.setCurrentText(self.w.port)
         self.port_box.setVisible(len(found) > 1)
         self.port_sub.setText(found[0] if len(found) == 1 else
-                              "Kein ESP gefunden: per USB anstecken." if not found else
-                              "Mehrere gefunden: den ESP wählen.")
+                              _("Kein ESP gefunden: per USB anstecken.") if not found else
+                              _("Mehrere gefunden: den ESP wählen."))
 
     def _refresh(self):
         self.device_sub.setText(self.w.firmware_text())
@@ -663,14 +675,14 @@ class FirmwareDialog(QDialog):
             self._refresh()
             return
         if self.w.transfer_running():
-            self._say("Gerade läuft eine Übertragung; danach installieren.", "bad")
+            self._say(_("Gerade läuft eine Übertragung; danach installieren."), "bad")
             return
         self.busy = True
         for b in (self.install_btn, self.close_btn, self.file_btn, self.port_box):
             b.setEnabled(False)
         self.bar.set_value(None)
         self.bar.show()
-        self._say(FLASH_STAGES["connect"])
+        self._say(_(FLASH_STAGES["connect"]))
         self.w.set_flashing(True)
         session, fw, sig, flasher = self.w.session, self.fw, self.sig, self.flasher
 
@@ -682,7 +694,7 @@ class FirmwareDialog(QDialog):
             except flash.FirmwareError as e:
                 error = str(e)
             except Exception as e:             # noqa: BLE001 - shown to the user
-                error = f"Flashen fehlgeschlagen: {e}"
+                error = _("Flashen fehlgeschlagen: {error}").format(error=e)
             finally:
                 session.start()                # connect again, new firmware or old
             sig.finished.emit(error)
@@ -691,11 +703,11 @@ class FirmwareDialog(QDialog):
     def _on_progress(self, stage, fraction):
         if stage == "write" and fraction is not None:
             self.bar.set_value(fraction)
-            self._say(f"{FLASH_STAGES['write']} {fraction * 100:.0f} %")
+            self._say(_("Schreibe die Firmware … {percent} %").format(percent=f"{fraction * 100:.0f}"))
         elif stage in FLASH_STAGES:
             if stage != "connect":
                 self.bar.set_value(1.0)
-            self._say(FLASH_STAGES[stage])
+            self._say(_(FLASH_STAGES[stage]))
 
     def _on_finished(self, error):
         self.busy = False
@@ -705,12 +717,12 @@ class FirmwareDialog(QDialog):
         if error:
             self.bar.hide()
             self._say(error, "bad")
-            self.install_btn.setText("Erneut versuchen")
+            self.install_btn.setText(_("Erneut versuchen"))
         else:
             self.bar.set_value(1.0)
-            self._say(f"Fertig: EspDrop {self.fw.version} ist auf dem ESP. Er startet neu und "
-                      "verbindet sich gleich wieder.", "good")
-            self.install_btn.setText("Erneut installieren")
+            self._say(_("Fertig: EspDrop {version} ist auf dem ESP. Er startet neu und "
+                        "verbindet sich gleich wieder.").format(version=self.fw.version), "good")
+            self.install_btn.setText(_("Erneut installieren"))
         self._refresh()
 
     def _say(self, text, tone=None):
@@ -748,6 +760,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         ui.ensure(QApplication.instance())
         self.settings = settings or QSettings(APP, APP)
+        i18n.set_language(self.settings.value("language", "auto"))
+        self.restart_requested = False         # main() starts the app again after quitting
         ui.set_mode(QApplication.instance(), self._theme_key())
         self.setWindowTitle(APP)
         self.setWindowIcon(ui.app_icon())
@@ -820,11 +834,11 @@ class MainWindow(QMainWindow):
         status.setSpacing(6)
         self.dot = ui.StatusDot()
         status.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.device_label = ui.label("Suche ESP …", "secondary")
+        self.device_label = ui.label(_("Suche ESP …"), "secondary")
         self.power_label = ui.label("", "secondary")
         status.addWidget(self.device_label)
         status.addWidget(self.power_label)
-        self.fw_hint = ui.button("Firmware installieren …", "link")
+        self.fw_hint = ui.button(_("Firmware installieren …"), "link")
         self.fw_hint.clicked.connect(self.open_firmware_dialog)
         self.fw_hint.hide()
         status.addWidget(self.fw_hint)
@@ -832,15 +846,15 @@ class MainWindow(QMainWindow):
         titles.addLayout(status)
         titles.addStretch(1)
         head.addLayout(titles, 1)
-        self.more_btn = ui.tool_button("more", "Mehr")
+        self.more_btn = ui.tool_button("more", _("Mehr"))
         self.more_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QMenu(self.more_btn)
-        self.log_action = menu.addAction("Protokoll anzeigen")
+        self.log_action = menu.addAction(_("Protokoll anzeigen"))
         self.log_action.setCheckable(True)
-        menu.addAction("ESP-Firmware …", self.open_firmware_dialog)
-        menu.addAction("Serieller Port …", self._pick_port)
+        menu.addAction(_("ESP-Firmware …"), self.open_firmware_dialog)
+        menu.addAction(_("Serieller Port …"), self._pick_port)
         menu.addSeparator()
-        menu.addAction("Beenden", self.quit)
+        menu.addAction(_("Beenden"), self.quit)
         self.more_btn.setMenu(menu)
         head.addWidget(self.more_btn, 0, Qt.AlignmentFlag.AlignTop)
         col.addLayout(head)
@@ -848,14 +862,14 @@ class MainWindow(QMainWindow):
         # AirDrop: who may send to us, our name, where files go
         col.addWidget(ui.section("AirDrop"))
         card = ui.Card()
-        self.visibility = ui.Segmented([lbl for lbl, _ in VISIBILITY])
+        self.visibility = ui.Segmented([_(lbl) for lbl, _secs in VISIBILITY])
         self.visibility.changed.connect(self._visibility_picked)
         vis = QWidget()                        # the segments, and below them how long
         vv = QVBoxLayout(vis)
         vv.setContentsMargins(0, 0, 0, 0)
         vv.setSpacing(4)
         vh = QHBoxLayout()
-        vh.addWidget(QLabel("Empfangen von"))
+        vh.addWidget(QLabel(_("Empfangen von")))
         vh.addStretch(1)
         vh.addWidget(self.visibility)
         vv.addLayout(vh)
@@ -867,21 +881,21 @@ class MainWindow(QMainWindow):
         self.name_edit.setPlaceholderText(env.device_name())
         self.name_edit.setFixedWidth(210)
         self.name_edit.editingFinished.connect(self._name_changed)
-        card.add_row("Name", self.name_edit, "So sehen dich iPhone, iPad und Mac.")
+        card.add_row(_("Name"), self.name_edit, _("So sehen dich iPhone, iPad und Mac."))
         folder = QWidget()
         fh = QHBoxLayout(folder)
         fh.setContentsMargins(0, 0, 0, 0)
         fh.setSpacing(8)
         fv = QVBoxLayout()
         fv.setSpacing(2)
-        fv.addWidget(QLabel("Empfangene Dateien"))
+        fv.addWidget(QLabel(_("Empfangene Dateien")))
         self.dir_label = ui.ElidedLabel()
         self.dir_label.setProperty("role", "caption")
         fv.addWidget(self.dir_label)
         fh.addLayout(fv, 1)
-        change = ui.button("Ändern …", "link")
+        change = ui.button(_("Ändern …"), "link")
         change.clicked.connect(self._pick_dir)
-        show = ui.button("Öffnen", "link")
+        show = ui.button(_("Öffnen"), "link")
         show.clicked.connect(lambda: QDesktopServices.openUrl(
             QUrl.fromLocalFile(self.session.download_dir or os.getcwd())))
         fh.addWidget(change)
@@ -891,30 +905,30 @@ class MainWindow(QMainWindow):
         self.clipboard_switch.set_quiet(self.settings.value("clipboard", False, type=bool))
         self.clipboard_switch.toggled.connect(
             lambda on: self.settings.setValue("clipboard", bool(on)))
-        card.add_row("In die Zwischenablage kopieren", self.clipboard_switch,
-                     "Empfangenes zusätzlich zum Einfügen bereithalten: Bilder, Dateien "
-                     "und Links.")
+        card.add_row(_("In die Zwischenablage kopieren"), self.clipboard_switch,
+                     _("Empfangenes zusätzlich zum Einfügen bereithalten: Bilder, Dateien "
+                       "und Links."))
         col.addWidget(card)
 
         # devices nearby
-        self.search_btn = ui.button("Suchen")
+        self.search_btn = ui.button(_("Suchen"))
         self.search_btn.clicked.connect(self._search)
-        col.addWidget(ui.section("Geräte in der Nähe", self.search_btn))
+        col.addWidget(ui.section(_("Geräte in der Nähe"), self.search_btn))
         dcard = ui.Card()
         body = QWidget()
         bv = QVBoxLayout(body)
         bv.setContentsMargins(0, 0, 0, 0)
         bv.setSpacing(6)
         self.radar = ui.Radar()
-        self.radar_text = ui.label("Suche nach Geräten in der Nähe …", "secondary", center=True)
-        self.devices_note = ui.label("„Suchen“ findet AirDrop-Geräte in der Nähe. Am iPhone "
-                                     "oder iPad: AirDrop „Für alle“, entsperrt.",
+        self.radar_text = ui.label(_("Suche nach Geräten in der Nähe …"), "secondary", center=True)
+        self.devices_note = ui.label(_("„Suchen“ findet AirDrop-Geräte in der Nähe. Am iPhone "
+                                       "oder iPad: AirDrop „Für alle“, entsperrt."),
                                      "secondary", wrap=True, center=True)
         self.devices_note.setContentsMargins(12, 10, 12, 10)
         self.devices = ui.DeviceGrid()
         self.devices.clicked.connect(self._tile_clicked)
         self.devices.dropped.connect(self._send_to)
-        self.devices_hint = ui.label("Dateien auf ein Gerät ziehen oder es anklicken.",
+        self.devices_hint = ui.label(_("Dateien auf ein Gerät ziehen oder es anklicken."),
                                      "caption", center=True)
         for w in (self.radar, self.radar_text, self.devices_note, self.devices,
                   self.devices_hint):
@@ -923,7 +937,7 @@ class MainWindow(QMainWindow):
         col.addWidget(dcard)
 
         # transfers
-        col.addWidget(ui.section("Übertragungen"))
+        col.addWidget(ui.section(_("Übertragungen")))
         tcard = ui.Card()
         self.transfers = ui.TransferList()
         tcard.add(self.transfers, margins=(0, 0, 0, 0))
@@ -932,27 +946,41 @@ class MainWindow(QMainWindow):
         # general
         caps = integration.supported()
         self.autostart_switch = self.send_menu_switch = None
-        col.addWidget(ui.section("Allgemein"))
+        col.addWidget(ui.section(_("Allgemein")))
         gcard = ui.Card()
-        self.theme = ui.Segmented([lbl for lbl, _ in THEMES])
+        self.theme = ui.Segmented([_(lbl) for lbl, _key in THEMES])
         self.theme.set_index(THEME_KEYS.index(self._theme_key()), animate=False)
         self.theme.changed.connect(self._theme_picked)
-        gcard.add_row("Erscheinungsbild", self.theme)
+        gcard.add_row(_("Erscheinungsbild"), self.theme)
+        self.language = ui.Segmented([_(label) for _code, label in i18n.LANGUAGES])
+        self.language.set_index(self._language_index(), animate=False)
+        self.language.changed.connect(self._language_picked)
+        self.restart_btn = ui.button(_("Jetzt neu starten"), "link")
+        self.restart_btn.clicked.connect(self.restart)
+        self.restart_btn.hide()
+        lang_box = QWidget()
+        lb_ = QVBoxLayout(lang_box)
+        lb_.setContentsMargins(0, 0, 0, 0)
+        lb_.setSpacing(2)
+        lb_.addWidget(self.language)
+        lb_.addWidget(self.restart_btn, 0, Qt.AlignmentFlag.AlignRight)
+        self.language_sub = gcard.add_row(_("Sprache"), lang_box, "")
+        self.language_sub.hide()
         if caps["autostart"]:
             s = self.autostart_switch = ui.Switch()
             s.set_quiet(_safe(integration.autostart_enabled, False))
             s.toggled.connect(lambda on, s=s: self._integrate(integration.set_autostart, on, s))
-            gcard.add_row("Beim Anmelden im Hintergrund starten", s,
-                          "Unsichtbar im Infobereich und für alle sichtbar; nur eingehende "
-                          "Dateien melden sich.")
+            gcard.add_row(_("Beim Anmelden im Hintergrund starten"), s,
+                          _("Unsichtbar im Infobereich und für alle sichtbar; nur eingehende "
+                            "Dateien melden sich."))
         if caps["send"]:
             s = self.send_menu_switch = ui.Switch()
             s.set_quiet(_safe(integration.send_menu_enabled, False))
             s.toggled.connect(lambda on, s=s: self._integrate(integration.set_send_menu, on, s))
-            gcard.add_row(caps["send"], s, caps.get("send_hint"))
-        self.fw_btn = ui.button("Installieren …")
+            gcard.add_row(_(caps["send"]), s, _(caps.get("send_hint") or ""))
+        self.fw_btn = ui.button(_("Installieren …"))
         self.fw_btn.clicked.connect(self.open_firmware_dialog)
-        self.fw_sub = gcard.add_row("ESP-Firmware", self.fw_btn, "")
+        self.fw_sub = gcard.add_row(_("ESP-Firmware"), self.fw_btn, "")
         col.addWidget(gcard)
 
         # the log, off unless asked for
@@ -967,7 +995,7 @@ class MainWindow(QMainWindow):
         self.log_box = QWidget()
         lb = QVBoxLayout(self.log_box)
         lb.setContentsMargins(0, 0, 0, 0)
-        lb.addWidget(ui.section("Protokoll"))
+        lb.addWidget(ui.section(_("Protokoll")))
         lb.addWidget(self.log)
         self.log_box.hide()
         self.log_action.toggled.connect(self.log_box.setVisible)
@@ -986,13 +1014,13 @@ class MainWindow(QMainWindow):
     def _make_tray(self):
         tray = QSystemTrayIcon(ui.app_icon(), self)
         menu = QMenu()
-        menu.addAction("EspDrop öffnen", self._show)
-        menu.addAction("Dateien senden …", lambda: self.open_send_dialog([]))
-        self.tray_receive = menu.addAction("Für alle sichtbar (10 Minuten)",
+        menu.addAction(_("EspDrop öffnen"), self._show)
+        menu.addAction(_("Dateien senden …"), lambda: self.open_send_dialog([]))
+        self.tray_receive = menu.addAction(_("Für alle sichtbar (10 Minuten)"),
                                            lambda: self.visibility.select(
                                                0 if self.session.receiving else 1))
         menu.addSeparator()
-        menu.addAction("Beenden", self.quit)
+        menu.addAction(_("Beenden"), self.quit)
         tray.setContextMenu(menu)
         tray.activated.connect(lambda reason: self._show()
                                if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
@@ -1024,7 +1052,7 @@ class MainWindow(QMainWindow):
             fn(on)
         except Exception as e:                 # noqa: BLE001
             switch.set_quiet(not on)
-            QMessageBox.warning(self, APP, f"Das ging nicht: {e}")
+            QMessageBox.warning(self, APP, _("Das ging nicht: {error}").format(error=e))
 
     # ---- other starts and the share menu -------------------------------------
 
@@ -1071,7 +1099,7 @@ class MainWindow(QMainWindow):
         if self.tray and not self._quitting:
             e.ignore()
             self.hide()
-            self._notify("Läuft im Hintergrund weiter (Symbol im Infobereich).", None, 3000)
+            self._notify(_("Läuft im Hintergrund weiter (Symbol im Infobereich)."), None, 3000)
             return
         if self._flashing:                     # no tray: wait for the firmware
             e.ignore()
@@ -1081,7 +1109,7 @@ class MainWindow(QMainWindow):
 
     def quit(self):
         if self._flashing:                     # half a firmware: finish first
-            self._notify("Die Firmware wird gerade installiert; danach beenden.", None, 4000)
+            self._notify(_("Die Firmware wird gerade installiert; danach beenden."), None, 4000)
             return
         self._quitting = True
         self._shutdown()
@@ -1105,7 +1133,7 @@ class MainWindow(QMainWindow):
                 self._silent = 0
                 self.firmware = (info.get("info") or {}).get("firmware")
                 self.dot.set_state("green")
-                self.device_label.setText("ESP verbunden")
+                self.device_label.setText(_("ESP verbunden"))
                 mac = (info.get("info") or {}).get("mac", "")
                 self.device_label.setToolTip(f"ESP {mac}" if mac else "")
                 self._set_device_ui(True)       # the session restarts receiving itself
@@ -1115,8 +1143,8 @@ class MainWindow(QMainWindow):
                 self.dot.set_state("red")
                 # An ESP that does not answer twice in a row (not just booting):
                 # other or no firmware, or one too old for this app.
-                self.device_label.setText("ESP antwortet nicht" if self._silent >= 2
-                                          else "Kein ESP")
+                self.device_label.setText(_("ESP antwortet nicht") if self._silent >= 2
+                                          else _("Kein ESP"))
                 self.device_label.setToolTip(info.get("error") or "")
                 self._set_device_ui(False)
             elif state == "stopped":
@@ -1124,9 +1152,9 @@ class MainWindow(QMainWindow):
                 self._set_device_ui(False)
                 if self._flashing:             # the dialog has the port for esptool
                     self.dot.set_state("orange")
-                    self.device_label.setText("Firmware wird installiert …")
+                    self.device_label.setText(_("Firmware wird installiert …"))
                 else:
-                    self.device_label.setText("Beendet")
+                    self.device_label.setText(_("Beendet"))
             self._update_firmware_ui()
             if state in ("connected", "lost", "stopped"):
                 for d in list(self._send_dialogs):
@@ -1136,7 +1164,7 @@ class MainWindow(QMainWindow):
             self.power_label.setText(f"· {text}" if text else "")
         elif kind == "browse":
             self._browsing = info["on"]
-            self.search_btn.setText("Suche läuft …" if info["on"] else "Suchen")
+            self.search_btn.setText(_("Suche läuft …") if info["on"] else _("Suchen"))
             self.search_btn.setEnabled(not info["on"] and self._connected)
             self._update_devices_ui()
         elif kind == "receiver":
@@ -1163,10 +1191,10 @@ class MainWindow(QMainWindow):
             return
         t, state = info["transfer"], info["state"]
         if state == "done":
-            self._notify(f"Gesendet an {t.receiver.label}")
+            self._notify(_("Gesendet an {name}").format(name=t.receiver.label))
         elif state in ("declined", "failed"):
-            self._notify(f"Nicht gesendet an {t.receiver.label}: "
-                         f"{'abgelehnt' if state == 'declined' else info.get('error')}")
+            self._notify(_("Nicht gesendet an {name}").format(name=t.receiver.label) + ": "
+                         + (_("abgelehnt") if state == "declined" else str(info.get("error"))))
 
     # ---- the ESP's firmware ------------------------------------------------------
 
@@ -1186,17 +1214,20 @@ class MainWindow(QMainWindow):
     def firmware_text(self):
         """What the ESP runs, in words."""
         if self._flashing:
-            return "Wird gerade installiert …"
+            return _("Wird gerade installiert …")
         if self._connected:
             fw = self.firmware
             if not fw:
-                return "EspDrop, eine ältere Firmware ohne Versionsangabe"
+                return _("EspDrop, eine ältere Firmware ohne Versionsangabe")
             chip = {"esp32c5": "ESP32-C5", "esp32c3": "ESP32-C3"}.get(fw.get("chip"),
                                                                      fw.get("chip"))
-            return f"EspDrop {fw['version']}" + (f" auf dem {chip}" if chip else "")
+            if chip:
+                return _("EspDrop {version} auf dem {chip}").format(version=fw["version"],
+                                                                    chip=chip)
+            return _("EspDrop {version}").format(version=fw["version"])
         if self._silent >= 2:
-            return "Ein ESP steckt, antwortet aber nicht: keine oder eine andere Firmware"
-        return "Kein ESP verbunden"
+            return _("Ein ESP steckt, antwortet aber nicht: keine oder eine andere Firmware")
+        return _("Kein ESP verbunden")
 
     def _update_firmware_ui(self):
         bundled = self.bundled_firmware()
@@ -1204,9 +1235,9 @@ class MainWindow(QMainWindow):
                  and flash.is_newer(bundled.version, (self.firmware or {}).get("version")))
         text = self.firmware_text()
         if newer:
-            text += f" · neu in der App: {bundled.version}"
+            text += _(" · neu in der App: {version}").format(version=bundled.version)
         self.fw_sub.setText(text)
-        self.fw_btn.setText("Aktualisieren …" if newer else "Installieren …")
+        self.fw_btn.setText(_("Aktualisieren …") if newer else _("Installieren …"))
         self.fw_hint.setVisible(self._silent >= 2 and not self._flashing)
 
     def open_firmware_dialog(self):
@@ -1254,15 +1285,38 @@ class MainWindow(QMainWindow):
             until = s.receive_until
             if until:
                 left = max(0, until - time.monotonic())
-                text = f"Für alle sichtbar – noch {int(left // 60)}:{int(left % 60):02d}"
+                text = _("Für alle sichtbar – noch {left}").format(
+                    left=f"{int(left // 60)}:{int(left % 60):02d}")
             else:
-                text = "Für alle sichtbar, bis du es ausschaltest."
+                text = _("Für alle sichtbar, bis du es ausschaltest.")
         else:
-            text = "Niemand kann dir gerade etwas senden."
+            text = _("Niemand kann dir gerade etwas senden.")
         if self.receive_left.text() != text:
             self.receive_left.setText(text)
 
     # ---- appearance and the clipboard ------------------------------------------
+
+    def _language_index(self):
+        codes = [code for code, _label in i18n.LANGUAGES]
+        choice = self.settings.value("language", "auto")
+        return codes.index(choice) if choice in codes else 0
+
+    def _language_picked(self, index):
+        code = i18n.LANGUAGES[index][0]
+        self.settings.setValue("language", code)
+        # Every text is set when the window is built: the new language shows
+        # after a restart, which the button does at once.
+        now = i18n.LANG
+        wanted = code if code in ("de", "en") else i18n.system_language()
+        self.language_sub.setText(_("Gilt nach einem Neustart der App."))
+        self.language_sub.setVisible(wanted != now)
+        self.restart_btn.setVisible(wanted != now)
+
+    def restart(self):
+        """Quit, and have main() start the app again (the new language)."""
+        if not self._flashing:                 # quit() says why it waits
+            self.restart_requested = True
+        self.quit()
 
     def _theme_key(self):
         key = self.settings.value("theme", "auto")
@@ -1312,15 +1366,16 @@ class MainWindow(QMainWindow):
         if self.visibility.index() != index:
             self.visibility.set_index(index)
         if self.tray:
-            self.tray_receive.setText("Nicht mehr sichtbar" if on
-                                      else "Für alle sichtbar (10 Minuten)")
+            self.tray_receive.setText(_("Nicht mehr sichtbar") if on
+                                      else _("Für alle sichtbar (10 Minuten)"))
         self._tick()
 
     def _on_ask(self, ask, reply):
         # Hidden (autostart, tray): only the question comes up, on its own;
         # the window stays where it is.
         hidden = not self.isVisible()
-        self._notify(f"{ask.sender} möchte {what_text(ask.files, ask.urls)} teilen")
+        self._notify(_("{name} möchte {what} teilen").format(
+            name=ask.sender, what=what_text(ask.files, ask.urls)))
         dlg = AskDialog(None if hidden else self, ask, reply, self.bridge.ask_timeout)
         if hidden:
             dlg.setWindowIcon(ui.app_icon())
@@ -1341,12 +1396,12 @@ class MainWindow(QMainWindow):
                 return
             if ask and ask.urls and not ask.files:    # a link: no upload follows
                 copied = self._to_clipboard(urls=ask.urls)
-                self._notify(f"Link von {ask.sender}" + (" – in der Zwischenablage"
-                                                         if copied else ""))
+                self._notify(_("Link von {name}").format(name=ask.sender)
+                             + (_(" – in der Zwischenablage") if copied else ""))
             self._recv_n += 1
             row = ui.TransferRow("receive", ", ".join(ask.files or ask.urls) if ask else "?",
                                  ask.sender if ask else "?")
-            row.set_state("Wird empfangen …", running=True)
+            row.set_state(_("Wird empfangen …"), running=True)
             row.open.connect(lambda r=row: self._open_files(r.files))
             self.transfers.add(row)
             self._rows[("recv", self._recv_n)] = row
@@ -1365,19 +1420,19 @@ class MainWindow(QMainWindow):
             if info.get("ok"):
                 names = ", ".join(os.path.basename(f) for f in files)
                 row.set_title(names)
-                row.set_state(f"Empfangen · {human(info.get('size', 0))}", files=files,
-                              tone="done")
+                row.set_state(_("Empfangen · {size}").format(size=human(info.get("size", 0))),
+                              files=files, tone="done")
                 copied = self._to_clipboard(files=files)
-                self._notify(f"Empfangen: {names}" + (" – in der Zwischenablage"
-                                                      if copied else " – klicken zum Öffnen"),
-                             files)
+                self._notify(_("Empfangen: {names}").format(names=names)
+                             + (_(" – in der Zwischenablage") if copied
+                                else _(" – klicken zum Öffnen")), files)
             else:
-                row.set_state("Unvollständig",
+                row.set_state(_("Unvollständig"),
                               files=files + ([info["raw"]] if info.get("raw") else []),
                               tone="bad")
 
     def _pick_dir(self):
-        d = QFileDialog.getExistingDirectory(self, "Ordner für empfangene Dateien",
+        d = QFileDialog.getExistingDirectory(self, _("Ordner für empfangene Dateien"),
                                              self.session.download_dir or os.getcwd())
         if d:
             self.session.set_download_dir(d)
@@ -1409,20 +1464,20 @@ class MainWindow(QMainWindow):
 
     def _tile_clicked(self, rid):
         tile = self.devices.tiles.get(rid)
-        files, _ = QFileDialog.getOpenFileNames(
-            self, f"An {tile.name if tile else 'das Gerät'} senden")
+        files, _filter = QFileDialog.getOpenFileNames(
+            self, _("An {name}").format(name=tile.name if tile else _("das Gerät")))
         if files:
             self._send_to(rid, files)
 
     def _send_to(self, rid, files):
         files = [f for f in files if os.path.isfile(f)]
         if not files:
-            QMessageBox.information(self, APP, "Ordner lassen sich noch nicht senden, nur Dateien.")
+            QMessageBox.information(self, APP, _("Ordner lassen sich noch nicht senden, nur Dateien."))
             return
         try:
             t = self.session.send(rid, files)
         except Exception as e:                 # noqa: BLE001
-            QMessageBox.warning(self, APP, f"Senden geht nicht: {e}")
+            QMessageBox.warning(self, APP, _("Senden geht nicht: {error}").format(error=e))
             return
         self._send_row({"transfer": t, "state": t.state, "progress": 0.0, "error": None})
 
@@ -1438,7 +1493,7 @@ class MainWindow(QMainWindow):
             self.transfers.add(row)
             self._rows[key] = row
         state = info["state"]
-        text = SEND_STATES.get(state, state)
+        text = _(SEND_STATES.get(state, state))
         if state == "failed" and info.get("error"):
             text += f": {info['error']}"
         running = state in ("new", "asking", "uploading")
@@ -1454,13 +1509,14 @@ class MainWindow(QMainWindow):
 
     def _pick_port(self):
         from .transport import candidates
-        ports = ["automatisch"] + candidates()
-        current = self.port or "automatisch"
-        port, ok = QInputDialog.getItem(self, APP, "Serieller Port des ESP:", ports,
+        auto = _("automatisch")
+        ports = [auto] + candidates()
+        current = self.port or auto
+        port, ok = QInputDialog.getItem(self, APP, _("Serieller Port des ESP:"), ports,
                                         ports.index(current) if current in ports else 0, True)
         if not ok:
             return
-        self.port = None if port == "automatisch" else port
+        self.port = None if port == auto else port
         self.settings.setValue("port", self.port or "")
         receiving, until = self.session.receiving, self.session.receive_until
         secs = None if not until else max(1, int(until - time.monotonic()))
@@ -1481,13 +1537,14 @@ def power_text(reply):
     if len(words) < 3 or words[0] != "power":
         return ""
     if words[1] == "on":
-        return "Funk immer an"
+        return _("Funk immer an")
     listen = next((w[7:] for w in words if w.startswith("listen=")), "off")
-    why = {"(hold)": "für die App", "(wake)": "zum Senden", "(busy)": "Übertragung",
-           "(advert)": "Gerät in der Nähe"}.get(words[3] if len(words) > 3 else "", "")
+    why = {"(hold)": N_("für die App"), "(wake)": N_("zum Senden"), "(busy)": N_("Übertragung"),
+           "(advert)": N_("Gerät in der Nähe")}.get(words[3] if len(words) > 3 else "", "")
     if words[2] == "asleep":
-        return "Funk schläft (empfangsbereit)" if listen != "off" else "Funk aus (spart Strom)"
-    return f"Funk an ({why})" if why else "Funk an"
+        return (_("Funk schläft (empfangsbereit)") if listen != "off"
+                else _("Funk aus (spart Strom)"))
+    return _("Funk an ({why})").format(why=_(why)) if why else _("Funk an")
 
 
 def default_download_dir():
@@ -1547,6 +1604,7 @@ def main(port=None, background=False, send=None):
         return 0
     server = InstanceServer()
     settings = QSettings(APP, APP)
+    i18n.set_language(settings.value("language", "auto"))   # before any text is made
     _desktop_setup(settings)
     w = MainWindow(port=port, settings=settings, background=background)
     server.message.connect(w.handle_message)
@@ -1556,4 +1614,8 @@ def main(port=None, background=False, send=None):
         w.show()
     rc = app.exec()
     server.close()
+    if w.restart_requested:                    # the same app again, the window shown
+        import subprocess
+        subprocess.Popen(integration.launch_command(), close_fds=True,
+                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
     return rc
