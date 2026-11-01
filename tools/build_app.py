@@ -171,6 +171,25 @@ def nuitka_command(args, out, icons, fw):
     return cmd
 
 
+def glibc_needed(dist):
+    """The newest glibc version any file of the program asks for (Linux), as
+    "2.35", measured from the symbol versions; None if objdump is missing."""
+    import re
+    if not shutil.which("objdump"):
+        return None
+    best = (0,)
+    for folder, _dirs, files in os.walk(dist):
+        for name in files:
+            path = os.path.join(folder, name)
+            with open(path, "rb") as f:
+                if f.read(4) != b"\x7fELF":
+                    continue
+            out = subprocess.run(["objdump", "-T", path], capture_output=True, text=True).stdout
+            for v in re.findall(r"GLIBC_(\d+(?:\.\d+)+)", out):
+                best = max(best, tuple(int(x) for x in v.split(".")))
+    return ".".join(map(str, best)) if best != (0,) else None
+
+
 def third_party(dist):
     """LICENSE and a list of what the program carries, with each license."""
     from importlib import metadata
@@ -300,6 +319,9 @@ def main(argv=None):
 
     step("adding what the program needs beside its code")
     if not IS_WINDOWS:
+        need = glibc_needed(dist)
+        print(f"runs on Linux with glibc {need} or newer (x86_64)" if need
+              else "glibc needed: unknown (no objdump)", flush=True)
         lib = system_libarchive()
         shutil.copy2(lib, os.path.join(dist, "libarchive.so.13"))
         print(f"libarchive: {lib} (a fallback; the system's comes first)")

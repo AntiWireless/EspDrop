@@ -109,6 +109,40 @@ def unique_path(folder, name):
     return path
 
 
+APPLEDOUBLE_MAGIC = b"\x00\x05\x16\x07"
+
+
+def is_appledouble(path):
+    """A '._name' file of Apple's AppleDouble format: the metadata (extended
+    attributes) iOS sends along with each file. Apple's own unpacking folds it
+    into the file; elsewhere it would land beside it as a second file."""
+    if not os.path.basename(path).startswith("._") or not os.path.isfile(path):
+        return False
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == APPLEDOUBLE_MAGIC
+    except OSError:
+        return False
+
+
+def drop_appledouble(folder, names):
+    """Remove the AppleDouble companions among folder/names (in subfolders
+    too); returns the names left."""
+    left = []
+    for name in names:
+        path = os.path.join(folder, name)
+        if is_appledouble(path):
+            os.remove(path)
+            continue
+        if os.path.isdir(path):
+            for sub, _dirs, files in os.walk(path):
+                for f in files:
+                    if is_appledouble(os.path.join(sub, f)):
+                        os.remove(os.path.join(sub, f))
+        left.append(name)
+    return left
+
+
 def move_out(staging, names, dest):
     """Move staging/name for each name into dest under a free name; returns
     the new paths. Nothing in dest is ever replaced. What cannot move (a file
@@ -222,7 +256,7 @@ class Receiver:
             handler.rfile = rfile
             new = sorted(set(os.listdir(here)) - before)
             raw_names = [n for n in new if n.startswith(RAW_PREFIX)]
-            names = [n for n in new if not n.startswith(RAW_PREFIX)]
+            names = drop_appledouble(here, [n for n in new if not n.startswith(RAW_PREFIX)])
             dest = self.dest_dir
             if dest and os.path.realpath(dest) != os.path.realpath(here):
                 files = move_out(here, names, dest)

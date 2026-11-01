@@ -400,6 +400,7 @@ def main(argv=None, transport=None):
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
+    from .env import device_name
     from .version import __version__
     ap = argparse.ArgumentParser(prog="espdrop", description="EspDrop host app (M4)")
     ap.add_argument("--version", action="version", version=f"espdrop {__version__}")
@@ -410,18 +411,20 @@ def main(argv=None, transport=None):
     f.add_argument("-t", "--time", type=float, default=30.0, help="seconds to browse")
     f.add_argument("--no-wake", action="store_true", help="do not send the BLE wake")
     f.add_argument("-v", "--verbose", action="store_true", help="show every AirDrop mDNS message")
-    f.set_defaults(name="EspDrop")
+    f.set_defaults(name=device_name())
     s = sub.add_parser("send", help="send files to an AirDrop receiver")
     s.add_argument("file", nargs="+")
     s.add_argument("-r", "--receiver", help="receiver name or id (default: the only one found, "
                                             "else you pick from a list)")
-    s.add_argument("-n", "--name", default="EspDrop", help="sender name shown on the device")
+    s.add_argument("-n", "--name", default=device_name(),
+                   help="sender name shown on the device (default: this PC's name)")
     s.add_argument("-t", "--time", type=float, default=30.0, help="seconds to look for the receiver")
     s.add_argument("--no-wake", action="store_true", help="do not send the BLE wake")
     s.add_argument("-v", "--verbose", action="store_true")
 
     rv = sub.add_parser("receive", help="receive files from an Apple device")
-    rv.add_argument("-n", "--name", default="EspDrop", help="name shown on the sender")
+    rv.add_argument("-n", "--name", default=device_name(),
+                    help="name shown on the sender (default: this PC's name)")
     rv.add_argument("-v", "--verbose", action="store_true", help="debug log with times")
     rv.add_argument("-y", "--yes", action="store_true", help="accept every transfer without asking")
     rv.add_argument("-d", "--dir", help="folder for received files (default: the current one)")

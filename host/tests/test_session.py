@@ -278,6 +278,24 @@ class ReceiveTest(SessionCase):
         self.assertEqual(got, [os.path.join(dest, "a.jpg"), os.path.join(staging, "locked.jpg")])
         self.assertEqual(os.listdir(staging), ["locked.jpg"])
 
+    def test_appledouble_companions_are_dropped(self):
+        # iOS sends "._name" AppleDouble metadata with each file; only that
+        # goes, not a real file whose name happens to start with "._".
+        from espdrop import receive
+        d = os.path.join(self.tmp.name, "x")
+        os.makedirs(os.path.join(d, "Ordner"))
+        meta = receive.APPLEDOUBLE_MAGIC + b"\x00\x02\x00\x00" + bytes(40)
+        for name, data in (("test.JPG", b"\xff\xd8 photo"), ("._test.JPG", meta),
+                           ("._notiz.txt", b"echte Datei"),
+                           (os.path.join("Ordner", "a.txt"), b"a"),
+                           (os.path.join("Ordner", "._a.txt"), meta)):
+            with open(os.path.join(d, name), "wb") as f:
+                f.write(data)
+        left = receive.drop_appledouble(d, sorted(os.listdir(d)))
+        self.assertEqual(left, ["._notiz.txt", "Ordner", "test.JPG"])
+        self.assertEqual(sorted(os.listdir(d)), left)
+        self.assertEqual(os.listdir(os.path.join(d, "Ordner")), ["a.txt"])
+
     def test_leftovers_move_out_at_start(self):
         dl = os.path.join(self.tmp.name, "downloads")
         os.makedirs(os.path.join(dl, STAGING))

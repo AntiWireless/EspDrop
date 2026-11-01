@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QF
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
                                QScrollArea, QSystemTrayIcon, QToolButton, QVBoxLayout, QWidget)
 
-from . import flash, integration, ui
+from . import env, flash, integration, ui
 from .session import Session
 from .version import __version__
 
@@ -795,7 +795,7 @@ class MainWindow(QMainWindow):
 
     def _default_session(self):
         d = self.settings.value("download_dir", "") or default_download_dir()
-        return Session(port=self.port, name=self.name_edit.text() or APP, receive=False,
+        return Session(port=self.port, name=self._name(), receive=False,
                        download_dir=d, on_event=self.bridge.on_event,
                        on_ask=self.bridge.on_ask, ask_timeout=self.bridge.ask_timeout)
 
@@ -862,7 +862,9 @@ class MainWindow(QMainWindow):
         self.receive_left = ui.label("", "caption")
         vv.addWidget(self.receive_left)
         card.add(vis, margins=(16, 10, 14, 9))
-        self.name_edit = QLineEdit(self.settings.value("name", "") or APP)
+        # Empty (never changed): this PC's name; the field shows it greyed.
+        self.name_edit = QLineEdit(self.settings.value("name", "") or "")
+        self.name_edit.setPlaceholderText(env.device_name())
         self.name_edit.setFixedWidth(210)
         self.name_edit.editingFinished.connect(self._name_changed)
         card.add_row("Name", self.name_edit, "So sehen dich iPhone, iPad und Mac.")
@@ -1388,11 +1390,15 @@ class MainWindow(QMainWindow):
             or default_download_dir()
         self.dir_label.setText(d)
 
+    def _name(self):
+        """The name others see: what the user typed, else this PC's name."""
+        return self.name_edit.text().strip() or env.device_name()
+
     def _name_changed(self):
-        name = self.name_edit.text().strip() or APP
+        name = self._name()
+        self.settings.setValue("name", self.name_edit.text().strip())
         if name == self.session.name:
             return
-        self.settings.setValue("name", name)
         run_bg(self.session.set_name, name, on_error=self._log)
 
     # ---- sending ---------------------------------------------------------------

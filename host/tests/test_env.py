@@ -199,6 +199,26 @@ class LibarchiveLookupTest(unittest.TestCase):
             self.assertTrue(detail.startswith("libarchive 3."), detail)
 
 
+class DeviceNameTest(unittest.TestCase):
+    def test_pc_name(self):
+        with mock.patch("socket.gethostname", return_value="werkstatt-pc.fritz.box"), \
+                mock.patch.dict(os.environ, {"COMPUTERNAME": "WERKSTATT-PC"}), \
+                mock.patch("builtins.open", side_effect=OSError):
+            want = "WERKSTATT-PC" if os.name == "nt" else "werkstatt-pc"
+            self.assertEqual(env.device_name(), want)
+        with mock.patch("socket.gethostname", return_value=""), \
+                mock.patch.dict(os.environ, {"COMPUTERNAME": ""}), \
+                mock.patch("builtins.open", side_effect=OSError):
+            self.assertEqual(env.device_name(), "EspDrop")
+
+    def test_pretty_hostname_on_linux(self):
+        if not sys.platform.startswith("linux"):
+            self.skipTest("Linux only")
+        info = io.StringIO('PRETTY_HOSTNAME="Bens Laptop"\nCHASSIS=laptop\n')
+        with mock.patch("builtins.open", return_value=info):
+            self.assertEqual(env.device_name(), "Bens Laptop")
+
+
 class X11LibrariesTest(unittest.TestCase):
     LDD = ("\tlibxcb.so.1 => /usr/lib/x86_64-linux-gnu/libxcb.so.1 (0x1)\n"
            "\tlibxcb-cursor.so.0 => not found\n"

@@ -76,6 +76,27 @@ def recorded_libarchive():
 BUNDLED_LIBARCHIVE = ("libarchive.so.13",)    # next to the compiled program (Linux)
 
 
+def device_name():
+    """The name others see by default: this PC's name, as the system shows it
+    (Linux: the "pretty" hostname if set), without a domain; "EspDrop" if
+    there is none."""
+    name = ""
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/etc/machine-info", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("PRETTY_HOSTNAME="):
+                        name = line.split("=", 1)[1].strip().strip('"\'')
+        except OSError:
+            pass
+    if not name:
+        import socket
+        name = (os.environ.get("COMPUTERNAME") if os.name == "nt" else None) \
+            or socket.gethostname()
+        name = name.split(".")[0]              # "pc.fritz.box" -> "pc"
+    return name.strip()[:63] or "EspDrop"
+
+
 def libarchive_candidates():
     """Where to look, best first: a path, or None for the normal library search
     (PATH on Windows, ldconfig on Linux; what libarchive-c does by itself)."""
